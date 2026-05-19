@@ -1,0 +1,23 @@
+{
+  "name": "tasrovy-renderer",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "glm",
+    "glfw3",
+    "volk",
+    "vulkan-memory-allocator",
+    "spdlog",
+    "fmt",
+    "nlohmann-json",
+    "stb",
+    "assimp",
+    {
+      "name": "imgui",
+      "features": [
+        "docking-experimental", 
+        "glfw-binding",
+        "vulkan-binding"
+      ]
+    }
+  ]
+}
