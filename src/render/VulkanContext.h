@@ -1,11 +1,11 @@
 #pragma once
+#include <volk.h>
 #include <vector>
 #include <string>
 #include <optional>
 #include <memory>
 #define GLFW_INCLUDE_VULKAN
 #include "GLFW/glfw3.h"
-#include <vulkan/vulkan.h>
 
 struct SwapChainSupportDetails {
     VkSurfaceCapabilitiesKHR capabilities;

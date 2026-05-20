@@ -1,7 +1,7 @@
 #pragma once
+#include <volk.h>
 #include "VulkanContext.h"
 #include <cstddef>
-#include <vulkan/vulkan.h>
 class VulkanBuffer{
 private:
     VkBuffer _buffer;

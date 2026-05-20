@@ -1,9 +1,9 @@
 #pragma once
+#include <volk.h>
 #include <string>
 #include <vector>
 #include <glm/glm.hpp>
 #include <functional>
-#include <vulkan/vulkan.h>
 #include <array>
 
 struct Vertex{

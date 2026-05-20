@@ -1,34 +1,55 @@
 @echo off
 SETLOCAL
 
-:: 1. 设置 vcpkg 路径 (请确保这个路径是正确的)
+:: 1. 设置 vcpkg 路径
 SET VCPKG_ROOT=C:\Libraries\vcpkg
 SET TOOLCHAIN=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake
 
 :: 2. 设置生成目录
 SET BUILD_DIR=build_vs
 
-:: 3. 如果已经存在 build 目录，先清理它（可选，为了防止缓存污染）
+:: 3. 清理旧的编译目录
 if exist %BUILD_DIR% (
     echo Cleaning old build directory...
     rd /s /q %BUILD_DIR%
 )
 
-:: 4. 创建新的 build 目录
+:: 4. 创建并进入目录
 mkdir %BUILD_DIR%
 cd %BUILD_DIR%
 
-:: 5. 调用 CMake 生成 Visual Studio 2022 解决方案
-:: -G 指定生成器
-:: -A 指定架构 (x64)
-:: -DCMAKE_TOOLCHAIN_FILE 关联 vcpkg
-echo Generating Visual Studio solution...
-cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="%TOOLCHAIN%"
+:: 5. 显式指定 Visual Studio 2026 生成器
+echo Generating Visual Studio 2026 solution...
+cmake .. -G "Visual Studio 18 2026" -A x64 -DCMAKE_TOOLCHAIN_FILE="%TOOLCHAIN%"
 
-:: 6. 完成
+:: 6. 【新增】检查 CMake 执行状态 (错误处理)
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo ========================================================
+    echo [ERROR] CMake generation FAILED! 
+    echo Please check the error messages above.
+    echo ========================================================
+    echo.
+    pause
+    exit /b %ERRORLEVEL%
+)
+
+:: 7. 【新增】完成并自动打开项目文件
 echo.
 echo ========================================================
 echo Generation complete! 
-echo Solution file is in: %BUILD_DIR%\TasrovyRenderer.sln
+echo Automatically opening the project file...
 echo ========================================================
+
+:: 自动检测并打开 .slnx 或 .sln
+if exist "TasrovyRenderer.slnx" (
+    echo Opening TasrovyRenderer.slnx...
+    start "" "TasrovyRenderer.slnx"
+) else if exist "TasrovyRenderer.sln" (
+    echo Opening TasrovyRenderer.sln...
+    start "" "TasrovyRenderer.sln"
+) else (
+    echo [WARNING] Could not find any solution file (.slnx or .sln) in %BUILD_DIR%
+)
+
 pause

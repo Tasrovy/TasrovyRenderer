@@ -154,6 +154,7 @@ void VulkanContext::createInstance() {
     if (vkCreateInstance(&createInfo, nullptr, &_instance) != VK_SUCCESS) {
         throw std::runtime_error("failed to create instance!");
     }
+    volkLoadInstance(_instance);
     std::cout << "[SUCCESS] Vulkan instance created." << std::endl;
 }
 
