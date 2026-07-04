@@ -1,22 +1,29 @@
 # TasrovyRenderer
 
-A C++20 Vulkan renderer.
+A C++20 Vulkan renderer featuring PBR shading, IBL environment mapping, skyboxes, and an ImGui debug overlay.
 
-## Build
+## Getting Started
+
+### Prerequisites
+
+- Vulkan SDK
+- CMake 3.20+
+- vcpkg
+
+### Building
 
 ```bash
-# 1. Install dependencies
 vcpkg install
-
-# 2. Configure
-cmake -B cmake-build-debug -DCMAKE_TOOLCHAIN_FILE=C:/Libraries/vcpkg/scripts/buildsystems/vcpkg.cmake
-
-# 3. Build
-cmake --build cmake-build-debug --config Debug
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=[vcpkg root]/scripts/buildsystems/vcpkg.cmake
+cmake --build build
 ```
 
-## Run
+### Running
 
 ```bash
-cmake-build-debug\src\core\TasrovyCore.exe
+build\src\core\TasrovyCore.exe
 ```
+
+## License
+
+MIT
