@@ -28,10 +28,12 @@ public:
     void setDrawCallback(DrawCallback cb) { _drawCallback = std::move(cb); }
 
     void beginFrame();
-    void endFrame(VkCommandBuffer cmd);
+    void endFrame(VkCommandBuffer cmd, VkImageView colorView, VkExtent2D extent);
 
 private:
+    GLFWwindow* _window = nullptr;
     VkDevice _device = VK_NULL_HANDLE;
     VkDescriptorPool _descriptorPool = VK_NULL_HANDLE;
+    VkFormat _colorFormat = VK_FORMAT_B8G8R8A8_SRGB;
     DrawCallback _drawCallback;
 };

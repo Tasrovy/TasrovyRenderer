@@ -14,6 +14,8 @@ class Image;
 class Pipeline;
 class DescriptorSetLayout;
 class DescriptorPool;
+class ReflectionBridge;
+class Material;
 
 // --- API-agnostic descriptors ---
 
@@ -75,6 +77,11 @@ public:
 
     // --- Copy helpers ---
     void uploadBuffer(Buffer& dst, const void* data, uint64_t size);
+
+    // --- Shader Reflection ---
+    std::shared_ptr<ReflectionBridge> getReflectionBridge();
+    void requestShaderReflection(Material* material);
+    void processReflectionResults();
 
 private:
     Device() = default;

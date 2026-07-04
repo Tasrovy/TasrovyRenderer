@@ -8,9 +8,21 @@ find_package(volk CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
-find_package(imgui CONFIG REQUIRED)
 find_package(assimp CONFIG REQUIRED)
-find_package(Vulkan REQUIRED)
+
+# imgui: built from source in third_party/
+add_library(imgui STATIC
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_demo.cpp
+    third_party/imgui/backends/imgui_impl_glfw.cpp
+    third_party/imgui/backends/imgui_impl_vulkan.cpp
+)
+target_compile_definitions(imgui PUBLIC IMGUI_IMPL_VULKAN_NO_PROTOTYPES)
+target_include_directories(imgui PUBLIC third_party/imgui third_party/imgui/backends)
+target_link_libraries(imgui PUBLIC glfw volk::volk)
 
 add_subdirectory(src/ext)
 add_subdirectory(src/log)
@@ -21,5 +33,4 @@ add_subdirectory(src/filesystem)
 add_subdirectory(src/render)
 add_subdirectory(src/core)
 add_subdirectory(src/base)
-
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT TasrovyApp)

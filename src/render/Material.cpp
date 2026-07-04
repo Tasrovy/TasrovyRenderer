@@ -1,18 +1,12 @@
 #include "Material.h"
 #include "Shader.h"
-#include <Logger.hpp>
 
 namespace Tasrovy {
 
-Material::Material() {
-    LOG_INFO("Material ctor");
-}
+Material::Material() = default;
 
 std::shared_ptr<Material> Material::create() {
-    LOG_INFO("Material::create before new");
-    auto m = std::shared_ptr<Material>(new Material());
-    LOG_INFO("Material::create after new");
-    return m;
+    return std::shared_ptr<Material>(new Material());
 }
 
 std::shared_ptr<Material> Material::create(std::weak_ptr<Shader> shader) {
@@ -21,7 +15,10 @@ std::shared_ptr<Material> Material::create(std::weak_ptr<Shader> shader) {
     return mat;
 }
 
-void Material::setShader(std::weak_ptr<Shader> shader) { shader_ = shader; }
+void Material::setShader(std::weak_ptr<Shader> shader) {
+    shader_ = shader;
+    reflectionPending_.store(true, std::memory_order_release);
+}
 
 std::shared_ptr<Shader> Material::getShader() const { return shader_.lock(); }
 
@@ -74,11 +71,52 @@ const std::unordered_map<std::string, TSMat4f>& Material::getMat4Params() const 
 const std::unordered_map<std::string, Material::TextureBinding>& Material::getTextureBindings() const { return textures_; }
 
 void Material::setReflectedUniforms(std::vector<ReflectedUniform> uniforms) {
+    std::lock_guard lock(reflectionMutex_);
     reflectedUniforms_ = std::move(uniforms);
 }
 
 const std::vector<Material::ReflectedUniform>& Material::getReflectedUniforms() const {
     return reflectedUniforms_;
+}
+
+const std::vector<Material::ReflectedSamplerBinding>& Material::getReflectedSamplers() const {
+    return reflectedSamplers_;
+}
+
+bool Material::isReflectionPending() const {
+    return reflectionPending_.load(std::memory_order_acquire);
+}
+
+void Material::applyReflection(const ShaderReflectionData& vertData, const ShaderReflectionData& fragData) {
+    std::lock_guard lock(reflectionMutex_);
+
+    // Build flat uniform list from both stages
+    std::vector<ReflectedUniform> allUniforms;
+
+    for (auto& block : vertData.uniformBlocks) {
+        for (auto& member : block.members) {
+            allUniforms.push_back({member.name, member.offset, member.size,
+                                   static_cast<uint32_t>(member.type)});
+        }
+    }
+    for (auto& block : fragData.uniformBlocks) {
+        for (auto& member : block.members) {
+            allUniforms.push_back({member.name, member.offset, member.size,
+                                   static_cast<uint32_t>(member.type)});
+        }
+    }
+    reflectedUniforms_ = std::move(allUniforms);
+
+    // Merge samplers from both stages
+    reflectedSamplers_.clear();
+    for (auto& s : vertData.samplers) {
+        reflectedSamplers_.push_back(s);
+    }
+    for (auto& s : fragData.samplers) {
+        reflectedSamplers_.push_back(s);
+    }
+
+    reflectionPending_.store(false, std::memory_order_release);
 }
 
 } // namespace Tasrovy

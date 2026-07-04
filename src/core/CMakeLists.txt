@@ -12,5 +12,5 @@ target_link_libraries(TasrovyCore PUBLIC
         TasrovyRender
         TasrovyLog
         TasrovyExt
-        imgui::imgui
+        imgui
 )

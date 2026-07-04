@@ -11,13 +11,6 @@
     "nlohmann-json",
     "stb",
     "assimp",
-    {
-      "name": "imgui",
-      "features": [
-        "docking-experimental", 
-        "glfw-binding",
-        "vulkan-binding"
-      ]
-    }
+    "spirv-cross"
   ]
 }

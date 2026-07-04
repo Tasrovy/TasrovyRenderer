@@ -2,12 +2,16 @@
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
+#include <GLFW/glfw3.h>
 #include <stdexcept>
+#include "Logger.hpp"
 
 UIOverlay::UIOverlay(const CreateInfo& info)
-    : _device(info.device)
+    : _window(info.window)
+    , _device(info.device)
+    , _colorFormat(info.colorFormat)
 {
-    // 1. 创建 ImGui 描述符池
+    LOG_INFO("UIOverlay: creating descriptor pool");
     VkDescriptorPoolSize pool_sizes[] = {
         { VK_DESCRIPTOR_TYPE_SAMPLER, 10 },
         { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10 },
@@ -22,33 +26,48 @@ UIOverlay::UIOverlay(const CreateInfo& info)
         { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 10 }
     };
 
-    VkDescriptorPoolCreateInfo pool_info = {};
+    VkDescriptorPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     pool_info.maxSets = 1000;
     pool_info.poolSizeCount = std::size(pool_sizes);
     pool_info.pPoolSizes = pool_sizes;
 
-    VkResult result = vkCreateDescriptorPool(info.device, &pool_info, nullptr, &_descriptorPool);
-    if (result != VK_SUCCESS) {
+    if (vkCreateDescriptorPool(_device, &pool_info, nullptr, &_descriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create ImGui descriptor pool!");
     }
+    LOG_INFO("UIOverlay: descriptor pool created");
 
-    // 2. 初始化 ImGui 上下文
+    // Init ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO(); (void)io;
-    // io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-
-    // 3. 设置 ImGui 样式
     ImGui::StyleColorsDark();
 
-    // 4. 初始化 ImGui 后端
+    // Init backends
     ImGui_ImplGlfw_InitForVulkan(info.window, true);
 
-    ImGui_ImplVulkan_InitInfo init_info = {};
+    // Load Vulkan functions
+    static VkInstance s_instance = VK_NULL_HANDLE;
+    static VkDevice s_device = VK_NULL_HANDLE;
+    s_instance = info.instance;
+    s_device = info.device;
+
+    ImGui_ImplVulkan_LoadFunctions(VK_API_VERSION_1_3,
+        [](const char* name, void*) -> PFN_vkVoidFunction {
+            if (s_device) {
+                auto addr = vkGetDeviceProcAddr(s_device, name);
+                if (addr) return addr;
+            }
+            return vkGetInstanceProcAddr(s_instance, name);
+        }, nullptr);
+
+    // Use dynamic rendering (no VkRenderPass needed)
+    VkPipelineRenderingCreateInfoKHR renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachmentFormats = &_colorFormat;
+
+    ImGui_ImplVulkan_InitInfo init_info{};
     init_info.Instance = info.instance;
     init_info.PhysicalDevice = info.physicalDevice;
     init_info.Device = info.device;
@@ -56,17 +75,12 @@ UIOverlay::UIOverlay(const CreateInfo& info)
     init_info.DescriptorPool = _descriptorPool;
     init_info.MinImageCount = info.minImageCount;
     init_info.ImageCount = info.imageCount;
-    init_info.PipelineInfoMain.MSAASamples = info.msaaSamples;
-
-    VkPipelineRenderingCreateInfo rendering_info = {};
-    rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    rendering_info.colorAttachmentCount = 1;
-    rendering_info.pColorAttachmentFormats = &info.colorFormat;
-
-    init_info.PipelineInfoMain.PipelineRenderingCreateInfo = rendering_info;
+    init_info.PipelineInfoMain.PipelineRenderingCreateInfo = renderingInfo;
     init_info.UseDynamicRendering = true;
 
+    LOG_INFO("UIOverlay: calling ImGui_ImplVulkan_Init");
     ImGui_ImplVulkan_Init(&init_info);
+    LOG_INFO("UIOverlay: initialization complete");
 }
 
 UIOverlay::~UIOverlay() {
@@ -77,16 +91,36 @@ UIOverlay::~UIOverlay() {
 }
 
 void UIOverlay::beginFrame() {
+    int w, h;
+    glfwGetWindowSize(_window, &w, &h);
+    ImGui::GetIO().DisplaySize = ImVec2((float)w, (float)h);
+
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    if (_drawCallback) {
-        _drawCallback();
-    }
+    if (_drawCallback) _drawCallback();
 }
 
-void UIOverlay::endFrame(VkCommandBuffer cmd) {
+void UIOverlay::endFrame(VkCommandBuffer cmd, VkImageView colorView, VkExtent2D extent) {
     ImGui::Render();
+
+    // Dynamic rendering: render ImGui on top of existing content
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = colorView;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo renderInfo{};
+    renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderInfo.renderArea = { {0, 0}, extent };
+    renderInfo.layerCount = 1;
+    renderInfo.colorAttachmentCount = 1;
+    renderInfo.pColorAttachments = &colorAttachment;
+
+    vkCmdBeginRendering(cmd, &renderInfo);
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+    vkCmdEndRendering(cmd);
 }

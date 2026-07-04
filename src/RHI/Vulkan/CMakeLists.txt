@@ -1,6 +1,5 @@
 find_package(volk CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
-find_package(Vulkan REQUIRED)
 
 add_library(TasrovyRHI_Vulkan STATIC
         DescriptorWriter.cpp
@@ -36,7 +35,6 @@ target_include_directories(TasrovyRHI_Vulkan PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}
 
 target_link_libraries(TasrovyRHI_Vulkan PUBLIC
         volk::volk
-        Vulkan::Vulkan
         glm::glm
         TasrovyExt
         TasrovyLog

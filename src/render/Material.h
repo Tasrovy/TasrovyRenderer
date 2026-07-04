@@ -2,11 +2,14 @@
 
 #include "TSVector.h"
 #include "TSMatrix.h"
+#include "ReflectionData.h"
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include <memory>
 #include <cstdint>
+#include <atomic>
+#include <mutex>
 
 namespace Tasrovy {
 
@@ -50,14 +53,21 @@ public:
     };
     const std::unordered_map<std::string, TextureBinding>& getTextureBindings() const;
 
-    // SPIR-V reflection data (populated by RHI layer)
+    // SPIR-V reflection (thread-safe, populated by RHI thread)
     struct ReflectedUniform {
         std::string name;
         uint32_t offset;
         uint32_t size;
+        uint32_t type = 0;
     };
     void setReflectedUniforms(std::vector<ReflectedUniform> uniforms);
     const std::vector<ReflectedUniform>& getReflectedUniforms() const;
+
+    using ReflectedSamplerBinding = Tasrovy::ReflectedSamplerBinding;
+    const std::vector<ReflectedSamplerBinding>& getReflectedSamplers() const;
+
+    bool isReflectionPending() const;
+    void applyReflection(const ShaderReflectionData& vertData, const ShaderReflectionData& fragData);
 
 private:
     Material();
@@ -69,7 +79,12 @@ private:
     std::unordered_map<std::string, TSVec4f> vec4s_;
     std::unordered_map<std::string, TSMat4f> mat4s_;
     std::unordered_map<std::string, TextureBinding> textures_;
+
+    // Thread-safe reflection data
+    std::atomic<bool> reflectionPending_{false};
+    mutable std::mutex reflectionMutex_;
     std::vector<ReflectedUniform> reflectedUniforms_;
+    std::vector<ReflectedSamplerBinding> reflectedSamplers_;
 };
 
 } // namespace Tasrovy
