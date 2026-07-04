@@ -5,11 +5,10 @@ A C++20 Vulkan renderer.
 ## Build
 
 ```bash
-# 1. Clone vcpkg
-git clone https://github.com/microsoft/vcpkg.git C:\Libraries\vcpkg
-C:\Libraries\vcpkg\bootstrap-vcpkg.bat
+# 1. Install dependencies
+vcpkg install
 
-# 2. Configure (auto-installs dependencies via vcpkg manifest)
+# 2. Configure
 cmake -B cmake-build-debug -DCMAKE_TOOLCHAIN_FILE=C:/Libraries/vcpkg/scripts/buildsystems/vcpkg.cmake
 
 # 3. Build
