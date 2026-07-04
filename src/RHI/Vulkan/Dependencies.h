@@ -13,14 +13,16 @@
 #include "VulkanDescriptorSetLayout.h"
 #include "VulkanDescriptorPool.h"
 #include "IBLMap.h"
+#include "TSVector.h"
+#include "TSMatrix.h"
 
 struct UniformBufferObject {
-        glm::mat4 model;
-        glm::mat4 view;
-        glm::mat4 proj;
-        glm::vec4 lightDir;
-        glm::vec4 lightColor;
-        glm::vec4 camPos;
+        Tasrovy::TSMat4f model;
+        Tasrovy::TSMat4f view;
+        Tasrovy::TSMat4f proj;
+        Tasrovy::TSVec4f lightDir;
+        Tasrovy::TSVec4f lightColor;
+        Tasrovy::TSVec4f camPos;
 		float metallic;
 		float roughness;
 		float ao;

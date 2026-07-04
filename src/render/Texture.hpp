@@ -1,13 +1,43 @@
-﻿//
-// Created by manin on 2026/7/3.
-//
+#pragma once
 
-#ifndef TASROVYRENDERER_TEXTURE_H
-#define TASROVYRENDERER_TEXTURE_H
+#include <string>
+#include <memory>
+
+class VulkanImage;
 
 namespace Tasrovy {
-    class Texture {
-    };
-} // Tasrovy
 
-#endif //TASROVYRENDERER_TEXTURE_H
+class Texture : public std::enable_shared_from_this<Texture> {
+public:
+    enum class Type { Texture2D, Cubemap };
+
+    static std::shared_ptr<Texture> create();
+    static std::shared_ptr<Texture> createFromFile(const std::string& path, bool generateMips = true);
+    static std::shared_ptr<Texture> createCubemap(const std::string& directoryPath);
+
+    ~Texture();
+
+    Texture(const Texture&) = delete;
+    Texture& operator=(const Texture&) = delete;
+    Texture(Texture&& other) noexcept;
+    Texture& operator=(Texture&& other) noexcept;
+
+    void loadFromFile(const std::string& path, bool generateMips = true);
+    void loadCubemap(const std::string& directoryPath);
+
+    VulkanImage* getImage() const;
+    void setImage(std::unique_ptr<VulkanImage> image);
+    Type getType() const;
+    bool hasMipmaps() const;
+    const std::string& getFilePath() const;
+
+private:
+    Texture() = default;
+
+    std::unique_ptr<VulkanImage> image_;
+    std::string filePath_;
+    Type type_ = Type::Texture2D;
+    bool generateMips_ = true;
+};
+
+} // namespace Tasrovy

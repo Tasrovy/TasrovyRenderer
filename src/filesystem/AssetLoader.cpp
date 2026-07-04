@@ -2,8 +2,8 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <Logger.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
+#include "TSVector.h"
+#include "TSMatrix.h"
 
 namespace Tasrovy {
 
@@ -60,43 +60,43 @@ void AssetLoader::ProcessMesh(aiMesh* mesh, const aiScene* scene, Model& model) 
         Vertex vertex{};
 
         // Position
-        vertex.position = {
+        vertex.position = Tasrovy::TSVec3f(
             mesh->mVertices[i].x,
             mesh->mVertices[i].y,
             mesh->mVertices[i].z
-        };
+        );
 
         // Normal
         if (mesh->HasNormals()) {
-            vertex.normal = {
+            vertex.normal = Tasrovy::TSVec3f(
                 mesh->mNormals[i].x,
                 mesh->mNormals[i].y,
                 mesh->mNormals[i].z
-            };
+            );
         }
 
         // Tangent
         if (mesh->HasTangentsAndBitangents()) {
-            vertex.tangent = {
+            vertex.tangent = Tasrovy::TSVec3f(
                 mesh->mTangents[i].x,
                 mesh->mTangents[i].y,
                 mesh->mTangents[i].z
-            };
+            );
         }
 
         // Vertex color
         if (mesh->HasVertexColors(0)) {
-            vertex.vertexColor = {
+            vertex.vertexColor = Tasrovy::TSVec3f(
                 mesh->mColors[0][i].r,
                 mesh->mColors[0][i].g,
                 mesh->mColors[0][i].b
-            };
+            );
         }
 
         // UV sets
-        auto setUv = [&](glm::vec2& uv, uint32_t set) {
+        auto setUv = [&](TSVec2f& uv, uint32_t set) {
             if (mesh->HasTextureCoords(set)) {
-                uv = { mesh->mTextureCoords[set][i].x, mesh->mTextureCoords[set][i].y };
+                uv = Tasrovy::TSVec2f(mesh->mTextureCoords[set][i].x, mesh->mTextureCoords[set][i].y);
             }
         };
         setUv(vertex.uv0, 0);
@@ -136,9 +136,9 @@ void AssetLoader::ProcessBones(aiMesh* mesh, Model& model) {
         if (it == bones.end()) {
             Bone newBone;
             newBone.name = bone->mName.C_Str();
-            glm::mat4 offset;
-            memcpy(&offset, &bone->mOffsetMatrix, sizeof(glm::mat4));
-            newBone.offsetMatrix = glm::transpose(offset);
+            TSMat4f offset;
+            memcpy(&offset, &bone->mOffsetMatrix, sizeof(TSMat4f));
+            newBone.offsetMatrix = transpose(offset);
             bones.push_back(newBone);
         }
     }

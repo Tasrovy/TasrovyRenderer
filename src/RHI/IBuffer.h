@@ -1,8 +1,0 @@
-﻿//
-// Created by manin on 2026/7/3.
-//
-
-#ifndef TASROVYRENDERER_IBUFFER_H
-#define TASROVYRENDERER_IBUFFER_H
-
-#endif //TASROVYRENDERER_IBUFFER_H

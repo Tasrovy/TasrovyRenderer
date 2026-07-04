@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <Logger.hpp>
 
+using namespace Tasrovy;
+
 Model::Model(const std::string& filePath)
 {
     tinyobj::attrib_t attrib;
@@ -23,26 +25,26 @@ Model::Model(const std::string& filePath)
             Vertex vertex{};
 
             if (index.vertex_index >= 0) {
-                vertex.position = {
+                vertex.position = Tasrovy::TSVec3f(
                     attrib.vertices[3 * index.vertex_index + 0]*0.01,
                     attrib.vertices[3 * index.vertex_index + 1]*0.01,
                     attrib.vertices[3 * index.vertex_index + 2]*0.01
-                };
+                );
             }
 
             if (index.normal_index >= 0) {
-                vertex.normal = {
+                vertex.normal = Tasrovy::TSVec3f(
                     attrib.normals[3 * index.normal_index + 0],
                     attrib.normals[3 * index.normal_index + 1],
                     attrib.normals[3 * index.normal_index + 2]
-                };
+                );
             }
 
             if (index.texcoord_index >= 0) {
-                vertex.texCoord = {
+                vertex.texCoord = Tasrovy::TSVec2f(
                     attrib.texcoords[2 * index.texcoord_index + 0],
-                    1.0f - attrib.texcoords[2 * index.texcoord_index + 1] // 翻转 V 轴（OBJ 通常需要）
-                };
+                    1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
+                );
             }
 
             if (uniqueVertices.count(vertex) == 0) {
@@ -104,14 +106,14 @@ void Model::calculateTangentsAndBitangents() {
         Vertex& v2 = vertices[indices[i + 2]];
 
         // 计算边和UV增量
-        glm::vec3 edge1 = v1.position - v0.position;
-        glm::vec3 edge2 = v2.position - v0.position;
-        glm::vec2 deltaUV1 = v1.texCoord - v0.texCoord;
-        glm::vec2 deltaUV2 = v2.texCoord - v0.texCoord;
+        TSVec3f edge1 = v1.position - v0.position;
+        TSVec3f edge2 = v2.position - v0.position;
+        TSVec2f deltaUV1 = v1.texCoord - v0.texCoord;
+        TSVec2f deltaUV2 = v2.texCoord - v0.texCoord;
 
         float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
 
-        glm::vec3 tangent, bitangent;
+        TSVec3f tangent, bitangent;
 
         tangent.x = f * (deltaUV2.y * edge1.x - deltaUV1.y * edge2.x);
         tangent.y = f * (deltaUV2.y * edge1.y - deltaUV1.y * edge2.y);
@@ -129,16 +131,16 @@ void Model::calculateTangentsAndBitangents() {
     // 对每个顶点的 TBN 向量进行正交化和归一化
     for (auto& vertex : vertices) {
         // Gram-Schmidt aorthonormalize
-        glm::vec3 T = glm::normalize(vertex.tangent - vertex.normal * glm::dot(vertex.normal, vertex.tangent));
-        glm::vec3 N = glm::normalize(vertex.normal);
+        TSVec3f T = normalize(vertex.tangent - vertex.normal * dot(vertex.normal, vertex.tangent));
+        TSVec3f N = normalize(vertex.normal);
 
         // 检查叉乘结果是否与 bitangent 方向一致，如果不一致则翻转
-        if (glm::dot(glm::cross(N, T), vertex.bitangent) < 0.0f) {
+        if (dot(cross(N, T), vertex.bitangent) < 0.0f) {
             T = T * -1.0f;
         }
 
         vertex.tangent = T;
-        vertex.bitangent = glm::normalize(glm::cross(N, T)); // 重新计算 bitangent 以确保正交
+        vertex.bitangent = normalize(cross(N, T)); // 重新计算 bitangent 以确保正交
         vertex.normal = N;
     }
 }

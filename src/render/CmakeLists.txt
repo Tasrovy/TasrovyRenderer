@@ -1,12 +1,34 @@
 add_library(TasrovyRender STATIC
-        light.cpp
-        light.h
         Texture.hpp
         Texture.cpp
+        Light.cpp
+        Light.h
+        Material.cpp
+        Material.h
+        Object.cpp
+        Object.h
+        Camera.cpp
+        Camera.h
+        Shader.cpp
+        Shader.h
+        Scene.cpp
+        Scene.h
+        Transform.cpp
+        Transform.h
+        Mesh.cpp
+        Mesh.h
+        Pipeline.cpp
+        Pipeline.h
+        PipelinePass.cpp
+        PipelinePass.h
+        Skybox.cpp
+        Skybox.h
 )
 
 target_include_directories(TasrovyRender PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_link_libraries(TasrovyRender PUBLIC
         TasrovyRHI
+        TasrovyBase
+        TasrovyFileSystem
 )

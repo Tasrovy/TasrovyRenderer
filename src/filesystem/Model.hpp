@@ -1,20 +1,21 @@
 #pragma once
-#include <glm/glm.hpp>
 #include <vector>
 #include <string>
 #include <memory>
+#include "TSVector.h"
+#include "TSMatrix.h"
 
 namespace Tasrovy {
 
 struct Vertex {
-    glm::vec3 position;
-    glm::vec3 normal;
-    glm::vec3 tangent;
-    glm::vec3 vertexColor;
-    glm::vec2 uv0;
-    glm::vec2 uv1;
-    glm::vec2 uv2;
-    glm::vec2 uv3;
+    TSVec3f position;
+    TSVec3f normal;
+    TSVec3f tangent;
+    TSVec3f vertexColor;
+    TSVec2f uv0;
+    TSVec2f uv1;
+    TSVec2f uv2;
+    TSVec2f uv3;
 };
 
 struct Submesh {
@@ -25,7 +26,7 @@ struct Submesh {
 
 struct Bone {
     std::string name;
-    glm::mat4 offsetMatrix = glm::mat4(1.0f);
+    TSMat4f offsetMatrix = TSMat4f(1.0f);
 };
 
 class Model {

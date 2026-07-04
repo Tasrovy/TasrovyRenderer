@@ -1,30 +1,29 @@
 #include <volk.h>
 #include <Dependencies.h>
 #include <chrono>
-#define GLM_ENABLE_EXPERIMENTAL
-#include <glm/ext/matrix_transform.hpp>
-#include <glm/ext/matrix_clip_space.hpp>
-#include <glm/gtx/string_cast.hpp>
+#include <TSMatrix.h>
 #include <Logger.hpp>
 #include <Window.h>
 #include <UI.h>
 #include <imgui.h>
 
+using namespace Tasrovy;
+
 struct Transform {
-    glm::vec3 position = glm::vec3(0.0f);
-    glm::vec3 rotation = glm::vec3(0.0f);
-    glm::vec3 scale = glm::vec3(1.0f);
+    TSVec3f position = TSVec3f(0.0f);
+    TSVec3f rotation = TSVec3f(0.0f);
+    TSVec3f scale = TSVec3f(1.0f);
 };
 
 struct LightParams {
-    glm::vec3 direction = glm::vec3(-0.5f, -1.0f, -0.8f);
-    glm::vec3 color = glm::vec3(1.0f, 1.0f, 1.0f);
+    TSVec3f direction = TSVec3f(-0.5f, -1.0f, -0.8f);
+    TSVec3f color = TSVec3f(1.0f, 1.0f, 1.0f);
     float     intensity = 10.0f;
 };
 
 struct SkyUniformBufferObject {
-    glm::mat4 view;
-    glm::mat4 proj;
+    TSMat4f view;
+    TSMat4f proj;
 };
 
 void updateUniformBuffer(
@@ -41,33 +40,33 @@ void updateUniformBuffer(
     // --- 1. ---
 
     // Model Matrix
-    glm::mat4 modelMat = glm::mat4(1.0f);
-    modelMat = glm::translate(modelMat, modelTransform.position);
-    modelMat = glm::rotate(modelMat, glm::radians(modelTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-    modelMat = glm::rotate(modelMat, glm::radians(modelTransform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-    modelMat = glm::rotate(modelMat, glm::radians(modelTransform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-    modelMat = glm::scale(modelMat, modelTransform.scale);
+    TSMat4f modelMat = TSMat4f(1.0f);
+    modelMat = translate(modelMat, modelTransform.position);
+    modelMat = rotate(modelMat, radians(modelTransform.rotation.y), TSVec3f(0.0f, 1.0f, 0.0f));
+    modelMat = rotate(modelMat, radians(modelTransform.rotation.x), TSVec3f(1.0f, 0.0f, 0.0f));
+    modelMat = rotate(modelMat, radians(modelTransform.rotation.z), TSVec3f(0.0f, 0.0f, 1.0f));
+    modelMat = scale(modelMat, modelTransform.scale);
 
     // View Matrix
-    glm::mat4 camWorldMat = glm::mat4(1.0f);
-    camWorldMat = glm::translate(camWorldMat, cameraTransform.position);
-    camWorldMat = glm::rotate(camWorldMat, glm::radians(cameraTransform.rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
-    camWorldMat = glm::rotate(camWorldMat, glm::radians(cameraTransform.rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
-    camWorldMat = glm::rotate(camWorldMat, glm::radians(cameraTransform.rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
-    glm::mat4 viewMat = glm::inverse(camWorldMat);
+    TSMat4f camWorldMat = TSMat4f(1.0f);
+    camWorldMat = translate(camWorldMat, cameraTransform.position);
+    camWorldMat = rotate(camWorldMat, radians(cameraTransform.rotation.y), TSVec3f(0.0f, 1.0f, 0.0f));
+    camWorldMat = rotate(camWorldMat, radians(cameraTransform.rotation.x), TSVec3f(1.0f, 0.0f, 0.0f));
+    camWorldMat = rotate(camWorldMat, radians(cameraTransform.rotation.z), TSVec3f(0.0f, 0.0f, 1.0f));
+    TSMat4f viewMat = inverse(camWorldMat);
 
     // Projection Matrix
-    glm::mat4 projMat = glm::perspective(glm::radians(45.0f), (float)extent.width / (float)extent.height, 0.1f, 100.0f);
+    TSMat4f projMat = perspective(radians(45.0f), (float)extent.width / (float)extent.height, 0.1f, 100.0f);
     projMat[1][1] *= -1;
 
     // --- 2. ---
     UniformBufferObject ubo{};
-    ubo.model = glm::transpose(modelMat);
-    ubo.view = glm::transpose(viewMat);
-    ubo.proj = glm::transpose(projMat);
-    ubo.camPos = glm::vec4(cameraTransform.position, 1.0f);
-    ubo.lightDir = glm::vec4(glm::normalize(lightParams.direction), 0.0f);
-    ubo.lightColor = glm::vec4(lightParams.color, lightParams.intensity);
+    ubo.model = transpose(modelMat);
+    ubo.view = transpose(viewMat);
+    ubo.proj = transpose(projMat);
+    ubo.camPos = TSVec4f(cameraTransform.position, 1.0f);
+    ubo.lightDir = TSVec4f(normalize(lightParams.direction), 0.0f);
+    ubo.lightColor = TSVec4f(lightParams.color, lightParams.intensity);
     ubo.metallic = metallic;
     ubo.roughness = roughness;
     ubo.ao = ao;
@@ -75,9 +74,9 @@ void updateUniformBuffer(
 
     // --- 3. ---
     SkyUniformBufferObject subo{};
-    glm::mat4 skyViewMat = glm::mat4(glm::mat3(viewMat));
-    subo.view = glm::transpose(skyViewMat);
-    subo.proj = glm::transpose(projMat);
+    TSMat4f skyViewMat = TSMat4f(TSMat3f(viewMat));
+    subo.view = transpose(skyViewMat);
+    subo.proj = transpose(projMat);
     skyUniformBuffer.setData(&subo, sizeof(subo));
 }
 
@@ -90,7 +89,7 @@ int main()
     Tasrovy::Logger::Init();
     Transform modelTransform;
     Transform cameraTransform;
-    cameraTransform.position = glm::vec3(0.0f, 1.0f, 5.0f);
+    cameraTransform.position = TSVec3f(0.0f, 1.0f, 5.0f);
     LightParams lightParams;
     Window window(1280, 800, "Vulkan");
 

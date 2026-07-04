@@ -2,16 +2,16 @@
 #include <volk.h>
 #include <string>
 #include <vector>
-#include <glm/glm.hpp>
+#include "TSVector.h"
 #include <functional>
 #include <array>
 
 struct Vertex{
-    glm::vec3 position;
-    glm::vec3 normal;
-	glm::vec3 tangent;
-	glm::vec3 bitangent;
-    glm::vec2 texCoord;
+    Tasrovy::TSVec3f position;
+    Tasrovy::TSVec3f normal;
+	Tasrovy::TSVec3f tangent;
+	Tasrovy::TSVec3f bitangent;
+    Tasrovy::TSVec2f texCoord;
 
     bool operator==(const Vertex& other) const {
         return position == other.position && normal == other.normal&&texCoord == other.texCoord;
@@ -62,7 +62,7 @@ private:
 };
 
 struct SkyboxVertex {
-    glm::vec3 pos;
+    Tasrovy::TSVec3f pos;
     static std::array<VkVertexInputAttributeDescription, 1> getAttributeDescriptions() {
         std::array<VkVertexInputAttributeDescription, 1> attributeDescriptions;
 
@@ -86,12 +86,12 @@ struct SkyboxVertex {
     }
 };
 
-const std::vector<SkyboxVertex> skyboxVertices = {
+inline const std::vector<SkyboxVertex> skyboxVertices = {
     {{-1.0f, -1.0f,  1.0f}}, {{ 1.0f, -1.0f,  1.0f}}, {{ 1.0f,  1.0f,  1.0f}}, {{-1.0f,  1.0f,  1.0f}},
     {{-1.0f, -1.0f, -1.0f}}, {{ 1.0f, -1.0f, -1.0f}}, {{ 1.0f,  1.0f, -1.0f}}, {{-1.0f,  1.0f, -1.0f}}
 };
 
-const std::vector<uint32_t> skyboxIndices = {
+inline const std::vector<uint32_t> skyboxIndices = {
     0, 1, 2, 2, 3, 0, // front
     1, 5, 6, 6, 2, 1, // right
     5, 4, 7, 7, 6, 5, // back

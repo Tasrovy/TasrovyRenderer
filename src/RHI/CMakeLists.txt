@@ -4,7 +4,11 @@ project(TasrovyRHI)
 add_subdirectory(Vulkan)
 
 add_library(TasrovyRHI STATIC
-        IBuffer.h
+        RHIConfig.h
+        CommandList.cpp
+        CommandList.h
+        Device.cpp
+        Device.h
 )
 
 target_include_directories(TasrovyRHI PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

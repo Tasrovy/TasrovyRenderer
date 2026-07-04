@@ -21,4 +21,5 @@ target_link_libraries(TasrovyFileSystem PUBLIC
         assimp::assimp
         TasrovyExt
         TasrovyLog
+        TasrovyBase
 )

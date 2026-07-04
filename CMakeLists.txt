@@ -20,5 +20,6 @@ add_subdirectory(src/RHI)
 add_subdirectory(src/filesystem)
 add_subdirectory(src/render)
 add_subdirectory(src/core)
+add_subdirectory(src/base)
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT TasrovyApp)

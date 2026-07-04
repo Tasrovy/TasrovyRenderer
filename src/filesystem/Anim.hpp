@@ -1,5 +1,6 @@
 #pragma once
-#include <glm/glm.hpp>
+#include "TSVector.h"
+#include "TSMatrix.h"
 #include <glm/gtc/quaternion.hpp>
 #include <string>
 #include <vector>
@@ -9,7 +10,7 @@ namespace Tasrovy {
 
 struct PositionKey {
     double time;
-    glm::vec3 value;
+    TSVec3f value;
 };
 
 struct RotationKey {
@@ -19,7 +20,7 @@ struct RotationKey {
 
 struct ScalingKey {
     double time;
-    glm::vec3 value;
+    TSVec3f value;
 };
 
 struct BoneChannel {
