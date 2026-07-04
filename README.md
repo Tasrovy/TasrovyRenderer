@@ -5,7 +5,7 @@ A C++20 Vulkan renderer.
 ## Build
 
 ```bash
-cmake -B cmake-build-debug -DCMAKE_TOOLCHAIN_FILE=C:/Libraries/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake -B cmake-build-debug -DCMAKE_TOOLCHAIN_FILE=<vcpkg-path>/scripts/buildsystems/vcpkg.cmake
 cmake --build cmake-build-debug --config Debug
 ```
 
