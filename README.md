@@ -23,7 +23,3 @@ cmake --build build
 ```bash
 build\src\core\TasrovyCore.exe
 ```
-
-## License
-
-MIT
