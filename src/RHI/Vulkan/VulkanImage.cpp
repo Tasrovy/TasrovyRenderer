@@ -5,8 +5,8 @@
 #include <cmath>
 #include <algorithm>
 #define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
-#include <iostream>
+#include <stb_image.h>
+#include <Logger.hpp>
 
 // --- 统一的私有构造函数 ---
 VulkanImage::VulkanImage(VulkanContext& context, VkExtent2D extent, VkFormat format, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkImageCreateFlags createFlags, uint32_t arrayLayers)
@@ -149,7 +149,7 @@ std::unique_ptr<VulkanImage> VulkanImage::createAttachment(VulkanContext& contex
     );
 
     attachmentImage->createImageView(aspectFlags, VK_IMAGE_VIEW_TYPE_2D);
-	std::cout << "Created attachment image with format: " << format << std::endl;
+    LOG_INFO("Created attachment image with format: {}", static_cast<int>(format));
     return attachmentImage;
 }
 
@@ -375,7 +375,7 @@ void VulkanImage::createSampler() {
 
 VkDescriptorImageInfo VulkanImage::getDescriptorInfo() const {
     if (_sampler == VK_NULL_HANDLE || _view == VK_NULL_HANDLE) {
-        std::cerr << "Warning: Cannot get descriptor info from an image without a sampler or view!" << std::endl;
+        LOG_ERROR("Cannot get descriptor info from an image without a sampler or view!");
         throw std::runtime_error("Cannot get descriptor info from an image without a sampler or view!");
     }
     // The layout must be what the shader expects, usually SHADER_READ_ONLY_OPTIMAL

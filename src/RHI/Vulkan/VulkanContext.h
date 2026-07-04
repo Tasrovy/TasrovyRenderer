@@ -4,8 +4,7 @@
 #include <string>
 #include <optional>
 #include <memory>
-#define GLFW_INCLUDE_VULKAN
-#include "GLFW/glfw3.h"
+#include <functional>
 
 struct SwapChainSupportDetails {
     VkSurfaceCapabilitiesKHR capabilities;
@@ -13,7 +12,7 @@ struct SwapChainSupportDetails {
     std::vector<VkPresentModeKHR> presentModes;
 
     SwapChainSupportDetails() {
-		capabilities = {};
+        capabilities = {};
     }
 };
 
@@ -23,24 +22,22 @@ struct QueueFamilyIndices {
     std::optional<uint32_t> presentFamily;
     std::optional<uint32_t> computeFamily;
     std::optional<uint32_t> transferFamily;
-    // std::optional<uint32_t> transferFamily; // 可以为未来做准备
 
     bool isComplete() const {
         return graphicsFamily.has_value() && presentFamily.has_value();
     }
 };
 
-struct WindowInfo {
-    int width;
-    int height;
-    std::string title;
-};
-
 class VulkanSwapchain;
 
 class VulkanContext {
 public:
-    VulkanContext(WindowInfo& info);
+    using SurfaceCreator = std::function<VkSurfaceKHR(VkInstance)>;
+
+    VulkanContext(const char* appName,
+                  const std::vector<const char*>& instanceExtensions,
+                  SurfaceCreator surfaceCreator,
+                  int fbWidth, int fbHeight);
     ~VulkanContext();
 
     // 禁止拷贝
@@ -52,7 +49,6 @@ public:
     VkPhysicalDevice getPhysicalDevice() const { return _physicalDevice; }
     VkDevice getDevice() const { return _device; }
     VkSurfaceKHR getSurface() const { return _surface; }
-    GLFWwindow* getWindow() const { return _window; }
     const QueueFamilyIndices& getQueueFamilyIndices() const { return _queueFamilyIndices; }
     VkSampleCountFlagBits getMsaaSamples() const { return _msaaSamples; }
 
@@ -60,7 +56,7 @@ public:
     std::vector<char> readFile(const std::string& filename) const;
     VkShaderModule createShaderModule(const std::vector<char>& code) const;
     uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const;
-    
+
     // 用于资源创建的辅助函数
     void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory) const;
     void createImage(
@@ -69,8 +65,8 @@ public:
         VkFormat format, VkImageTiling tiling,
         VkImageUsageFlags usage, VkMemoryPropertyFlags properties,
         VkImage& image, VkDeviceMemory& imageMemory,
-        VkImageCreateFlags flags,       // <-- 接收新参数
-        uint32_t arrayLayers          // <-- 接收新参数
+        VkImageCreateFlags flags,
+        uint32_t arrayLayers
     ) const;
 
     VkImageView createImageView(
@@ -78,7 +74,7 @@ public:
         VkFormat format,
         VkImageAspectFlags aspectFlags,
         uint32_t mipLevels,
-        VkImageViewType viewType        // <-- 接收新参数
+        VkImageViewType viewType
     ) const;
 
     VkImageView createImageView(
@@ -92,14 +88,14 @@ public:
         uint32_t baseMipLevel = 0
     ) const;
 
-    // 用于一次性命令的辅助函数 (注意：需要调用者提供 Command Pool 和 Queue)
+    // 用于一次性命令的辅助函数
     VkCommandBuffer beginSingleTimeCommands(VkCommandPool commandPool) const;
     void endSingleTimeCommands(VkCommandBuffer commandBuffer, VkQueue queue, VkCommandPool commandPool) const;
 
     // --- 资源操作辅助函数 ---
     void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkQueue queue, VkCommandPool commandPool) const;
     void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height, VkQueue queue, VkCommandPool commandPool) const;
-    
+
     // --- 查询函数 ---
     SwapChainSupportDetails querySwapChainSupport() const;
     SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device) const;
@@ -107,14 +103,15 @@ public:
     VkFormat findDepthFormat() const;
     void CheckFormatChange(VulkanSwapchain& swapchain);
 
+    int getFramebufferWidth() const { return _fbWidth; }
+    int getFramebufferHeight() const { return _fbHeight; }
+    void updateFramebufferSize(int w, int h) { _fbWidth = w; _fbHeight = h; }
+
     bool framebufferResized = false;
 private:
-    void initWindow();
-    void initVulkan();
-
-    void createInstance();
+    void createInstance(const std::vector<const char*>& instanceExtensions);
     void setupDebugMessenger();
-    void createSurface();
+    void createSurface(VkInstance instance);
     void pickPhysicalDevice();
     void createLogicalDevice();
 
@@ -124,9 +121,6 @@ private:
     bool checkDeviceExtensionSupport(VkPhysicalDevice device);
     VkSampleCountFlagBits getMaxUsableSampleCount();
 
-    // 窗口回调
-    static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
-    
     // 调试回调
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -134,8 +128,10 @@ private:
         const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
         void* pUserData);
 
-    WindowInfo& _info;
-    GLFWwindow* _window = nullptr;
+    std::string _appName;
+    SurfaceCreator _surfaceCreator;
+    int _fbWidth = 0;
+    int _fbHeight = 0;
 
     VkInstance _instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT _debugMessenger = VK_NULL_HANDLE;

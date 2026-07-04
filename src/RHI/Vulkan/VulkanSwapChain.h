@@ -4,11 +4,10 @@
 #include <stdexcept>
 #include <vector>
 #include <memory>
-#include <iostream>
-#include <GLFW/glfw3.h>
+#include <limits>
 #include "VulkanContext.h"
 #include "VulkanImage.h"
-#include <limits>
+#include <Logger.hpp>
 
 static VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) {
     for (const auto& availableFormat : availableFormats) {
@@ -28,33 +27,30 @@ static VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFor
 static VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
     for (const auto& availablePresentMode : availablePresentModes) {
         if (availablePresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR) {
-            std::cout << "[INFO] Swapchain using immediate present mode." << std::endl;
+            LOG_INFO("Swapchain using immediate present mode.");
             return availablePresentMode;
         }
     }
 
     for (const auto& availablePresentMode : availablePresentModes) {
         if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
-            std::cout << "[INFO] Swapchain using Mailbox present mode." << std::endl;
+            LOG_INFO("Swapchain using Mailbox present mode.");
             return availablePresentMode;
         }
     }
 
-    std::cout << "[INFO] Swapchain using FIFO present mode." << std::endl;
+    LOG_INFO("Swapchain using FIFO present mode.");
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
-static VkExtent2D chooseSwapExtent2D(const VkSurfaceCapabilitiesKHR& capabilities, GLFWwindow* window) {
+static VkExtent2D chooseSwapExtent2D(const VkSurfaceCapabilitiesKHR& capabilities, int fbWidth, int fbHeight) {
     if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
         return capabilities.currentExtent;
-    } 
+    }
     else {
-        int width, height;
-        glfwGetFramebufferSize(window, &width, &height);
-
         VkExtent2D actualExtent = {
-            static_cast<uint32_t>(width),
-            static_cast<uint32_t>(height)
+            static_cast<uint32_t>(fbWidth),
+            static_cast<uint32_t>(fbHeight)
         };
 
         actualExtent.width = std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);

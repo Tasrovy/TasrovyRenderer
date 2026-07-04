@@ -5,6 +5,7 @@
 #include "VulkanDescriptorPool.h"
 #include "DescriptorWriter.h"
 #include "VulkanPipeline.h"
+#include <Logger.hpp>
 
 IBLProcessor::IBLProcessor(VulkanContext& context, ImmediateSubmitter& uploader)
     : _context(context), _uploader(uploader) {
@@ -54,13 +55,13 @@ void IBLProcessor::createPipelines() {
         .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
         .build();
 
-    // Îª Push Constant ¶¨Òå·¶Î§
+    // Îª Push Constant ï¿½ï¿½ï¿½å·¶Î§
     VkPushConstantRange pushConstantRange{};
     pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(float); // ÎÒÃÇ½«´«µÝÒ»¸ö float ÀàÐÍµÄ roughness
+    pushConstantRange.size = sizeof(float); // ï¿½ï¿½ï¿½Ç½ï¿½ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ float ï¿½ï¿½ï¿½Íµï¿½ roughness
 
-    // ´´½¨°üº¬ Push Constant µÄ PipelineLayout
+    // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Push Constant ï¿½ï¿½ PipelineLayout
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     VkDescriptorSetLayout setLayouts[] = { _prefilterLayout->getLayout() };
@@ -69,7 +70,7 @@ void IBLProcessor::createPipelines() {
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
-    // Ö±½Ó´´½¨ Pipeline ºÍ Layout£¬ÒòÎª PipelineBuilder ¿ÉÄÜ²»Ö§³Ö Push Constants
+    // Ö±ï¿½Ó´ï¿½ï¿½ï¿½ Pipeline ï¿½ï¿½ Layoutï¿½ï¿½ï¿½ï¿½Îª PipelineBuilder ï¿½ï¿½ï¿½Ü²ï¿½Ö§ï¿½ï¿½ Push Constants
     VkPipelineLayout layout;
     if (vkCreatePipelineLayout(_context.getDevice(), &pipelineLayoutInfo, nullptr, &layout) != VK_SUCCESS) {
         throw std::runtime_error("failed to create prefilter pipeline layout!");
@@ -108,8 +109,8 @@ void IBLProcessor::createPipelines() {
 }
 
 void IBLProcessor::generateIrradianceMap(
-    VulkanImage& environmentCubemap, // ÊäÈë: Ô­Ê¼ HDR Á¢·½ÌåÍ¼
-    VulkanImage& irradianceMap       // Êä³ö: Ä¿±ê·øÕÕ¶ÈÍ¼
+    VulkanImage& environmentCubemap, // ï¿½ï¿½ï¿½ï¿½: Ô­Ê¼ HDR ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í¼
+    VulkanImage& irradianceMap       // ï¿½ï¿½ï¿½: Ä¿ï¿½ï¿½ï¿½ï¿½Õ¶ï¿½Í¼
 ) {
     auto pool = VulkanDescriptorPool::Builder(_context)
         .addPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1)
@@ -138,21 +139,17 @@ void IBLProcessor::generateIrradianceMap(
 
         irradianceMap.recordTransitionLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         });
-    std::cout << std::endl;
-    std::cout << std::endl;
-    std::cout << "[SUCCESS]Generate IrradianceMap" << std::endl;
-    std::cout << std::endl;
-    std::cout << std::endl;
+    LOG_INFO("Generate IrradianceMap");
 }
 
 void IBLProcessor::generateBrdfMap() {
-    std::cout << "[INFO] Generating BRDF LUT..." << std::endl;
+    LOG_INFO("Generating BRDF LUT...");
 
-    // 1. ´´½¨ BRDF LUT Í¼Ïñ×ÊÔ´
+    // 1. ï¿½ï¿½ï¿½ï¿½ BRDF LUT Í¼ï¿½ï¿½ï¿½ï¿½Ô´
     _brdfLUT = VulkanImage::createImage2D(_context, { 512, 512 }, VK_FORMAT_R16G16_SFLOAT,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 
-    // 2. ´´½¨Ò»¸öÁÙÊ±µÄÃèÊö·û³ØºÍ¼¯
+    // 2. ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ØºÍ¼ï¿½
     auto pool = VulkanDescriptorPool::Builder(_context)
         .addPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1)
         .setMaxSets(1)
@@ -160,73 +157,73 @@ void IBLProcessor::generateBrdfMap() {
 
     VkDescriptorSet descriptorSet = pool->allocateSet(*_brdfLutLayout);
 
-    // 3. ¸üÐÂÃèÊö·û¼¯£¬½« BRDF LUT °ó¶¨Îª storage image
+    // 3. ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ BRDF LUT ï¿½ï¿½Îª storage image
     VkDescriptorImageInfo lutImageInfo = _brdfLUT->getDescriptorInfoForStorage();
     DescriptorWriter(_context, descriptorSet)
         .writeImage(0, &lutImageInfo, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
         .update();
 
-    // 4. Ê¹ÓÃ uploader Ìá½»¼ÆËãÈÎÎñ
+    // 4. Ê¹ï¿½ï¿½ uploader ï¿½á½»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     _uploader.submit([&](VkCommandBuffer cmd) {
-        // a. ½«Êä³öÍ¼ÏñµÄ²¼¾Ö×ª»»Îª GENERAL£¬ÒÔ×¼±¸Ð´Èë
+        // a. ï¿½ï¿½ï¿½ï¿½ï¿½Í¼ï¿½ï¿½Ä²ï¿½ï¿½ï¿½×ªï¿½ï¿½Îª GENERALï¿½ï¿½ï¿½ï¿½×¼ï¿½ï¿½Ð´ï¿½ï¿½
         _brdfLUT->recordTransitionLayout(cmd, VK_IMAGE_LAYOUT_GENERAL);
 
-        // b. °ó¶¨¹ÜÏßºÍÃèÊö·û¼¯
+        // b. ï¿½ó¶¨¹ï¿½ï¿½ßºï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
         _brdfLutPipeline->bind(cmd, VK_PIPELINE_BIND_POINT_COMPUTE);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _brdfLutPipeline->getLayout(), 0, 1, &descriptorSet, 0, nullptr);
 
-        // c. Dispatch ¼ÆËãÈÎÎñ
-        //    Ïß³Ì×éµÄÊýÁ¿ = ÎÆÀí³ß´ç / ¾Ö²¿Ïß³Ì×é´óÐ¡ (ÏòÉÏÈ¡Õû)
+        // c. Dispatch ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+        //    ï¿½ß³ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ = ï¿½ï¿½ï¿½ï¿½ï¿½ß´ï¿½ / ï¿½Ö²ï¿½ï¿½ß³ï¿½ï¿½ï¿½ï¿½Ð¡ (ï¿½ï¿½ï¿½ï¿½È¡ï¿½ï¿½)
         uint32_t dim = _brdfLUT->getExtent().width;
-        vkCmdDispatch(cmd, dim / 32, dim / 32, 1); // 2D ÎÆÀí£¬Z Î¬¶ÈÊÇ 1
+        vkCmdDispatch(cmd, dim / 32, dim / 32, 1); // 2D ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Z Î¬ï¿½ï¿½ï¿½ï¿½ 1
 
-        // d. ½«Êä³öÍ¼ÏñµÄ²¼¾Ö×ª»»Îª SHADER_READ_ONLY£¬ÒÔ±¸ PBR Æ¬¶Î×ÅÉ«Æ÷²ÉÑù
+        // d. ï¿½ï¿½ï¿½ï¿½ï¿½Í¼ï¿½ï¿½Ä²ï¿½ï¿½ï¿½×ªï¿½ï¿½Îª SHADER_READ_ONLYï¿½ï¿½ï¿½Ô±ï¿½ PBR Æ¬ï¿½ï¿½ï¿½ï¿½É«ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
         _brdfLUT->recordTransitionLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         });
 
-    std::cout << "[SUCCESS] BRDF LUT generated." << std::endl;
+    LOG_INFO("BRDF LUT generated.");
 }
 
 void IBLProcessor::generatePrefilteredMap(VulkanImage& environmentCubemap, VulkanImage& prefilteredMap) {
-    std::cout << "[INFO] Generating Pre-filtered Specular Map..." << std::endl;
+    LOG_INFO("Generating Pre-filtered Specular Map...");
 
     uint32_t mipLevels = prefilteredMap.getMipLevels();
     if (mipLevels <= 1) {
-        std::cout << "[WARN] Prefiltered map has only 1 mip level. Skipping generation." << std::endl;
+        LOG_WARN("Prefiltered map has only 1 mip level. Skipping generation.");
         return;
     }
 
-    // --- ×¼±¸Ò»´ÎÐÔµÄÃèÊö·û¸üÐÂ ---
-    // °ó¶¨²»»á¸Ä±äµÄÊäÈë»·¾³Í¼ (binding 0)
+    // --- ×¼ï¿½ï¿½Ò»ï¿½ï¿½ï¿½Ôµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ---
+    // ï¿½ó¶¨²ï¿½ï¿½ï¿½Ä±ï¿½ï¿½ï¿½ï¿½ï¿½ë»·ï¿½ï¿½Í¼ (binding 0)
     VkDescriptorImageInfo envMapInfo = environmentCubemap.getDescriptorInfo();
     DescriptorWriter(_context, _prefilterSet)
         .writeImage(0, &envMapInfo) // combined image sampler
         .update();
 
-    // --- Ìá½»Ò»¸ö°üº¬ËùÓÐ Mip Level ¼ÆËãµÄÃüÁî»º³åÇø ---
+    // --- ï¿½á½»Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Mip Level ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½î»ºï¿½ï¿½ï¿½ï¿½ ---
     _uploader.submit([&](VkCommandBuffer cmd) {
-        // 1. ½«Õû¸ö prefilteredMap ×ª»»Îª GENERAL ²¼¾Ö£¬ÒÔ×¼±¸½ÓÊÕËùÓÐ Mip ²ãµÄÐ´Èë
+        // 1. ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ prefilteredMap ×ªï¿½ï¿½Îª GENERAL ï¿½ï¿½ï¿½Ö£ï¿½ï¿½ï¿½×¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Mip ï¿½ï¿½ï¿½Ð´ï¿½ï¿½
         prefilteredMap.recordTransitionLayout(cmd, VK_IMAGE_LAYOUT_GENERAL);
 
-        // 2. °ó¶¨¹ÜÏß£¬ÒòÎªÕû¸öÑ­»·¶¼ÓÃÍ¬Ò»¸ö
+        // 2. ï¿½ó¶¨¹ï¿½ï¿½ß£ï¿½ï¿½ï¿½Îªï¿½ï¿½ï¿½ï¿½Ñ­ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í¬Ò»ï¿½ï¿½
         _prefilterPipeline->bind(cmd, VK_PIPELINE_BIND_POINT_COMPUTE);
 
-        // --- Ñ­»·±éÀúËùÓÐ Mipmap µÈ¼¶ ---
+        // --- Ñ­ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Mipmap ï¿½È¼ï¿½ ---
         for (uint32_t mip = 0; mip < mipLevels; ++mip) {
-            // a. Îªµ±Ç° Mip Level ´´½¨Ò»¸ö×¨ÃÅµÄ ImageView
-            //    Õâ¸öÊÓÍ¼Ö»¡°¿´µ½¡± prefilteredMap µÄµÚ mip ²ã
+            // a. Îªï¿½ï¿½Ç° Mip Level ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½×¨ï¿½Åµï¿½ ImageView
+            //    ï¿½ï¿½ï¿½ï¿½ï¿½Í¼Ö»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ prefilteredMap ï¿½Äµï¿½ mip ï¿½ï¿½
             VkImageView mipView = _context.createImageView(
                 prefilteredMap.getImage(),
                 prefilteredMap.getFormat(),
                 VK_IMAGE_ASPECT_COLOR_BIT,
                 VK_IMAGE_VIEW_TYPE_CUBE,
-                6,           // layerCount: ÎÒÃÇÒªÐ´ÈëËùÓÐ6¸öÃæ
+                6,           // layerCount: ï¿½ï¿½ï¿½ï¿½ÒªÐ´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½6ï¿½ï¿½ï¿½ï¿½
                 0,           // baseArrayLayer
-                1,           // levelCount: Õâ¸öÊÓÍ¼Ö»°üº¬ 1 ¸ö mip level
-                mip          // baseMipLevel: ´ÓµÚ mip ¸ö level ¿ªÊ¼
+                1,           // levelCount: ï¿½ï¿½ï¿½ï¿½ï¿½Í¼Ö»ï¿½ï¿½ï¿½ï¿½ 1 ï¿½ï¿½ mip level
+                mip          // baseMipLevel: ï¿½Óµï¿½ mip ï¿½ï¿½ level ï¿½ï¿½Ê¼
             );
 
-            // b. ¸üÐÂÃèÊö·û¼¯£¬ÈÃÊä³ö (binding 1) Ö¸ÏòÕâ¸öÐÂµÄ Mip ÊÓÍ¼
+            // b. ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ (binding 1) Ö¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Âµï¿½ Mip ï¿½ï¿½Í¼
             VkDescriptorImageInfo storageImageInfo = {};
             storageImageInfo.imageView = mipView;
             storageImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -235,25 +232,25 @@ void IBLProcessor::generatePrefilteredMap(VulkanImage& environmentCubemap, Vulka
                 .writeImage(1, &storageImageInfo, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
                 .update();
 
-            // c. °ó¶¨¸üÐÂºóµÄÃèÊö·û¼¯
+            // c. ï¿½ó¶¨¸ï¿½ï¿½Âºï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _prefilterPipeline->getLayout(), 0, 1, &_prefilterSet, 0, nullptr);
 
-            // d. ¼ÆËãµ±Ç° Mip ¶ÔÓ¦µÄ roughness£¬²¢Í¨¹ý Push Constant ´«µÝ¸ø×ÅÉ«Æ÷
+            // d. ï¿½ï¿½ï¿½ãµ±Ç° Mip ï¿½ï¿½Ó¦ï¿½ï¿½ roughnessï¿½ï¿½ï¿½ï¿½Í¨ï¿½ï¿½ Push Constant ï¿½ï¿½ï¿½Ý¸ï¿½ï¿½ï¿½É«ï¿½ï¿½
             float roughness = (float)mip / (float)(mipLevels - 1);
             vkCmdPushConstants(cmd, _prefilterPipeline->getLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(float), &roughness);
 
-            // e. Dispatch ¼ÆËãÈÎÎñ£¬´óÐ¡¸ù¾Ýµ±Ç° Mip µÄ³ß´ç¶ø¶¨
+            // e. Dispatch ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ñ£¬´ï¿½Ð¡ï¿½ï¿½ï¿½Ýµï¿½Ç° Mip ï¿½Ä³ß´ï¿½ï¿½ï¿½ï¿½
             uint32_t mipWidth = prefilteredMap.getExtent().width >> mip;
             uint32_t mipHeight = prefilteredMap.getExtent().height >> mip;
-            // È·±£ÖÁÉÙ dispatch Ò»¸öÏß³Ì×é
+            // È·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ dispatch Ò»ï¿½ï¿½ï¿½ß³ï¿½ï¿½ï¿½
             vkCmdDispatch(cmd, std::max(1u, mipWidth / 32), std::max(1u, mipHeight / 32), 6);
 
-            // f. Ïú»ÙÁÙÊ±µÄ Mip ÊÓÍ¼
+            // f. ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ Mip ï¿½ï¿½Í¼
             vkDestroyImageView(_context.getDevice(), mipView, nullptr);
 
-            // g. (¿ÉÑ¡µ«ÍÆ¼ö) ÔÚÃ¿´Î dispatch Ö®¼ä²åÈëÒ»¸öÆÁÕÏ
-            //    È·±£Ç°Ò»¸ö mip level µÄÐ´Èë¶ÔºóÐø²Ù×÷£¨Èç¹ûÐèÒªµÄ»°£©¿É¼û
-            //    ¶ÔÓÚÕâ¸ö¶ÀÁ¢µÄÑ­»·£¬Ò²¿ÉÒÔÊ¡ÂÔ£¬ÔÚÑ­»·ºó¼ÓÒ»¸ö×ÜµÄÆÁÕÏ
+            // g. (ï¿½ï¿½Ñ¡ï¿½ï¿½ï¿½Æ¼ï¿½) ï¿½ï¿½Ã¿ï¿½ï¿½ dispatch Ö®ï¿½ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+            //    È·ï¿½ï¿½Ç°Ò»ï¿½ï¿½ mip level ï¿½ï¿½Ð´ï¿½ï¿½Ôºï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Òªï¿½Ä»ï¿½ï¿½ï¿½ï¿½É¼ï¿½
+            //    ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ñ­ï¿½ï¿½ï¿½ï¿½Ò²ï¿½ï¿½ï¿½ï¿½Ê¡ï¿½Ô£ï¿½ï¿½ï¿½Ñ­ï¿½ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ï¿½Üµï¿½ï¿½ï¿½ï¿½ï¿½
             VkMemoryBarrier memoryBarrier{};
             memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
             memoryBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -261,26 +258,26 @@ void IBLProcessor::generatePrefilteredMap(VulkanImage& environmentCubemap, Vulka
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memoryBarrier, 0, nullptr, 0, nullptr);
         }
 
-        // 3. ËùÓÐ Mip ¼ÆËãÍê±Ïºó£¬½«Õû¸ö prefilteredMap ×ª»»ÎªÊÊºÏ×ÅÉ«Æ÷²ÉÑùµÄ²¼¾Ö
+        // 3. ï¿½ï¿½ï¿½ï¿½ Mip ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ïºó£¬½ï¿½ï¿½ï¿½ï¿½ï¿½ prefilteredMap ×ªï¿½ï¿½Îªï¿½Êºï¿½ï¿½ï¿½É«ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä²ï¿½ï¿½ï¿½
         prefilteredMap.recordTransitionLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         });
 
-    std::cout << "[SUCCESS] Pre-filtered Specular Map generated." << std::endl;
+    LOG_INFO("Pre-filtered Specular Map generated.");
 }
 
 VulkanImage* IBLProcessor::getIrradianceMap(const std::string& name) const {
-    // 1. Ê¹ÓÃ map::find() À´°²È«µØ²éÕÒ key
-    //    map::operator[] ÔÚ key ²»´æÔÚÊ±»á´´½¨Ò»¸öÐÂÔªËØ£¬ÕâÔÚ const º¯ÊýÖÐÊÇ²»ÔÊÐíµÄ
+    // 1. Ê¹ï¿½ï¿½ map::find() ï¿½ï¿½ï¿½ï¿½È«ï¿½Ø²ï¿½ï¿½ï¿½ key
+    //    map::operator[] ï¿½ï¿½ key ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½á´´ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½Ôªï¿½Ø£ï¿½ï¿½ï¿½ï¿½ï¿½ const ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ç²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     auto it = _ibTextures.find(name);
 
-    // 2. ¼ì²éÊÇ·ñÕÒµ½ÁË¶ÔÓ¦µÄÌì¿ÕºÐ
+    // 2. ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½Òµï¿½ï¿½Ë¶ï¿½Ó¦ï¿½ï¿½ï¿½ï¿½Õºï¿½
     if (it != _ibTextures.end()) {
-        // it->second Ö¸Ïò map ÖÐµÄ IBTextures ¶ÔÏó
-        // .get() ´Ó unique_ptr ÖÐ»ñÈ¡Ô­Ê¼Ö¸Õë
+        // it->second Ö¸ï¿½ï¿½ map ï¿½Ðµï¿½ IBTextures ï¿½ï¿½ï¿½ï¿½
+        // .get() ï¿½ï¿½ unique_ptr ï¿½Ð»ï¿½È¡Ô­Ê¼Ö¸ï¿½ï¿½
         return it->second.irradianceMap.get();
     }
 
-    // 3. Èç¹ûÃ»ÓÐÕÒµ½£¬·µ»Ø¿ÕÖ¸Õë
+    // 3. ï¿½ï¿½ï¿½Ã»ï¿½ï¿½ï¿½Òµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ø¿ï¿½Ö¸ï¿½ï¿½
     return nullptr;
 }
 
@@ -295,6 +292,6 @@ VulkanImage* IBLProcessor::getPrefilteredMap(const std::string& name) const {
 }
 
 VulkanImage* IBLProcessor::getBrdfLUT() const {
-    // BRDF LUT ÊÇÒ»¸öµ¥¶ÀµÄ³ÉÔ±£¬Ö±½Ó·µ»ØËüµÄÔ­Ê¼Ö¸Õë
+    // BRDF LUT ï¿½ï¿½Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ä³ï¿½Ô±ï¿½ï¿½Ö±ï¿½Ó·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô­Ê¼Ö¸ï¿½ï¿½
     return _brdfLUT.get();
 }

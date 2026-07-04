@@ -1,9 +1,6 @@
 #include "Renderer.h"
 #include "VulkanContext.h"
 #include <stdexcept>
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_vulkan.h"
 
 Renderer::Renderer(VulkanContext& context, uint32_t maxFramesInFlight)
     : _context(context), _maxFramesInFlight(maxFramesInFlight) {
@@ -265,7 +262,6 @@ void Renderer::draw(VulkanSwapchain& swapchain, std::unique_ptr<VulkanPipeline>&
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
 
     vkCmdDrawIndexed(commandBuffer, size, 1, 0, 0, 0);
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
     endRenderPass(commandBuffer, swapchain);
     endFrame(swapchain, graphicsQueue, presentQueue);
 }

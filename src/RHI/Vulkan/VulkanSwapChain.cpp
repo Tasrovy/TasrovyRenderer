@@ -5,6 +5,7 @@
 #include <array>
 #include <limits>
 #include "Dependencies.h"
+#include <Logger.hpp>
 
 VulkanSwapchain::VulkanSwapchain(VulkanContext& context) 
     : _context(context){
@@ -24,13 +25,13 @@ void VulkanSwapchain::init() {
 
     VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(details.formats);
     VkPresentModeKHR presentMode = chooseSwapPresentMode(details.presentModes);
-    VkExtent2D extent = chooseSwapExtent2D(details.capabilities,_context.getWindow());
+    VkExtent2D extent = chooseSwapExtent2D(details.capabilities, _context.getFramebufferWidth(), _context.getFramebufferHeight());
 
     uint32_t imageCount = details.capabilities.minImageCount + 1;
     if (details.capabilities.maxImageCount > 0 && imageCount > details.capabilities.maxImageCount) {
         imageCount = details.capabilities.maxImageCount;
     }
-    std::cout << "[INFO] Swapchain Image Count: " << imageCount << std::endl;
+    LOG_INFO("Swapchain Image Count: {}", imageCount);
     VkSwapchainCreateInfoKHR createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     createInfo.surface = _context.getSurface();

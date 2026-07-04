@@ -1,69 +1,12 @@
-# ====================================================================
-# 子项目：TasrovyRender (Vulkan 渲染器核心模块)
-# ====================================================================
-
-# 1. 显式列出你所有的源文件和头文件 (使用绝对路径，避免生成器歧义)
-set(RENDER_SOURCES
-    # 基础与上下文
-    "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanContext.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanContext.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanQueue.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanQueue.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanSwapChain.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanSwapChain.cpp"
-    
-    # 资源与内存封装
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanBuffer.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanBuffer.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanImage.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanImage.cpp"
-    
-    # 描述符管理
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanDescriptorSetLayout.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanDescriptorSetLayout.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanDescriptorPool.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanDescriptorPool.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/DescriptorWriter.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/DescriptorWriter.cpp"
-    
-    # 渲染管线与提交
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanPipeline.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/VulkanPipeline.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ImmediateSubmitter.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ImmediateSubmitter.cpp"
-    
-    # 场景资源与光照
-    "${CMAKE_CURRENT_SOURCE_DIR}/Model.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Model.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/IBLMap.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/IBLMap.cpp"
-    
-    # 核心渲染循环
-    "${CMAKE_CURRENT_SOURCE_DIR}/Renderer.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Renderer.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/stb_image.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tiny_obj_loader.h"
+add_library(TasrovyRender STATIC
+        light.cpp
+        light.h
+        Texture.hpp
+        Texture.cpp
 )
 
-# 2. 定义静态库 TasrovyRender
-add_library(TasrovyRender STATIC ${RENDER_SOURCES})
-
-# 3. 设置头文件包含路径
-# 因为你的头文件和源文件在同一个目录下，所以包含路径就是当前目录
-# PUBLIC 使得：App 层可以直接 #include <VulkanContext.h> (或者通过相对路径)
 target_include_directories(TasrovyRender PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# 4. 绑定第三方依赖和内部 Core 依赖
-target_link_libraries(TasrovyRender
-    PUBLIC
-        glm::glm                 # 顶点和矩阵运算
-        volk::volk               # 动态 Vulkan 加载器
-	imgui::imgui
-    PRIVATE
-        glfw                     # 仅内部 SwapChain 需要创建窗口 Surface
-        Vulkan::Vulkan           # Vulkan SDK
+target_link_libraries(TasrovyRender PUBLIC
+        TasrovyRHI
 )
-
-# 5. 开启 Volk 的动态函数加载宏 (关键：不声明静态 Vulkan 函数原型)
-target_compile_definitions(TasrovyRender PUBLIC VK_NO_PROTOTYPES)

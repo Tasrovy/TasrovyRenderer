@@ -1,9 +1,9 @@
 #include "Model.h"
 #define TINYOBJLOADER_IMPLEMENTATION
-#include "tiny_obj_loader.h"
+#include <tiny_obj_loader.h>
 #include <stdexcept>
-#include <iostream>
 #include <unordered_map>
+#include <Logger.hpp>
 
 Model::Model(const std::string& filePath)
 {
@@ -54,8 +54,7 @@ Model::Model(const std::string& filePath)
         }
     }
 	calculateTangentsAndBitangents();
-    std::cout << "Loaded model: " << vertices.size() << " vertices, "
-        << indices.size() << " indices\n";
+    LOG_INFO("Loaded model: {} vertices, {} indices", vertices.size(), indices.size());
     vertexBindingDescription = { 
         {
         0,

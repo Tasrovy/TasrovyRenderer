@@ -2,12 +2,12 @@
 #include <stdexcept>
 #include <vector>
 #include <set>
-#include <iostream>
 #include <cstring>
 #include <fstream>
-#include <algorithm> // for std::clamp, std::max
-#include <cmath>     // for std::floor, std::log2
+#include <algorithm>
+#include <cmath>
 #include "VulkanSwapChain.h"
+#include <Logger.hpp>
 
 // 假设这些结构体在项目中的某个公共头文件中定义
 
@@ -46,20 +46,6 @@ bool checkValidationLayerSupport() {
     return true;
 }
 
-// 获取GLFW所需的实例扩展
-std::vector<const char*> getRequiredExtensions() {
-    uint32_t glfwExtensionCount = 0;
-    const char** glfwExtensions;
-    glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-
-    std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
-
-    if (enableValidationLayers) {
-        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-    }
-    return extensions;
-}
-
 // 检查格式是否包含模板分量
 bool hasStencilComponent(VkFormat format) {
     return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
@@ -70,9 +56,18 @@ bool hasStencilComponent(VkFormat format) {
 // ---                      VulkanContext 实现                      ---
 // ======================================================================
 
-VulkanContext::VulkanContext(WindowInfo& info) : _info(info) {
-    initWindow();
-    initVulkan();
+VulkanContext::VulkanContext(const char* appName,
+                             const std::vector<const char*>& instanceExtensions,
+                             SurfaceCreator surfaceCreator,
+                             int fbWidth, int fbHeight)
+    : _appName(appName), _surfaceCreator(std::move(surfaceCreator)),
+      _fbWidth(fbWidth), _fbHeight(fbHeight)
+{
+    createInstance(instanceExtensions);
+    setupDebugMessenger();
+    _surface = _surfaceCreator(_instance);
+    pickPhysicalDevice();
+    createLogicalDevice();
 }
 
 VulkanContext::~VulkanContext() {
@@ -86,42 +81,18 @@ VulkanContext::~VulkanContext() {
     vkDestroyDevice(_device, nullptr);
     vkDestroySurfaceKHR(_instance, _surface, nullptr);
     vkDestroyInstance(_instance, nullptr);
-    
-    glfwDestroyWindow(_window);
-    glfwTerminate();
 
-    std::cout << "[INFO] VulkanContext destroyed." << std::endl;
+    LOG_INFO("VulkanContext destroyed.");
 }
 
-void VulkanContext::initWindow() {
-    if (!glfwInit()) {
-        throw std::runtime_error("Failed to initialize GLFW!");
-    }
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    _window = glfwCreateWindow(_info.width, _info.height, _info.title.c_str(), nullptr, nullptr);
-    if (!_window) {
-        throw std::runtime_error("Failed to create GLFW window!");
-    }
-    glfwSetWindowUserPointer(_window, this);
-    glfwSetFramebufferSizeCallback(_window, framebufferResizeCallback);
-}
-
-void VulkanContext::initVulkan() {
-    createInstance();
-    setupDebugMessenger();
-    createSurface();
-    pickPhysicalDevice();
-    createLogicalDevice();
-}
-
-void VulkanContext::createInstance() {
+void VulkanContext::createInstance(const std::vector<const char*>& extensions) {
     if (enableValidationLayers && !checkValidationLayerSupport()) {
         throw std::runtime_error("validation layers requested, but not available!");
     }
 
     VkApplicationInfo appInfo{};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pApplicationName = _info.title.c_str();
+    appInfo.pApplicationName = _appName.c_str();
     appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     appInfo.pEngineName = "No Engine";
     appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
@@ -131,7 +102,6 @@ void VulkanContext::createInstance() {
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     createInfo.pApplicationInfo = &appInfo;
 
-    auto extensions = getRequiredExtensions();
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     createInfo.ppEnabledExtensionNames = extensions.data();
 
@@ -155,7 +125,7 @@ void VulkanContext::createInstance() {
         throw std::runtime_error("failed to create instance!");
     }
     volkLoadInstance(_instance);
-    std::cout << "[SUCCESS] Vulkan instance created." << std::endl;
+    LOG_INFO("Vulkan instance created.");
 }
 
 void VulkanContext::setupDebugMessenger() {
@@ -166,30 +136,23 @@ void VulkanContext::setupDebugMessenger() {
     createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
     createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
     createInfo.pfnUserCallback = debugCallback;
-    
+
     auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(_instance, "vkCreateDebugUtilsMessengerEXT");
     if (func != nullptr) {
         if (func(_instance, &createInfo, nullptr, &_debugMessenger) != VK_SUCCESS) {
             throw std::runtime_error("failed to set up debug messenger!");
         }
-        std::cout << "[SUCCESS] Debug messenger created." << std::endl;
+        LOG_INFO("Debug messenger created.");
     } else {
         throw std::runtime_error("debug messenger extension not available!");
     }
-}
-
-void VulkanContext::createSurface() {
-    if (glfwCreateWindowSurface(_instance, _window, nullptr, &_surface) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create window surface!");
-    }
-    std::cout << "[SUCCESS] Window surface created." << std::endl;
 }
 
 void VulkanContext::pickPhysicalDevice() {
     uint32_t deviceCount = 0;
     vkEnumeratePhysicalDevices(_instance, &deviceCount, nullptr);
     if (deviceCount == 0) throw std::runtime_error("failed to find GPUs with Vulkan support!");
-    
+
     std::vector<VkPhysicalDevice> devices(deviceCount);
     vkEnumeratePhysicalDevices(_instance, &deviceCount, devices.data());
 
@@ -204,10 +167,10 @@ void VulkanContext::pickPhysicalDevice() {
     if (_physicalDevice == VK_NULL_HANDLE) {
         throw std::runtime_error("failed to find a suitable GPU!");
     }
-    
+
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(_physicalDevice, &props);
-    std::cout << "[INFO] Selected GPU: " << props.deviceName << std::endl;
+    LOG_INFO("Selected GPU: {}", props.deviceName);
 }
 
 void VulkanContext::createLogicalDevice() {
@@ -234,7 +197,7 @@ void VulkanContext::createLogicalDevice() {
         queueCreateInfo.pQueuePriorities = &queuePriority;
         queueCreateInfos.push_back(queueCreateInfo);
     }
-    
+
     VkPhysicalDeviceFeatures deviceFeatures{};
     deviceFeatures.samplerAnisotropy = VK_TRUE;
 
@@ -260,7 +223,7 @@ void VulkanContext::createLogicalDevice() {
     if (vkCreateDevice(_physicalDevice, &createInfo, nullptr, &_device) != VK_SUCCESS) {
         throw std::runtime_error("failed to create logical device!");
     }
-    std::cout << "[SUCCESS] Logical device created." << std::endl;
+    LOG_INFO("Logical device created.");
 }
 
 bool VulkanContext::isDeviceSuitable(VkPhysicalDevice device) {
@@ -420,8 +383,8 @@ void VulkanContext::createImage(
     VkFormat format, VkImageTiling tiling,
     VkImageUsageFlags usage, VkMemoryPropertyFlags properties,
     VkImage& image, VkDeviceMemory& imageMemory,
-    VkImageCreateFlags flags,       // <-- 接收新参数
-    uint32_t arrayLayers          // <-- 接收新参数
+    VkImageCreateFlags flags,
+    uint32_t arrayLayers
 ) const {
 
     VkImageCreateInfo imageInfo{};
@@ -429,12 +392,8 @@ void VulkanContext::createImage(
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
     imageInfo.extent = { width, height, 1 };
     imageInfo.mipLevels = mipLevels;
-
-    // vvvvvvvvvvvvvvvv 关键修改 vvvvvvvvvvvvvvvv
-    imageInfo.arrayLayers = arrayLayers; // <-- 使用传入的 arrayLayers
-    imageInfo.flags = flags;             // <-- 使用传入的 flags
-    // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
+    imageInfo.arrayLayers = arrayLayers;
+    imageInfo.flags = flags;
     imageInfo.format = format;
     imageInfo.tiling = tiling;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -466,27 +425,19 @@ VkImageView VulkanContext::createImageView(
     VkFormat format,
     VkImageAspectFlags aspectFlags,
     uint32_t mipLevels,
-    VkImageViewType viewType        // <-- 接收新参数
+    VkImageViewType viewType
 ) const {
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = image;
-
-    // vvvvvvvvvvvvvvvv 关键修改 vvvvvvvvvvvvvvvv
-    viewInfo.viewType = viewType; // <-- 使用传入的 viewType
-    // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
+    viewInfo.viewType = viewType;
     viewInfo.format = format;
     viewInfo.subresourceRange.aspectMask = aspectFlags;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = mipLevels;
     viewInfo.subresourceRange.baseArrayLayer = 0;
-
-    // vvvvvvvvvvvvvvvv 关键修改 vvvvvvvvvvvvvvvv
-    // 如果是 Cube 类型，layerCount 必须是 6
     viewInfo.subresourceRange.layerCount = (viewType == VK_IMAGE_VIEW_TYPE_CUBE) ? 6 : 1;
-    // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
     VkImageView imageView;
     if (vkCreateImageView(_device, &viewInfo, nullptr, &imageView) != VK_SUCCESS) {
@@ -511,15 +462,11 @@ VkImageView VulkanContext::createImageView(
     viewInfo.image = image;
     viewInfo.viewType = viewType;
     viewInfo.format = format;
-
-    // vvvvvvvvvvvvvvvv 关键修改 vvvvvvvvvvvvvvvv
-    // 使用所有传入的参数来精确定义视图的范围
     viewInfo.subresourceRange.aspectMask = aspectFlags;
     viewInfo.subresourceRange.baseMipLevel = baseMipLevel;
     viewInfo.subresourceRange.levelCount = levelCount;
     viewInfo.subresourceRange.baseArrayLayer = baseArrayLayer;
     viewInfo.subresourceRange.layerCount = layerCount;
-    // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
     VkImageView imageView;
     if (vkCreateImageView(_device, &viewInfo, nullptr, &imageView) != VK_SUCCESS) {
@@ -616,38 +563,25 @@ std::vector<char> VulkanContext::readFile(const std::string& filename) const {
 }
 
 
-// --- 窗口和调试回调的静态实现 ---
-void VulkanContext::framebufferResizeCallback(GLFWwindow* window, int width, int height) {
-    auto context = reinterpret_cast<VulkanContext*>(glfwGetWindowUserPointer(window));
-    context->framebufferResized = true;
-    context->_info.width = width;
-    context->_info.height = height;
-}
+// --- 调试回调的静态实现 ---
 
 VKAPI_ATTR VkBool32 VKAPI_CALL VulkanContext::debugCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
     VkDebugUtilsMessageTypeFlagsEXT messageType,
     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
     void* pUserData) {
-    std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
+    LOG_ERROR("validation layer: {}", pCallbackData->pMessage);
     return VK_FALSE;
 }
 
 void VulkanContext::CheckFormatChange(VulkanSwapchain& swapchain) {
     if (framebufferResized) {
-        int width = 0, height = 0;
-        glfwGetFramebufferSize(getWindow(), &width, &height);
-        while (width == 0 || height == 0) {
-            glfwGetFramebufferSize(getWindow(), &width, &height);
-            glfwWaitEvents();
-        }
-
         vkDeviceWaitIdle(getDevice());
 
         swapchain.recreate();
 
         framebufferResized = false;
 
-        std::cout << "[INFO] Swapchain recreated." << std::endl;
+        LOG_INFO("Swapchain recreated.");
     }
 }
