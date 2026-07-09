@@ -1,104 +1,104 @@
 # TasrovyRenderer
 
-TasrovyRenderer is a C++20 Vulkan renderer built around an API-facing render layer, an RHI abstraction, asynchronous asset loading, PBR materials, skyboxes, precomputed IBL, and an ImGui scene inspector.
+TasrovyRenderer 是一个 C++20 Vulkan 渲染器，目标是把上层渲染对象、RHI 抽象、异步资源加载、PBR 材质、天空盒、预计算 IBL 和 ImGui 调试工具串成一条可迭代的渲染主流程。
 
-The current renderer path uses Vulkan dynamic rendering, an RHI `SceneRenderer`, multi-pass PBR pipeline setup, filesystem-owned asset loading, and runtime skybox switching with precomputed environment lighting.
+英文版说明见：[docs/README_EN.md](docs/README_EN.md)。
 
-## Features
+## 当前能力
 
-- C++20 renderer with Vulkan backend
-- RHI abstraction for buffers, images, passes, pipelines, descriptors, and command lists
-- Scene-driven renderer that converts render-layer `Scene` and `Pipeline` data into RHI resources
-- PBR forward shader with material textures
-- Skybox rendering with runtime environment selection in ImGui
-- Precomputed IBL textures per skybox:
+- 基于 Vulkan 的 RHI 后端
+- 面向渲染层的 `SceneRenderer`
+- 场景驱动的 mesh、material、pass、pipeline 创建流程
+- PBR forward shader 和基础材质贴图绑定
+- 天空盒渲染和 ImGui 实时切换
+- 每个天空盒预计算 IBL 贴图：
   - irradiance cubemap
   - prefiltered specular cubemap
   - BRDF LUT
-- Async model/image asset loading through the filesystem module using Taskflow
-- ImGui scene inspector for cameras, lights, objects, materials, and skybox selection
-- SPIR-V shader compilation through DXC
+- 通过 Taskflow 进行异步模型和图片资源加载
+- ImGui 场景调试面板：相机、灯光、物体、材质、天空盒
+- HLSL 通过 DXC 编译到 SPIR-V
 
-## Repository Layout
+## 目录结构
 
 ```text
-src/base/        Math types and helpers
-src/filesystem/  Asset loading, image/model data, Taskflow AssetManager
-src/render/      API-agnostic scene, materials, meshes, pipelines, passes
-src/RHI/         Render hardware interface and SceneRenderer
-src/RHI/Vulkan/  Vulkan backend resources and renderer
+src/base/        数学类型和基础工具
+src/filesystem/  模型、图片等资产加载，以及 Taskflow AssetManager
+src/render/      API 无关的场景、材质、网格、管线和 pass 描述
+src/RHI/         RHI 抽象层和 SceneRenderer
+src/RHI/Vulkan/  Vulkan 后端资源、管线、交换链和 IBL 计算
 src/ui/          ImGui overlay
-src/window/      Windowing
-src/log/         Logging
-src/core/        Application entry point
-res/             Models, textures, skyboxes, shaders, SPIR-V outputs
+src/window/      窗口系统
+src/log/         日志系统
+src/core/        程序入口
+res/             模型、贴图、天空盒、shader 和 SPIR-V 输出
 ```
 
-## Requirements
+## 环境要求
 
 - Windows
 - CMake 3.20+
-- Vulkan SDK with DXC
-- vcpkg at `C:/Libraries/vcpkg`
-- MinGW toolchain matching the existing build setup
+- Vulkan SDK，并包含 DXC
+- vcpkg
+- 与项目配置匹配的 C++20 编译工具链
 
-Dependencies are declared in `vcpkg.json`, including Vulkan-related libraries, Assimp, stb, spdlog, spirv-cross, and Taskflow.
+依赖由根目录的 `vcpkg.json` 声明，包括 Vulkan 相关库、Assimp、stb、spdlog、spirv-cross 和 Taskflow。
 
-## Build
+## 构建
 
-Configure:
+配置：
 
 ```powershell
-cmake -B cmake-build-debug -DCMAKE_TOOLCHAIN_FILE=C:/Libraries/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake -B cmake-build-debug -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake
 ```
 
-Build:
+构建：
 
 ```powershell
 cmake --build cmake-build-debug --config Debug
 ```
 
-Run:
+运行：
 
 ```powershell
 .\cmake-build-debug\src\core\TasrovyCore.exe
 ```
 
-## Shaders
+其中 `<vcpkg-root>` 是你本机 vcpkg 的安装目录。
 
-Shaders are authored in HLSL and compiled to SPIR-V with DXC.
+## Shader 编译
 
-Compile the main shaders:
+主渲染 shader：
 
 ```powershell
 cd res
 cmd /c compile.bat
 ```
 
-Compile the IBL compute shaders:
+IBL compute shader：
 
 ```powershell
 cd res\IBLComputeShader
 cmd /c compilecomputes.bat
 ```
 
-## Rendering Flow
+## 渲染流程
 
-The application builds a render-layer `Scene` and `PBRPipeline`, then submits them to `Tasrovy::RHI::SceneRenderer`.
+应用层创建 render 模块中的 `Scene` 和 `PBRPipeline`，然后提交给 `Tasrovy::RHI::SceneRenderer`。
 
-`SceneRenderer` owns a render-thread scene snapshot. It parses the scene and pipeline into RHI resources, creates pass attachments, uploads meshes, binds material textures, updates per-frame uniform buffers, and records pass commands through `CommandList`.
+`SceneRenderer` 持有渲染线程自己的场景快照。它会把上层 scene 和 pipeline 解析为 RHI 资源，创建 pass attachment，上传 mesh buffer，加载材质贴图，更新每帧 uniform buffer，并通过 `CommandList` 录制 draw 命令。
 
-Current pass setup includes shadow, g-buffer, skybox, forward, transparent, and post-processing oriented stages. The minimal visible path currently focuses on skybox plus forward object rendering.
+当前管线包含 shadow、g-buffer、skybox、forward、transparent 和 post-processing 等阶段。现阶段主要可见路径集中在 skybox 和 forward 主物体渲染。
 
-## Asset Loading
+## 资源加载
 
-Large CPU-side assets such as models and images are loaded by `src/filesystem`.
+模型、图片等较大的 CPU 侧资产由 `src/filesystem` 负责加载。
 
-`Tasrovy::FS::AssetManager` uses Taskflow workers to load assets asynchronously and exposes completion events. Render and core systems hold references to loaded asset data instead of doing blocking model/image parsing in the main render path.
+`Tasrovy::FS::AssetManager` 使用 Taskflow worker 异步加载资源，并通过完成事件通知调用侧。渲染层和核心层持有资源引用，避免在主渲染流程中同步解析模型或图片。
 
-## Skybox And IBL
+## 天空盒和 IBL
 
-Skybox candidates are discovered from `res` directories that contain:
+渲染器会在 `res` 下查找包含以下六张图的目录作为天空盒候选：
 
 ```text
 right.png
@@ -109,10 +109,10 @@ front.png
 back.png
 ```
 
-For each discovered skybox, the renderer creates a cubemap and precomputes the IBL resources. The ImGui scene inspector exposes an `Environment` combo box for realtime switching. Switching reuses cached cubemaps and IBL textures instead of recomputing them.
+每个天空盒候选都会提前创建 cubemap，并预计算对应的 IBL 资源。ImGui 的 `Skybox` 区域提供 `Environment` 下拉框，可以实时切换天空盒。切换时复用已缓存的 cubemap 和 IBL 贴图，不重新计算。
 
-## Notes
+## 开发备注
 
-- `SceneRenderer` keeps retired GPU resources alive across scene refreshes to avoid destroying buffers while submitted command buffers still reference them.
-- RHI headers stay API-agnostic; Vulkan-specific data lives in the Vulkan backend.
-- Generated local UI state such as `imgui.ini` should not be treated as source.
+- `SceneRenderer` 会保留一段旧 GPU 资源，避免场景刷新时销毁仍被已提交 command buffer 引用的 buffer。
+- RHI 头文件保持 API 无关，Vulkan 细节集中在 `src/RHI/Vulkan/`。
+- `imgui.ini` 属于本地 UI 状态文件，不应作为源码提交。
