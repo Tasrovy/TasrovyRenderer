@@ -8,7 +8,7 @@
 #include <atomic>
 #include <functional>
 
-namespace Tasrovy {
+namespace Tasrovy::RHI {
 
 class ReflectionBridge {
 public:
@@ -40,4 +40,4 @@ private:
     std::atomic<bool> running_{false};
 };
 
-} // namespace Tasrovy
+} // namespace Tasrovy::RHI

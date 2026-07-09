@@ -2,7 +2,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
-namespace Tasrovy {
+namespace Tasrovy::FS {
 
 Image::~Image() {
     Unload();
@@ -31,17 +31,23 @@ Image& Image::operator=(Image&& other) noexcept {
     return *this;
 }
 
-bool Image::LoadFromFile(const std::string& path, bool flipY) {
+bool Image::LoadFromFile(const std::string& path, bool flipY, int desiredChannels) {
     Unload();
-    stbi_set_flip_vertically_on_load(flipY);
-    data = stbi_load(path.c_str(), &width, &height, &channels, 0);
+    stbi_set_flip_vertically_on_load_thread(flipY);
+    data = stbi_load(path.c_str(), &width, &height, &channels, desiredChannels);
+    if (data && desiredChannels > 0) {
+        channels = desiredChannels;
+    }
     return data != nullptr;
 }
 
-bool Image::LoadFromMemory(const unsigned char* buffer, size_t length, bool flipY) {
+bool Image::LoadFromMemory(const unsigned char* buffer, size_t length, bool flipY, int desiredChannels) {
     Unload();
-    stbi_set_flip_vertically_on_load(flipY);
-    data = stbi_load_from_memory(buffer, (int)length, &width, &height, &channels, 0);
+    stbi_set_flip_vertically_on_load_thread(flipY);
+    data = stbi_load_from_memory(buffer, (int)length, &width, &height, &channels, desiredChannels);
+    if (data && desiredChannels > 0) {
+        channels = desiredChannels;
+    }
     return data != nullptr;
 }
 

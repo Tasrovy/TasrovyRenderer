@@ -6,6 +6,8 @@
 
 struct GLFWwindow;
 
+namespace Tasrovy::Windowing {
+
 struct WindowInfo {
     int width;
     int height;
@@ -49,3 +51,5 @@ private:
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 };
+
+} // namespace Tasrovy::Windowing

@@ -5,19 +5,29 @@
 #include <memory>
 #include <functional>
 
-namespace Tasrovy {
+#include "TSMatrix.h"
+
+namespace Tasrovy::Render {
 
 class Object;
 class Light;
 class Camera;
 
+struct UniformData {
+    std::vector<TSMat4f> modelMatrix;
+    Camera* primaryCamera = nullptr;
+    std::vector<Light*> lights;
+};
+
 class Scene {
 public:
-    static std::unique_ptr<Scene> create(const std::string& name = "");
+    static std::shared_ptr<Scene> create(const std::string& name = "");
     ~Scene();
 
     Scene(const Scene&) = delete;
     Scene& operator=(const Scene&) = delete;
+
+    std::shared_ptr<Scene> clone() const;
 
     void setName(const std::string& name);
     const std::string& getName() const;
@@ -63,6 +73,7 @@ public:
     // --- Utility ---
     void clear();
 
+    const UniformData GenUniformData() const;
 private:
     Scene() = default;
 
@@ -73,4 +84,4 @@ private:
     Camera* primaryCamera_ = nullptr;
 };
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

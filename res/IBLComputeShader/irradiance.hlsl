@@ -1,8 +1,8 @@
 
-TextureCube environmentMap : register(t0);
-SamplerState environmentSampler : register(s0);
+[[vk::combinedImageSampler]] TextureCube environmentMap : register(t0);
+[[vk::combinedImageSampler]] SamplerState environmentSampler : register(s0);
 
-RWTexture2DArray<float4> irradianceMap : register(u1);
+RWTexture2DArray<half4> irradianceMap : register(u1);
 
 
 #define PI 3.14159265359

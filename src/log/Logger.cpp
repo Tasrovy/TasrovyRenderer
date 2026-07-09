@@ -2,7 +2,7 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
-namespace Tasrovy {
+namespace Tasrovy::Log {
 
 std::shared_ptr<spdlog::logger> Logger::s_Logger = nullptr;
 
@@ -17,7 +17,7 @@ void Logger::Init() {
     s_Logger->flush_on(spdlog::level::trace);
 
     spdlog::set_default_logger(s_Logger);
-}
+} // namespace Tasrovy::Log
 
 void Logger::Shutdown() {
     if (s_Logger) {

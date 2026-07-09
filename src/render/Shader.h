@@ -3,30 +3,34 @@
 #include <string>
 #include <memory>
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
+
+enum class ShaderType {
+    Vertex,
+    Fragment,
+    Compute,
+    Geometry,
+    Tessellation
+};
 
 class Shader : public std::enable_shared_from_this<Shader> {
 public:
-    static std::shared_ptr<Shader> create(const std::string& vertPath, const std::string& fragPath);
+    static std::shared_ptr<Shader> create(const std::string& path, ShaderType type);
 
-    void setVertexPath(const std::string& path);
-    void setFragmentPath(const std::string& path);
-    void setVertexEntry(const std::string& entry);
-    void setFragmentEntry(const std::string& entry);
+    void setPath(const std::string& path);
+    void setEntry(const std::string& entry);
 
-    const std::string& getVertexPath() const;
-    const std::string& getFragmentPath() const;
-    const std::string& getVertexEntry() const;
-    const std::string& getFragmentEntry() const;
+    const std::string& getPath() const;
+    const std::string& getEntry() const;
+    ShaderType getType() const;
 
 private:
     Shader() = default;
-    Shader(const std::string& vertPath, const std::string& fragPath);
+    Shader(const std::string& path, ShaderType type);
 
-    std::string vertPath_;
-    std::string fragPath_;
-    std::string vertEntry_ = "VSMain";
-    std::string fragEntry_ = "PSMain";
+    std::string path_;
+    std::string entry_;
+    ShaderType type_;
 };
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

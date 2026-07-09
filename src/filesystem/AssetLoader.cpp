@@ -5,7 +5,7 @@
 #include "TSVector.h"
 #include "TSMatrix.h"
 
-namespace Tasrovy {
+namespace Tasrovy::FS {
 
 std::shared_ptr<Model> AssetLoader::LoadModel(const std::string& path) {
     Assimp::Importer importer;
@@ -50,6 +50,7 @@ void AssetLoader::ProcessNode(aiNode* node, const aiScene* scene, Model& model) 
 void AssetLoader::ProcessMesh(aiMesh* mesh, const aiScene* scene, Model& model) {
     Submesh submesh;
     submesh.indexOffset = static_cast<uint32_t>(model.GetIndices().size());
+    const auto vertexOffset = static_cast<uint32_t>(model.GetVertices().size());
 
     aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
     aiString matName;
@@ -82,6 +83,11 @@ void AssetLoader::ProcessMesh(aiMesh* mesh, const aiScene* scene, Model& model) 
                 mesh->mTangents[i].y,
                 mesh->mTangents[i].z
             );
+            vertex.bitangent = Tasrovy::TSVec3f(
+                mesh->mBitangents[i].x,
+                mesh->mBitangents[i].y,
+                mesh->mBitangents[i].z
+            );
         }
 
         // Vertex color
@@ -111,7 +117,7 @@ void AssetLoader::ProcessMesh(aiMesh* mesh, const aiScene* scene, Model& model) 
     for (uint32_t i = 0; i < mesh->mNumFaces; ++i) {
         aiFace& face = mesh->mFaces[i];
         for (uint32_t j = 0; j < face.mNumIndices; ++j) {
-            model.GetIndices().push_back(face.mIndices[j]);
+            model.GetIndices().push_back(vertexOffset + face.mIndices[j]);
         }
     }
 

@@ -39,4 +39,5 @@ target_link_libraries(TasrovyRHI_Vulkan PUBLIC
         TasrovyExt
         TasrovyLog
         TasrovyBase
+        TasrovyFileSystem
 )

@@ -41,8 +41,6 @@ private:
     std::unique_ptr<VulkanPipeline> _brdfLutPipeline;
 
     std::unique_ptr<VulkanImage> _brdfLUT;
-    std::unique_ptr<VulkanDescriptorPool> _prefilterPool;
-    VkDescriptorSet _prefilterSet = VK_NULL_HANDLE;
 
     std::unordered_map<std::string, IBTextures> _ibTextures;
 };

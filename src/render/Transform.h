@@ -4,7 +4,7 @@
 #include "TSMatrix.h"
 #include "TSQuaternion.h"
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
 class Transform {
 public:
@@ -31,4 +31,4 @@ private:
     TSVec3f scale_ = TSVec3f(1.0f);
 };
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

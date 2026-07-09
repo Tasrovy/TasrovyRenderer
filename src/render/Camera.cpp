@@ -1,6 +1,6 @@
 #include "Camera.h"
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
 std::unique_ptr<Camera> Camera::create(const std::string& name) {
     auto cam = std::unique_ptr<Camera>(new Camera());
@@ -33,6 +33,17 @@ Camera::Camera(TSVec3f position, TSVec3f rotation, float fov, float aspect,
     , farPlane_(farPlane) {
 }
 
+std::unique_ptr<Camera> Camera::clone() const {
+    auto camera = std::unique_ptr<Camera>(new Camera());
+    camera->name_ = name_;
+    camera->transform_ = transform_;
+    camera->fov_ = fov_;
+    camera->aspect_ = aspect_;
+    camera->nearPlane_ = nearPlane_;
+    camera->farPlane_ = farPlane_;
+    return camera;
+}
+
 void Camera::setName(const std::string& name) { name_ = name; }
 const std::string& Camera::getName() const { return name_; }
 
@@ -61,4 +72,4 @@ TSMat4f Camera::getViewMatrix() const {
     return inverse(transform_.getModelMatrix());
 }
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

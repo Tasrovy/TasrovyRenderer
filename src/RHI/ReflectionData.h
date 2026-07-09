@@ -5,8 +5,11 @@
 #include <cstdint>
 
 namespace Tasrovy {
+namespace Render { class Material; }
+}
 
-class Material;
+namespace Tasrovy::RHI {
+
 
 enum class ReflectionMemberType : uint32_t {
     Float, Float2, Float3, Float4,
@@ -43,7 +46,7 @@ struct ShaderReflectionData {
 };
 
 struct ReflectionRequest {
-    Material* material = nullptr;
+    Tasrovy::Render::Material* material = nullptr;
     std::string vertSpvPath;
     std::string fragSpvPath;
     std::string vertEntryPoint = "VSMain";
@@ -51,11 +54,11 @@ struct ReflectionRequest {
 };
 
 struct ReflectionResult {
-    Material* material = nullptr;
+    Tasrovy::Render::Material* material = nullptr;
     ShaderReflectionData vertexData;
     ShaderReflectionData fragmentData;
     bool success = true;
     std::string errorMessage;
 };
 
-} // namespace Tasrovy
+} // namespace Tasrovy::RHI

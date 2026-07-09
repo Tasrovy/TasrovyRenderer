@@ -580,7 +580,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL VulkanContext::debugCallback(
     VkDebugUtilsMessageTypeFlagsEXT messageType,
     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
     void* pUserData) {
-    LOG_ERROR("validation layer: {}", pCallbackData->pMessage);
+    LOG_INFO("validation layer: {}", pCallbackData->pMessage);
     return VK_FALSE;
 }
 

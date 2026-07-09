@@ -5,11 +5,12 @@
 
 #include "TSVector.h"
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
 class Light {
 public:
     virtual ~Light();
+    virtual std::unique_ptr<Light> clone() const = 0;
 
     void setName(const std::string& name);
     const std::string& getName() const;
@@ -36,6 +37,7 @@ class DirectionalLight : public Light {
 public:
     static std::unique_ptr<DirectionalLight> create(TSVec3f direction, TSVec3f color, float intensity,
                                                      const std::string& name = "");
+    std::unique_ptr<Light> clone() const override;
 
 private:
     DirectionalLight() = default;
@@ -47,6 +49,7 @@ public:
     static std::unique_ptr<PointLight> create(TSVec3f position, TSVec3f color, float intensity,
                                                float constant = 1.0f, float linear = 0.09f, float quadratic = 0.032f,
                                                const std::string& name = "");
+    std::unique_ptr<Light> clone() const override;
 
     void setPosition(TSVec3f pos);
     TSVec3f getPosition() const;
@@ -74,6 +77,7 @@ public:
     static std::unique_ptr<SpotLight> create(TSVec3f position, TSVec3f direction, TSVec3f color,
                                                float intensity, float cutoff = 12.5f,
                                                const std::string& name = "");
+    std::unique_ptr<Light> clone() const override;
 
     void setPosition(TSVec3f pos);
     void setCutoff(float degrees);
@@ -89,4 +93,4 @@ private:
     float cutoff_ = 12.5f;
 };
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <Logger.hpp>
 
-namespace Tasrovy {
+namespace Tasrovy::RHI {
 
 std::vector<uint32_t> SpirvReflection::readSpvFile(const std::string& path) {
     std::ifstream file(path, std::ios::ate | std::ios::binary);
@@ -120,4 +120,4 @@ ReflectionMemberType SpirvReflection::mapType(uint32_t baseType, uint32_t vecsiz
     return ReflectionMemberType::Float;
 }
 
-} // namespace Tasrovy
+} // namespace Tasrovy::RHI

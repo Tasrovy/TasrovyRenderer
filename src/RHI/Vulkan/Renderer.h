@@ -23,20 +23,22 @@ public:
     void endRenderPass(VkCommandBuffer cmd, VulkanSwapchain& swapchain);
     
     // 结束一帧的渲染并提交
-    void endFrame(VulkanSwapchain& swapchain,VulkanQueue graphicsQueue,VulkanQueue presentQueue);
+    void endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, VulkanQueue& presentQueue);
+    void waitIdle();
 	uint32_t getMaxFramesInFlight() const { return _maxFramesInFlight; }
     uint32_t getCurrentFrame() const { return _currentFrame; }
 	uint32_t getImageIndex() const { return _imageIndex; }
     void draw(VulkanSwapchain& swapchain, std::unique_ptr<VulkanPipeline>& graphicsPipeline, 
         VulkanBuffer& indexBuffer, VulkanBuffer& vertexBuffer, 
         std::vector<VkDescriptorSet> descriptorSets, uint32_t size, 
-        VulkanQueue graphicsQueue, VulkanQueue presentQueue);
+        VulkanQueue& graphicsQueue, VulkanQueue& presentQueue);
 	//void updateuniformBuffer(VulkanBuffer& uniformBuffer, const UniformBufferObject& ubo);
 private:
     VulkanContext& _context;
     uint32_t _maxFramesInFlight;
     uint32_t _currentFrame = 0;
     uint32_t _imageIndex = 0;
+    uint32_t _swapchainImageCount = 0;
 
     VkCommandPool _commandPool;
     std::vector<VkCommandBuffer> _commandBuffers;

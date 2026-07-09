@@ -5,7 +5,7 @@
 #include <cmath>
 #include <initializer_list>
 
-namespace Tasrovy {
+namespace Tasrovy::Base {
 
     template <glm::length_t L, typename T>
     class TSVector : public glm::vec<L, T, glm::defaultp> {
@@ -51,7 +51,7 @@ namespace Tasrovy {
         return result;
     }
 
-    // --- 便捷函数（纯手写，不依赖 glm 数学函数）---
+    // --- 便捷函数（纯手写，不依赖 glm 数学函数�?--
 
     template <glm::length_t L, typename T>
     TSVector<L, T> zero() { return TSVector<L, T>(T(0)); }
@@ -163,4 +163,6 @@ namespace Tasrovy {
         return static_cast<T>(3.14159265358979323846);
     }
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Base
+
+namespace Tasrovy { using namespace Base; }

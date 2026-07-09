@@ -1,7 +1,7 @@
 #include "Skybox.h"
 #include "Texture.hpp"
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
 std::shared_ptr<Skybox> Skybox::create(const std::string& name) {
     auto sky = std::shared_ptr<Skybox>(new Skybox(name));
@@ -16,12 +16,27 @@ Skybox::Skybox(const std::string& name)
     : Object(name) {
 }
 
+std::shared_ptr<Object> Skybox::clone() const {
+    auto skybox = Skybox::create(name_);
+    skybox->transform_ = transform_;
+    skybox->mesh_ = mesh_;
+    skybox->material_ = material_;
+    skybox->active_ = active_;
+    skybox->cubemap_ = cubemap_;
+    for (const auto& child : children_) {
+        if (child) {
+            skybox->addChild(child->clone());
+        }
+    }
+    return skybox;
+}
+
 TSMat4f Skybox::getModelMatrix() const {
     return TSMat4f(1.0f);
 }
 
 TSMat4f Skybox::getSkyViewMatrix(const TSMat4f& cameraView) {
-    // 提取左上 3x3（旋转部分），重新构造 4x4 单位矩阵
+    // 提取左上 3x3（旋转部分），重新构�?4x4 单位矩阵
     TSMat4f skyView = TSMat4f(1.0f);
     for (int r = 0; r < 3; ++r) {
         for (int c = 0; c < 3; ++c) {
@@ -34,4 +49,4 @@ TSMat4f Skybox::getSkyViewMatrix(const TSMat4f& cameraView) {
 void Skybox::setCubemap(std::shared_ptr<Texture> cubemap) { cubemap_ = std::move(cubemap); }
 std::shared_ptr<Texture> Skybox::getCubemap() const { return cubemap_; }
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

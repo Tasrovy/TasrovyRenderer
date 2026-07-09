@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
 class Camera {
 public:
@@ -13,6 +13,7 @@ public:
                                           float fov = 45.0f, float aspect = 16.0f / 9.0f,
                                           float nearPlane = 0.1f, float farPlane = 100.0f,
                                           const std::string& name = "");
+    std::unique_ptr<Camera> clone() const;
 
     void setName(const std::string& name);
     const std::string& getName() const;
@@ -50,4 +51,4 @@ private:
     float farPlane_;
 };
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

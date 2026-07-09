@@ -1,5 +1,5 @@
 #include "Light.h"
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
 Light::~Light() = default;
 
@@ -32,6 +32,10 @@ DirectionalLight::DirectionalLight(const std::string& name, TSVec3f direction, T
     : Light(name, direction, color, intensity) {
 }
 
+std::unique_ptr<Light> DirectionalLight::clone() const {
+    return DirectionalLight::create(direction_, color_, intensity_, name_);
+}
+
 // --- PointLight ---
 
 std::unique_ptr<PointLight> PointLight::create(TSVec3f position, TSVec3f color, float intensity,
@@ -47,6 +51,10 @@ PointLight::PointLight(const std::string& name, TSVec3f position, TSVec3f color,
     , constant_(constant)
     , linear_(linear)
     , quadratic_(quadratic) {
+}
+
+std::unique_ptr<Light> PointLight::clone() const {
+    return PointLight::create(position_, color_, intensity_, constant_, linear_, quadratic_, name_);
 }
 
 void PointLight::setPosition(TSVec3f pos) { position_ = pos; }
@@ -74,9 +82,13 @@ SpotLight::SpotLight(const std::string& name, TSVec3f position, TSVec3f directio
     , cutoff_(cutoff) {
 }
 
+std::unique_ptr<Light> SpotLight::clone() const {
+    return SpotLight::create(position_, direction_, color_, intensity_, cutoff_, name_);
+}
+
 void SpotLight::setPosition(TSVec3f pos) { position_ = pos; }
 void SpotLight::setCutoff(float degrees) { cutoff_ = degrees; }
 TSVec3f SpotLight::getPosition() const { return position_; }
 float SpotLight::getCutoff() const { return cutoff_; }
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

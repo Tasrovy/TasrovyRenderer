@@ -1,7 +1,7 @@
 #include "Texture.hpp"
 #include "VulkanImage.h"
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
 std::shared_ptr<Texture> Texture::create() {
     return std::shared_ptr<Texture>(new Texture());
@@ -39,8 +39,7 @@ Texture& Texture::operator=(Texture&& other) noexcept {
 void Texture::loadFromFile(const std::string& path, bool generateMips) {
     generateMips_ = generateMips;
     type_ = Type::Texture2D;
-    // VulkanContext 和 ImmediateSubmitter 由调用方在 RHI 层传入
-    // 此处仅保存路径，实际加载延迟到 RHI 绑定阶段
+    // VulkanContext �?ImmediateSubmitter 由调用方�?RHI 层传�?    // 此处仅保存路径，实际加载延迟�?RHI 绑定阶段
     filePath_ = path;
 }
 
@@ -55,4 +54,4 @@ Texture::Type Texture::getType() const { return type_; }
 bool Texture::hasMipmaps() const { return generateMips_; }
 const std::string& Texture::getFilePath() const { return filePath_; }
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

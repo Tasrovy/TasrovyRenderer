@@ -5,7 +5,7 @@
 
 class VulkanImage;
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
 class Texture : public std::enable_shared_from_this<Texture> {
 public:
@@ -40,4 +40,4 @@ private:
     bool generateMips_ = true;
 };
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

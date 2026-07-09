@@ -3,7 +3,7 @@
 #include "../render/Material.h"
 #include <Logger.hpp>
 
-namespace Tasrovy {
+namespace Tasrovy::RHI {
 
 ReflectionBridge::~ReflectionBridge() {
     stop();
@@ -100,4 +100,4 @@ ReflectionResult ReflectionBridge::processRequest(const ReflectionRequest& reque
     return result;
 }
 
-} // namespace Tasrovy
+} // namespace Tasrovy::RHI

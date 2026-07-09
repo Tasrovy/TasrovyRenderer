@@ -5,6 +5,7 @@ add_library(TasrovyRender STATIC
         Light.h
         Material.cpp
         Material.h
+        MaterialTexture.h
         Object.cpp
         Object.h
         Camera.cpp
@@ -19,10 +20,13 @@ add_library(TasrovyRender STATIC
         Mesh.h
         Pipeline.cpp
         Pipeline.h
+        PipelineResource.h
         PipelinePass.cpp
         PipelinePass.h
         Skybox.cpp
         Skybox.h
+        PBRPipeline.cpp
+        PBRPipeline.h
 )
 
 target_include_directories(TasrovyRender PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

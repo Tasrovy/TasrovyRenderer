@@ -5,7 +5,7 @@
 #include "TSVector.h"
 #include "TSMatrix.h"
 
-namespace Tasrovy {
+namespace Tasrovy::FS {
 
 struct Vertex {
     TSVec3f position;
@@ -16,6 +16,7 @@ struct Vertex {
     TSVec2f uv1;
     TSVec2f uv2;
     TSVec2f uv3;
+    TSVec3f bitangent;
 };
 
 struct Submesh {

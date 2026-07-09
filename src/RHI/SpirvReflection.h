@@ -5,7 +5,7 @@
 #include <vector>
 #include <cstdint>
 
-namespace Tasrovy {
+namespace Tasrovy::RHI {
 
 class SpirvReflection {
 public:
@@ -17,4 +17,4 @@ private:
     static ReflectionMemberType mapType(uint32_t baseType, uint32_t vecsize, uint32_t columns);
 };
 
-} // namespace Tasrovy
+} // namespace Tasrovy::RHI

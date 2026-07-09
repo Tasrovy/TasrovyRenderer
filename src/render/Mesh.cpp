@@ -1,7 +1,7 @@
 #include "Mesh.h"
 #include "Model.hpp"
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
 std::shared_ptr<Mesh> Mesh::create(
     std::vector<MeshVertex> vertices,
@@ -15,7 +15,7 @@ std::shared_ptr<Mesh> Mesh::create(
     return mesh;
 }
 
-std::shared_ptr<Mesh> Mesh::fromModel(const Model& model) {
+std::shared_ptr<Mesh> Mesh::fromModel(const Tasrovy::FS::Model& model) {
     auto mesh = std::shared_ptr<Mesh>(new Mesh());
 
     mesh->vertices_.reserve(model.GetVertices().size());
@@ -24,7 +24,7 @@ std::shared_ptr<Mesh> Mesh::fromModel(const Model& model) {
         mv.position = v.position;
         mv.normal = v.normal;
         mv.tangent = v.tangent;
-        mv.vertexColor = v.vertexColor;
+        mv.vertexColor = v.bitangent;
         mv.uv0 = v.uv0;
         mv.uv1 = v.uv1;
         mv.uv2 = v.uv2;
@@ -129,4 +129,4 @@ const std::vector<VkVertexInputAttributeDescription>& Mesh::getVertexAttributeDe
     return vertexAttrDesc_;
 }
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

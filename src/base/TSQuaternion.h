@@ -6,7 +6,7 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include "glm/gtx/quaternion.hpp"
 
-namespace Tasrovy {
+namespace Tasrovy::Base {
 
 template <typename T>
 class TSQuaternion : public glm::tquat<T, glm::defaultp> {
@@ -27,7 +27,7 @@ public:
 using TSQuatf = TSQuaternion<float>;
 using TSQuatd = TSQuaternion<double>;
 
-// --- 构造 ---
+// --- 构�?---
 
 template <typename T>
 TSQuaternion<T> quatFromAxisAngle(TSVector<3, T> axis, T angle) {
@@ -66,7 +66,7 @@ TSQuaternion<T> normalize(const TSQuaternion<T>& q) {
     return TSQuaternion<T>(glm::normalize(q));
 }
 
-// --- 插值 ---
+// --- 插�?---
 
 template <typename T>
 TSQuaternion<T> slerp(const TSQuaternion<T>& a, const TSQuaternion<T>& b, T t) {
@@ -121,4 +121,6 @@ T pitch(const TSQuaternion<T>& q) { return glm::pitch(q); }
 template <typename T>
 T roll(const TSQuaternion<T>& q) { return glm::roll(q); }
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Base
+
+namespace Tasrovy { using namespace Base; }

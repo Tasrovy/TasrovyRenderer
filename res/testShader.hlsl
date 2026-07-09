@@ -46,22 +46,22 @@ VSOutput VSMain(VSInput input)
     );
     return output;
 }
-Texture2D albedoMap : register(t1);
-Texture2D normalMap : register(t2);
-Texture2D emissiveMap : register(t3);
-Texture2D mraMap : register(t4);
+[[vk::combinedImageSampler]] Texture2D albedoMap : register(t1);
+[[vk::combinedImageSampler]] Texture2D normalMap : register(t2);
+[[vk::combinedImageSampler]] Texture2D emissiveMap : register(t3);
+[[vk::combinedImageSampler]] Texture2D mraMap : register(t4);
 
-SamplerState pbrSampler : register(s1);
-SamplerState pbrSampler1 : register(s2);
-SamplerState pbrSampler2 : register(s3);
-SamplerState pbrSampler3 : register(s4);
+[[vk::combinedImageSampler]] SamplerState pbrSampler : register(s1);
+[[vk::combinedImageSampler]] SamplerState pbrSampler1 : register(s2);
+[[vk::combinedImageSampler]] SamplerState pbrSampler2 : register(s3);
+[[vk::combinedImageSampler]] SamplerState pbrSampler3 : register(s4);
 
-TextureCube  irradianceMap : register(t5); // 辐照度图 (漫反射)
-TextureCube  prefilteredMap: register(t6); // 预过滤镜面反射图 (高光)
-Texture2D    brdfLUT       : register(t7); // BRDF 查找表
-SamplerState iblSampler1      : register(s5); 
-SamplerState iblSampler2     : register(s6); 
-SamplerState iblSampler3      : register(s7); 
+[[vk::combinedImageSampler]] TextureCube  irradianceMap : register(t5); // 辐照度图 (漫反射)
+[[vk::combinedImageSampler]] TextureCube  prefilteredMap: register(t6); // 预过滤镜面反射图 (高光)
+[[vk::combinedImageSampler]] Texture2D    brdfLUT       : register(t7); // BRDF 查找表
+[[vk::combinedImageSampler]] SamplerState iblSampler1      : register(s5); 
+[[vk::combinedImageSampler]] SamplerState iblSampler2     : register(s6); 
+[[vk::combinedImageSampler]] SamplerState iblSampler3      : register(s7); 
 // --- PBR 辅助函数 (Cook-Torrance BRDF) ---
 #define PI 3.14159265359
 
@@ -113,12 +113,12 @@ float4 PSMain(VSOutput input) : SV_TARGET
 {
     // --- 1. 获取表面基础属性 ---
     float3 albedo = albedoMap.Sample(pbrSampler, input.texcoord).rgb; // sRGB -> Linear
-    float metallic = mraMap.Sample(pbrSampler, input.texcoord).r*uMetallic; // 假设 glTF: B=Metallic
-    float roughness = 1-mraMap.Sample(pbrSampler, input.texcoord).a*uRoughness; // G=Roughness
-    float ao = mraMap.Sample(pbrSampler, input.texcoord).b*uAo;       // R=AO
+    float metallic = mraMap.Sample(pbrSampler3, input.texcoord).r*uMetallic; // 假设 glTF: B=Metallic
+    float roughness = 1-mraMap.Sample(pbrSampler3, input.texcoord).a*uRoughness; // G=Roughness
+    float ao = mraMap.Sample(pbrSampler3, input.texcoord).b*uAo;       // R=AO
     
     // --- 2. 获取世界空间法线 (来自法线贴图) ---
-    float3 tangentNormal = normalMap.Sample(pbrSampler, input.texcoord).xyz * 2.0 - 1.0;
+    float3 tangentNormal = normalMap.Sample(pbrSampler1, input.texcoord).xyz * 2.0 - 1.0;
     float3 N = normalize(mul(tangentNormal, input.TBN));
 
     // --- 3. 准备通用向量 ---
@@ -155,30 +155,25 @@ float4 PSMain(VSOutput input) : SV_TARGET
     float3 diffuse_direct = kD_direct * albedo / PI;
 
     // 直接光照贡献
-    float3 Lo_direct = (diffuse_direct + (specular_direct * mraMap.Sample(pbrSampler, input.texcoord).g)) * radiance;
+    float3 Lo_direct = (diffuse_direct + (specular_direct * mraMap.Sample(pbrSampler3, input.texcoord).g)) * radiance;
 
     // =================================================================
     //  间接光照 (Indirect Lighting - IBL)
     // =================================================================
 
-    // a. 间接高光 (Indirect Specular)
-    const float MAX_REFLECTION_LOD = 4.0; // prefiltered map 的 mipmap 等级数 - 1
-    // 根据粗糙度，在预过滤图的不同 mipmap 等级上采样
+    // a. Indirect Specular
+    const float MAX_REFLECTION_LOD = 7.0;
     float3 prefilteredColor = prefilteredMap.SampleLevel(iblSampler2, R, roughness * MAX_REFLECTION_LOD).rgb;
-    // 从 BRDF LUT 中查找 scale 和 bias
-    float2 brdf  = brdfLUT.Sample(pbrSampler, float2(NdotV, roughness)).rg;
-    // Schlick-BRDF 近似
-    float3 specular_IBL = prefilteredColor * (F * brdf.x + brdf.y) * mraMap.Sample(pbrSampler, input.texcoord).g;
-    
-    // b. 间接漫反射 (Indirect Diffuse)
-    // 直接从辐照度图采样，并与菲涅尔项结合
+    float2 brdf = brdfLUT.Sample(iblSampler3, float2(NdotV, roughness)).rg;
+    float3 specular_IBL = prefilteredColor * (F * brdf.x + brdf.y) * mraMap.Sample(pbrSampler3, input.texcoord).g;
+
+    // b. Indirect Diffuse
     float3 irradiance = irradianceMap.Sample(iblSampler1, N).rgb;
-    float3 kS_indirect = fresnelSchlick(NdotV, F0); // 对于环境光，入射角就是 NdotV
+    float3 kS_indirect = fresnelSchlick(NdotV, F0);
     float3 kD_indirect = float3(1.0, 1.0, 1.0) - kS_indirect;
     kD_indirect *= (1.0 - metallic);
     float3 diffuse_IBL = kD_indirect * irradiance * albedo;
-    
-    // 组合间接光照
+
     float3 Lo_indirect = diffuse_IBL + specular_IBL;
     
     // =================================================================
@@ -189,7 +184,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
     float3 color = (Lo_indirect * ao) + Lo_direct;
     
     // 添加自发光
-    color += emissiveMap.Sample(pbrSampler, input.texcoord).rgb;
+    color += emissiveMap.Sample(pbrSampler2, input.texcoord).rgb;
     
     // HDR 色调映射 (Reinhard)
     color = color / (color + float3(1.0, 1.0, 1.0));

@@ -1,6 +1,6 @@
 #include "FileSystem.hpp"
 
-namespace Tasrovy {
+namespace Tasrovy::FS {
 
 std::shared_ptr<Model> FileSystem::LoadModel(const std::string& path) {
     auto it = modelCache.find(path);

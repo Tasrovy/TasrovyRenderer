@@ -3,7 +3,7 @@
 #include <vector>
 #include <cstdint>
 
-namespace Tasrovy {
+namespace Tasrovy::FS {
 
 class Image {
 public:
@@ -16,8 +16,8 @@ public:
     Image(const Image&) = delete;
     Image& operator=(const Image&) = delete;
 
-    bool LoadFromFile(const std::string& path, bool flipY = true);
-    bool LoadFromMemory(const unsigned char* buffer, size_t length, bool flipY = true);
+    bool LoadFromFile(const std::string& path, bool flipY = true, int desiredChannels = 0);
+    bool LoadFromMemory(const unsigned char* buffer, size_t length, bool flipY = true, int desiredChannels = 0);
     void Unload();
 
     int GetWidth() const { return width; }

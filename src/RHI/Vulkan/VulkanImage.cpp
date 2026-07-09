@@ -1,11 +1,11 @@
 #include "VulkanImage.h"
 #include "ImmediateSubmitter.h"
 #include "VulkanBuffer.h"
+#include "../../filesystem/Image.hpp"
 #include <stdexcept>
 #include <cmath>
 #include <algorithm>
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
+#include <vector>
 #include <Logger.hpp>
 
 // --- 统一的私有构造函数 ---
@@ -37,17 +37,17 @@ VulkanImage::~VulkanImage() {
 // --- 静态工厂函数 ---
 
 std::unique_ptr<VulkanImage> VulkanImage::createTexture(VulkanContext& context, ImmediateSubmitter& uploader, const std::string& path, bool generateMipmaps, VkFormat format) {
-    int texWidth, texHeight, texChannels;
-    stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-    if (!pixels) {
+    Tasrovy::FS::Image image;
+    if (!image.LoadFromFile(path, false, 4)) {
         throw std::runtime_error("failed to load texture image from path: " + path);
     }
 
-    VkDeviceSize imageSize = texWidth * texHeight * 4;
+    const int texWidth = image.GetWidth();
+    const int texHeight = image.GetHeight();
+    const VkDeviceSize imageSize = static_cast<VkDeviceSize>(image.GetDataSize());
 
     VulkanBuffer stagingBuffer(context, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-	stagingBuffer.setData(pixels, imageSize);
-    stbi_image_free(pixels);
+    stagingBuffer.setData(image.GetData(), imageSize, 0);
 
     VkExtent2D extent = { (uint32_t)texWidth, (uint32_t)texHeight };
     uint32_t mipLevels = generateMipmaps ? static_cast<uint32_t>(floor(log2(std::max(texWidth, texHeight)))) + 1 : 1;
@@ -61,7 +61,28 @@ std::unique_ptr<VulkanImage> VulkanImage::createTexture(VulkanContext& context, 
 
     uploader.submit([&](VkCommandBuffer cmd) {
         textureImage->recordTransitionLayout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        uploader.copyBufferToImage(stagingBuffer, *textureImage, texWidth, texHeight);
+
+        VkBufferImageCopy region{};
+        region.bufferOffset = 0;
+        region.bufferRowLength = 0;
+        region.bufferImageHeight = 0;
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel = 0;
+        region.imageSubresource.baseArrayLayer = 0;
+        region.imageSubresource.layerCount = 1;
+        region.imageOffset = { 0, 0, 0 };
+        region.imageExtent = {
+            static_cast<uint32_t>(texWidth),
+            static_cast<uint32_t>(texHeight),
+            1
+        };
+        vkCmdCopyBufferToImage(
+            cmd,
+            stagingBuffer.getBuffer(),
+            textureImage->getImage(),
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1,
+            &region);
 
         if (generateMipmaps) {
             textureImage->recordGenerateMipmaps(cmd);
@@ -86,24 +107,29 @@ std::unique_ptr<VulkanImage> VulkanImage::createCubemapFromFile(VulkanContext& c
         path + "\\front.png",
         path + "\\back.png"
 	};
-    int texWidth, texHeight, texChannels;
-    stbi_uc* pixels[6];
+    int texWidth = 0;
+    int texHeight = 0;
     VkDeviceSize faceSize = 0;
-    for (int i = 0; i < 6; ++i) {
-        pixels[i] = stbi_load(faces[i].c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-        if (!pixels[i]) {
-            for (int j = 0; j < i; ++j) stbi_image_free(pixels[j]);
-            throw std::runtime_error("Failed to load cubemap face: " + faces[i]);
+    std::vector<Tasrovy::FS::Image> faceImages;
+    faceImages.reserve(6);
+    for (const auto& face : faces) {
+        Tasrovy::FS::Image image;
+        if (!image.LoadFromFile(face, false, 4)) {
+            throw std::runtime_error("Failed to load cubemap face: " + face);
         }
-        if (i == 0) {
-            faceSize = static_cast<VkDeviceSize>(texWidth) * texHeight * 4;
+        if (faceImages.empty()) {
+            texWidth = image.GetWidth();
+            texHeight = image.GetHeight();
+            faceSize = static_cast<VkDeviceSize>(image.GetDataSize());
+        } else if (image.GetWidth() != texWidth || image.GetHeight() != texHeight || image.GetDataSize() != faceSize) {
+            throw std::runtime_error("Cubemap faces must have matching dimensions and format: " + face);
         }
+        faceImages.push_back(std::move(image));
     }
 
     VulkanBuffer stagingBuffer(context, faceSize * 6, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    for (int i = 0; i < 6; ++i) {
-        stagingBuffer.setData(pixels[i],faceSize,i*faceSize);
-        stbi_image_free(pixels[i]);
+    for (uint32_t i = 0; i < faceImages.size(); ++i) {
+        stagingBuffer.setData(faceImages[i].GetData(), faceSize, i * faceSize);
     }
 
     auto cubemapImage = std::make_unique<VulkanImage>(

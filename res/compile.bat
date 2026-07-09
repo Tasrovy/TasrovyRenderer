@@ -3,6 +3,7 @@
   -E VSMain ^
   -spirv ^
   -fspv-target-env=vulkan1.2 ^
+  -fvk-use-dx-layout ^
   -Fo vert.spv ^
   testShader.hlsl
 

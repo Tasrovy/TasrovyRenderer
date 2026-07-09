@@ -3,7 +3,7 @@
 #include "Mesh.h"
 #include <algorithm>
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
 std::shared_ptr<Object> Object::create() {
     return std::shared_ptr<Object>(new Object());
@@ -18,6 +18,20 @@ Object::Object(const std::string& name)
 }
 
 Object::~Object() = default;
+
+std::shared_ptr<Object> Object::clone() const {
+    auto object = Object::create(name_);
+    object->transform_ = transform_;
+    object->mesh_ = mesh_;
+    object->material_ = material_;
+    object->active_ = active_;
+    for (const auto& child : children_) {
+        if (child) {
+            object->addChild(child->clone());
+        }
+    }
+    return object;
+}
 
 Transform& Object::getTransform() { return transform_; }
 const Transform& Object::getTransform() const { return transform_; }
@@ -69,4 +83,4 @@ TSMat4f Object::getModelMatrix() const {
     return transform_.getModelMatrix();
 }
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

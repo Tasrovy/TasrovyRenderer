@@ -1,8 +1,8 @@
 
-RWTexture2D<float2> brdfLUT : register(u0);
+RWTexture2D<half2> brdfLUT : register(u0);
 
 #define PI 3.14159265359
-#define SAMPLE_COUNT 1024u
+#define SAMPLE_COUNT 256u
 
 float RadicalInverse_VdC(uint bits) 
 {
@@ -109,6 +109,6 @@ void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
         float2 result = IntegrateBRDF(NdotV, roughness);
         
         // 将结果写入 LUT
-        brdfLUT[dispatchThreadID.xy] = result;
+        brdfLUT[dispatchThreadID.xy] = half2(result);
     }
 }

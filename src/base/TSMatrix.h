@@ -5,7 +5,7 @@
 #include "TSVector.h"
 #include <cmath>
 
-namespace Tasrovy {
+namespace Tasrovy::Base {
 
     template <glm::length_t C, glm::length_t R, typename T>
     class TSMatrix : public glm::mat<C, R, T, glm::defaultp> {
@@ -106,7 +106,7 @@ namespace Tasrovy {
         return result;
     }
 
-    // --- 子矩阵提取 ---
+    // --- 子矩阵提�?---
 
     template <glm::length_t DstC, glm::length_t DstR, typename T, glm::length_t SrcC, glm::length_t SrcR>
     TSMatrix<DstC, DstR, T> mat_cast(const TSMatrix<SrcC, SrcR, T>& m) {
@@ -119,4 +119,6 @@ namespace Tasrovy {
         return result;
     }
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Base
+
+namespace Tasrovy { using namespace Base; }

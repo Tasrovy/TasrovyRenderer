@@ -40,6 +40,7 @@ public:
     // 注意：我们不再需要 setDynamicStates，因为默认值中包含了它
     PipelineBuilder& addDescriptorSetLayout(VkDescriptorSetLayout layout);
     PipelineBuilder& setRenderingFormats(VkFormat colorFormat, VkFormat depthFormat);
+    PipelineBuilder& setRenderingFormats(const std::vector<VkFormat>& colorFormats, VkFormat depthFormat);
 
     std::unique_ptr<VulkanPipeline> buildGraphicsPipeline();
 
@@ -56,10 +57,12 @@ private:
     VkPipelineRasterizationStateCreateInfo _rasterizationInfo{};
     VkPipelineMultisampleStateCreateInfo _multisampleInfo{};
     VkPipelineColorBlendAttachmentState _colorBlendAttachment{}; // <--- 新增，用于默认颜色混合
+    std::vector<VkPipelineColorBlendAttachmentState> _colorBlendAttachments;
     VkPipelineColorBlendStateCreateInfo _colorBlendInfo{};
     VkPipelineDepthStencilStateCreateInfo _depthStencilInfo{};
     std::vector<VkDynamicState> _dynamicStates; // <--- 新增
     VkPipelineDynamicStateCreateInfo _dynamicStateInfo{};
     std::vector<VkDescriptorSetLayout> _descriptorSetLayouts;
+    std::vector<VkFormat> _colorAttachmentFormats;
     VkPipelineRenderingCreateInfo _renderingInfo{};
 };

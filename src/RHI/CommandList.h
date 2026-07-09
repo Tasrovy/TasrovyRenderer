@@ -1,39 +1,54 @@
 #pragma once
 
 #include <memory>
-#include <vector>
 #include <cstdint>
 
-namespace Tasrovy {
-
-// --- RHI forward declarations ---
+namespace Tasrovy::RHI {
 
 class Buffer;
-class Pipeline;
+class Pass;
+class DescriptorSet;
+class Image;
 
-// --- CommandList ---
+enum class ImageLayout {
+    Undefined,
+    ColorAttachment,
+    DepthAttachment,
+    ShaderRead,
+    Present
+};
 
 class CommandList : public std::enable_shared_from_this<CommandList> {
 public:
     static std::shared_ptr<CommandList> create();
+    ~CommandList();
+
+    void setBackendContext(void* nativeContext);
+    void useNativeCommandBuffer(uint64_t nativeCommandBuffer);
 
     // --- Lifecycle ---
     void begin();
     void end();
+    uint64_t getNativeCommandBuffer() const;
 
     // --- Render pass ---
-    void beginRenderPass(float clearColor[4], bool clearDepth = true);
+    void beginRenderPass(Pass& pass);
+    void beginRenderPass(Pass& pass,
+        uint64_t colorView, uint64_t resolveView, uint64_t depthView,
+        uint32_t width, uint32_t height);
     void endRenderPass();
 
     // --- Pipeline ---
-    void bindPipeline(Pipeline& pipeline);
+    void bindPipeline(uint64_t nativePipeline, uint64_t nativeLayout, uint32_t bindPoint = 0);
 
     // --- Buffers ---
     void bindVertexBuffer(Buffer& buffer);
     void bindIndexBuffer(Buffer& buffer);
 
     // --- Descriptors ---
+    void setPipelineLayout(uint64_t nativeLayout);
     void bindDescriptorSet(uint32_t setIndex, void* descriptorSet);
+    void bindDescriptorSet(uint32_t setIndex, const DescriptorSet& descriptorSet);
 
     // --- State ---
     void setViewport(float x, float y, float width, float height, float minDepth = 0.0f, float maxDepth = 1.0f);
@@ -48,6 +63,7 @@ public:
 
     // --- Barrier ---
     void pipelineBarrier(uint32_t srcStage, uint32_t dstStage);
+    void transitionImage(Image& image, ImageLayout oldLayout, ImageLayout newLayout, uint32_t aspectMask = 0);
 
 private:
     CommandList() = default;
@@ -55,4 +71,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace Tasrovy
+} // namespace Tasrovy::RHI

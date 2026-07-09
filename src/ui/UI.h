@@ -4,6 +4,8 @@
 
 struct GLFWwindow;
 
+namespace Tasrovy::UI {
+
 class UIOverlay {
 public:
     struct CreateInfo {
@@ -12,6 +14,7 @@ public:
         VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
         VkDevice device = VK_NULL_HANDLE;
         VkQueue graphicsQueue = VK_NULL_HANDLE;
+        uint32_t queueFamily = 0;
         uint32_t minImageCount = 3;
         uint32_t imageCount = 3;
         VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -27,8 +30,9 @@ public:
     using DrawCallback = std::function<void()>;
     void setDrawCallback(DrawCallback cb) { _drawCallback = std::move(cb); }
 
-    void beginFrame();
+    bool beginFrame();
     void endFrame(VkCommandBuffer cmd, VkImageView colorView, VkExtent2D extent);
+    void renderDrawData(VkCommandBuffer cmd);
 
 private:
     GLFWwindow* _window = nullptr;
@@ -37,3 +41,5 @@ private:
     VkFormat _colorFormat = VK_FORMAT_B8G8R8A8_SRGB;
     DrawCallback _drawCallback;
 };
+
+} // namespace Tasrovy::UI

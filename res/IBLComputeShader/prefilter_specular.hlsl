@@ -3,21 +3,22 @@
 // ====================================================================
 
 // 输入: 原始的 HDR 环境立方体图
-TextureCube  environmentMap     : register(t0);
-SamplerState environmentSampler : register(s0);
+[[vk::combinedImageSampler]] TextureCube  environmentMap     : register(t0);
+[[vk::combinedImageSampler]] SamplerState environmentSampler : register(s0);
 
 // 输出: 预过滤图的某一个 Mip Level (作为 Storage Image 写入)
 RWTexture2DArray<half4> prefilteredMap : register(u1);
 
 // 通过 Push Constants 接收的参数
-cbuffer PushConstants : register(b1) // 假设 Push Constant 绑定到 b1
+struct PushConstants
 {
     float roughness;
 };
+[[vk::push_constant]] PushConstants pc;
 
 
 #define PI 3.14159265359
-#define SAMPLE_COUNT 1024u
+#define SAMPLE_COUNT 128u
 
 float RadicalInverse_VdC(uint bits) 
 {
@@ -140,7 +141,7 @@ void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
     for(uint i = 0u; i < SAMPLE_COUNT; ++i)
     {
         float2 Xi = Hammersley(i, SAMPLE_COUNT);
-        float3 H = ImportanceSampleGGX(Xi, N, roughness);
+        float3 H = ImportanceSampleGGX(Xi, N, pc.roughness);
         float3 L = normalize(2.0 * dot(V, H) * H - V); // 反射向量
 
         float NdotL = max(dot(N, L), 0.0);

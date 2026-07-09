@@ -7,9 +7,11 @@
 #include <memory>
 #include <cstdint>
 
-namespace Tasrovy {
-
+namespace Tasrovy::FS {
 class Model;
+}
+
+namespace Tasrovy::Render {
 
 struct MeshVertex {
     TSVec3f position;
@@ -35,7 +37,7 @@ public:
         std::vector<uint32_t> indices,
         std::vector<MeshSubmesh> submeshes = {});
 
-    static std::shared_ptr<Mesh> fromModel(const Model& model);
+    static std::shared_ptr<Mesh> fromModel(const Tasrovy::FS::Model& model);
 
     void setVertices(std::vector<MeshVertex> vertices);
     void setIndices(std::vector<uint32_t> indices);
@@ -65,4 +67,4 @@ private:
     std::vector<VkVertexInputAttributeDescription> vertexAttrDesc_;
 };
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

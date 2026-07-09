@@ -47,8 +47,9 @@ PipelineBuilder::PipelineBuilder(VulkanContext& context) : _context(context) {
     _colorBlendAttachment.blendEnable = VK_FALSE;
     _colorBlendInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     _colorBlendInfo.logicOpEnable = VK_FALSE;
-    _colorBlendInfo.attachmentCount = 1;
-    _colorBlendInfo.pAttachments = &_colorBlendAttachment;
+    _colorBlendAttachments = { _colorBlendAttachment };
+    _colorBlendInfo.attachmentCount = static_cast<uint32_t>(_colorBlendAttachments.size());
+    _colorBlendInfo.pAttachments = _colorBlendAttachments.data();
 
     // 深度/模板：默认开启深度测试和写入，使用 LESS 比较
     _depthStencilInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -105,6 +106,15 @@ PipelineBuilder& PipelineBuilder::setMultisampleState(const VkPipelineMultisampl
 
 PipelineBuilder& PipelineBuilder::setColorBlendState(const VkPipelineColorBlendStateCreateInfo& info) {
     _colorBlendInfo = info;
+    if (info.pAttachments && info.attachmentCount > 0) {
+        _colorBlendAttachments.assign(
+            info.pAttachments,
+            info.pAttachments + info.attachmentCount);
+    } else {
+        _colorBlendAttachments.clear();
+    }
+    _colorBlendInfo.pAttachments =
+        _colorBlendAttachments.empty() ? nullptr : _colorBlendAttachments.data();
     return *this;
 }
 
@@ -119,13 +129,25 @@ PipelineBuilder& PipelineBuilder::addDescriptorSetLayout(VkDescriptorSetLayout l
 }
 
 PipelineBuilder& PipelineBuilder::setRenderingFormats(VkFormat colorFormat, VkFormat depthFormat) {
-    // 这里需要特别注意，因为pColorAttachmentFormats需要一个持久的指针
-    // 我们将colorFormat存储在_renderingInfo的一个隐藏成员中
-    static VkFormat staticColorFormat; // 使用静态变量以确保指针有效
-    staticColorFormat = colorFormat;
-    _renderingInfo.colorAttachmentCount = 1;
-    _renderingInfo.pColorAttachmentFormats = &staticColorFormat;
+    return setRenderingFormats(std::vector<VkFormat>{colorFormat}, depthFormat);
+}
+
+PipelineBuilder& PipelineBuilder::setRenderingFormats(
+    const std::vector<VkFormat>& colorFormats,
+    VkFormat depthFormat) {
+    _colorAttachmentFormats = colorFormats;
+    _renderingInfo.colorAttachmentCount = static_cast<uint32_t>(_colorAttachmentFormats.size());
+    _renderingInfo.pColorAttachmentFormats =
+        _colorAttachmentFormats.empty() ? nullptr : _colorAttachmentFormats.data();
     _renderingInfo.depthAttachmentFormat = depthFormat;
+
+    const auto blendTemplate = _colorBlendAttachments.empty()
+        ? _colorBlendAttachment
+        : _colorBlendAttachments.front();
+    _colorBlendAttachments.assign(_colorAttachmentFormats.size(), blendTemplate);
+    _colorBlendInfo.attachmentCount = static_cast<uint32_t>(_colorBlendAttachments.size());
+    _colorBlendInfo.pAttachments =
+        _colorBlendAttachments.empty() ? nullptr : _colorBlendAttachments.data();
     return *this;
 }
 

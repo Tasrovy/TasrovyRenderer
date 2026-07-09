@@ -1,6 +1,6 @@
 #include "Transform.h"
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
 Transform::Transform(TSVec3f position, TSVec3f rotation, TSVec3f scale)
     : position_(position)
@@ -32,4 +32,4 @@ TSMat4f Transform::getModelMatrix() const {
     return model;
 }
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

@@ -5,7 +5,7 @@
 #include <vector>
 #include <memory>
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
 class Mesh;
 class Material;
@@ -18,6 +18,8 @@ public:
 
     Object(const Object&) = delete;
     Object& operator=(const Object&) = delete;
+
+    virtual std::shared_ptr<Object> clone() const;
 
     Transform& getTransform();
     const Transform& getTransform() const;
@@ -68,4 +70,4 @@ protected:
     std::vector<std::shared_ptr<Object>> children_;
 };
 
-} // namespace Tasrovy
+} // namespace Tasrovy::Render

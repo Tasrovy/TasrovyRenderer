@@ -3,6 +3,8 @@
 #include <GLFW/glfw3.h>
 #include <stdexcept>
 
+namespace Tasrovy::Windowing {
+
 Window::Window(int width, int height, const std::string& title)
     : _info{ width, height, title }
 {
@@ -65,3 +67,5 @@ void Window::framebufferResizeCallback(GLFWwindow* window, int width, int height
         self->_framebufferResized = true;
     }
 }
+
+} // namespace Tasrovy::Windowing

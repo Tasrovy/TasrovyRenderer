@@ -2,7 +2,7 @@
 #include <stdexcept>
 
 // 辅助函数，确定布局转换的阶段和访问掩码
-// 您可以根据需要扩展这个函数以支持更多的转换类型
+// 您可以根据需要扩展这个函数以支持更多的转换类�?
 static void getPipelineStageAndAccessMasks(
     VkImageLayout oldLayout, 
     VkImageLayout newLayout, 
@@ -27,7 +27,7 @@ static void getPipelineStageAndAccessMasks(
         sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     } else {
-        // 默认情况或未支持的转换
+        // 默认情况或未支持的转�?
         sourceAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
         destinationAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
         sourceStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
@@ -39,7 +39,7 @@ static void getPipelineStageAndAccessMasks(
 ImmediateSubmitter::ImmediateSubmitter(VulkanContext& context, VulkanQueue& queue)
     : _context(context), _queue(queue) {
     
-    // 1. 创建一个专用于一次性命令的命令池
+    // 1. 创建一个专用于一次性命令的命令�?
     VkCommandPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     poolInfo.queueFamilyIndex = _queue.getFamilyIndex();
@@ -57,20 +57,28 @@ ImmediateSubmitter::ImmediateSubmitter(VulkanContext& context, VulkanQueue& queu
     if (vkCreateFence(_context.getDevice(), &fenceInfo, nullptr, &_fence) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create immediate submit fence!");
     }
-    // 立即重置，使其进入未触发状态
-    vkResetFences(_context.getDevice(), 1, &_fence);
+    // 立即重置，使其进入未触发状�?
 }
 
 ImmediateSubmitter::~ImmediateSubmitter() {
+    vkWaitForFences(_context.getDevice(), 1, &_fence, VK_TRUE, UINT64_MAX);
     vkDestroyFence(_context.getDevice(), _fence, nullptr);
     vkDestroyCommandPool(_context.getDevice(), _commandPool, nullptr);
 }
 
 void ImmediateSubmitter::submit(std::function<void(VkCommandBuffer cmd)>&& function) {
+    std::lock_guard<std::mutex> lock(_submitMutex);
     VkDevice device = _context.getDevice();
     VkQueue queue = _queue.getQueue();
 
-    // 1. 分配命令缓冲区
+    if (vkWaitForFences(device, 1, &_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to wait for immediate submit fence!");
+    }
+    if (vkResetFences(device, 1, &_fence) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to reset immediate submit fence!");
+    }
+
+    // 1. 分配命令缓冲�?
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = _commandPool;
@@ -82,17 +90,23 @@ void ImmediateSubmitter::submit(std::function<void(VkCommandBuffer cmd)>&& funct
         throw std::runtime_error("Failed to allocate immediate command buffer!");
     }
 
-    // 2. 开始记录命令
+    // 2. 开始记录命�?
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &beginInfo);
+    if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+        vkFreeCommandBuffers(device, _commandPool, 1, &cmd);
+        throw std::runtime_error("Failed to begin immediate command buffer!");
+    }
 
     // 3. 执行调用者提供的、用于记录具体命令的函数
     function(cmd);
 
     // 4. 结束记录
-    vkEndCommandBuffer(cmd);
+    if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+        vkFreeCommandBuffers(device, _commandPool, 1, &cmd);
+        throw std::runtime_error("Failed to end immediate command buffer!");
+    }
 
     // 5. 将命令提交到队列
     VkSubmitInfo submitInfo{};
@@ -100,22 +114,23 @@ void ImmediateSubmitter::submit(std::function<void(VkCommandBuffer cmd)>&& funct
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
 
-    // 使用 fence 来等待执行完成
-    // 首先重置 fence 为未触发状态
-    vkResetFences(device, 1, &_fence);
-    
+    // 使用 fence 来等待执行完�?
+    // 首先重置 fence 为未触发状�?
     if (vkQueueSubmit(queue, 1, &submitInfo, _fence) != VK_SUCCESS) {
+        vkFreeCommandBuffers(device, _commandPool, 1, &cmd);
         throw std::runtime_error("Failed to submit immediate command buffer!");
     }
 
     // 6. 阻塞CPU，直到GPU完成命令
-    vkWaitForFences(device, 1, &_fence, VK_TRUE, UINT64_MAX);
+    if (vkWaitForFences(device, 1, &_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to wait for immediate command buffer!");
+    }
 
     // 7. 释放临时的命令缓冲区
     vkFreeCommandBuffers(device, _commandPool, 1, &cmd);
 }
 
-// --- 高级便利函数的实现 ---
+// --- 高级便利函数的实�?---
 
 void ImmediateSubmitter::copyBuffer(VulkanBuffer& src, VulkanBuffer& dst, VkDeviceSize size) {
     submit([&](VkCommandBuffer cmd) {
@@ -136,7 +151,7 @@ void ImmediateSubmitter::copyDataToBuffer(void* src, VulkanBuffer& dst, VkDevice
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
     staging.setData(src, size);
-    // 3. 把 staging buffer 的内容复制到真正的 buffer
+    // 3. �?staging buffer 的内容复制到真正�?buffer
     submit([&](VkCommandBuffer cmd) {        
         VkBufferCopy copyRegion{};
         copyRegion.srcOffset = 0;

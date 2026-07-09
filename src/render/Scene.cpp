@@ -4,15 +4,45 @@
 #include "Camera.h"
 #include <algorithm>
 
-namespace Tasrovy {
+namespace Tasrovy::Render {
 
-std::unique_ptr<Scene> Scene::create(const std::string& name) {
-    auto scene = std::unique_ptr<Scene>(new Scene());
+std::shared_ptr<Scene> Scene::create(const std::string& name) {
+    auto scene = std::shared_ptr<Scene>(new Scene());
     scene->name_ = name;
     return scene;
 }
 
 Scene::~Scene() = default;
+
+std::shared_ptr<Scene> Scene::clone() const {
+    auto scene = Scene::create(name_);
+
+    for (const auto& object : objects_) {
+        if (object) {
+            scene->addObject(object->clone());
+        }
+    }
+
+    for (const auto& light : lights_) {
+        if (light) {
+            scene->addLight(light->clone());
+        }
+    }
+
+    for (const auto& camera : cameras_) {
+        if (!camera) {
+            continue;
+        }
+        auto clonedCamera = camera->clone();
+        auto* clonedCameraPtr = clonedCamera.get();
+        scene->addCamera(std::move(clonedCamera));
+        if (camera.get() == primaryCamera_) {
+            scene->setPrimaryCamera(clonedCameraPtr);
+        }
+    }
+
+    return scene;
+}
 
 void Scene::setName(const std::string& name) { name_ = name; }
 const std::string& Scene::getName() const { return name_; }
@@ -151,4 +181,18 @@ void Scene::clear() {
     primaryCamera_ = nullptr;
 }
 
-} // namespace Tasrovy
+const UniformData Scene::GenUniformData() const{
+    UniformData data;
+    std::vector<TSMat4f> modelMatrix;
+    for (const auto& obj : objects_) {
+        modelMatrix.push_back(obj->getModelMatrix());
+    }
+    data.modelMatrix = modelMatrix;
+    data.primaryCamera = primaryCamera_;
+    for (const auto& l : lights_) {
+        data.lights.push_back(l.get());
+    }
+    return data;
+}
+
+} // namespace Tasrovy::Render

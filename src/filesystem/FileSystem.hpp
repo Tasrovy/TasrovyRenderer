@@ -7,7 +7,7 @@
 #include "Anim.hpp"
 #include "AssetLoader.hpp"
 
-namespace Tasrovy {
+namespace Tasrovy::FS {
 
 class FileSystem {
 public:

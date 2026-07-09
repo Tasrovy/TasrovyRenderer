@@ -3,8 +3,19 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 #include <GLFW/glfw3.h>
+#include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include "Logger.hpp"
+
+namespace Tasrovy::UI {
+
+static void check_vk_result(VkResult err)
+{
+    if (err == VK_SUCCESS) return;
+    LOG_ERROR("[vulkan] VkResult = {}", static_cast<int>(err));
+    if (err < 0) abort();
+}
 
 UIOverlay::UIOverlay(const CreateInfo& info)
     : _window(info.window)
@@ -46,20 +57,38 @@ UIOverlay::UIOverlay(const CreateInfo& info)
     // Init backends
     ImGui_ImplGlfw_InitForVulkan(info.window, true);
 
-    // Load Vulkan functions
+    // Load Vulkan functions via volk
     static VkInstance s_instance = VK_NULL_HANDLE;
-    static VkDevice s_device = VK_NULL_HANDLE;
+    static VkDevice   s_device   = VK_NULL_HANDLE;
     s_instance = info.instance;
-    s_device = info.device;
+    s_device   = info.device;
 
     ImGui_ImplVulkan_LoadFunctions(VK_API_VERSION_1_3,
         [](const char* name, void*) -> PFN_vkVoidFunction {
-            if (s_device) {
-                auto addr = vkGetDeviceProcAddr(s_device, name);
-                if (addr) return addr;
-            }
-            return vkGetInstanceProcAddr(s_instance, name);
+            auto addr = vkGetInstanceProcAddr(s_instance, name);
+            if (addr) return addr;
+            if (s_device) return vkGetDeviceProcAddr(s_device, name);
+            return nullptr;
         }, nullptr);
+
+    // IO config
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+
+    // DPI scaling
+    float mainScale = ImGui_ImplGlfw_GetContentScaleForMonitor(glfwGetPrimaryMonitor());
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.ScaleAllSizes(mainScale);
+    style.FontScaleDpi = mainScale;
+    io.ConfigDpiScaleFonts = true;
+    io.ConfigDpiScaleViewports = true;
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        style.WindowRounding = 0.0f;
+        style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+    }
 
     // Use dynamic rendering (no VkRenderPass needed)
     VkPipelineRenderingCreateInfoKHR renderingInfo{};
@@ -71,12 +100,16 @@ UIOverlay::UIOverlay(const CreateInfo& info)
     init_info.Instance = info.instance;
     init_info.PhysicalDevice = info.physicalDevice;
     init_info.Device = info.device;
+    init_info.QueueFamily = info.queueFamily;
     init_info.Queue = info.graphicsQueue;
     init_info.DescriptorPool = _descriptorPool;
     init_info.MinImageCount = info.minImageCount;
     init_info.ImageCount = info.imageCount;
     init_info.PipelineInfoMain.PipelineRenderingCreateInfo = renderingInfo;
+    init_info.PipelineInfoMain.MSAASamples = info.msaaSamples;
     init_info.UseDynamicRendering = true;
+    init_info.Allocator = nullptr;
+    init_info.CheckVkResultFn = check_vk_result;
 
     LOG_INFO("UIOverlay: calling ImGui_ImplVulkan_Init");
     ImGui_ImplVulkan_Init(&init_info);
@@ -90,9 +123,13 @@ UIOverlay::~UIOverlay() {
     vkDestroyDescriptorPool(_device, _descriptorPool, nullptr);
 }
 
-void UIOverlay::beginFrame() {
+bool UIOverlay::beginFrame() {
     int w, h;
-    glfwGetWindowSize(_window, &w, &h);
+    glfwGetFramebufferSize(_window, &w, &h);
+    if (w == 0 || h == 0) {
+        ImGui_ImplGlfw_Sleep(10);
+        return false;
+    }
     ImGui::GetIO().DisplaySize = ImVec2((float)w, (float)h);
 
     ImGui_ImplVulkan_NewFrame();
@@ -100,10 +137,15 @@ void UIOverlay::beginFrame() {
     ImGui::NewFrame();
 
     if (_drawCallback) _drawCallback();
+    return true;
 }
 
 void UIOverlay::endFrame(VkCommandBuffer cmd, VkImageView colorView, VkExtent2D extent) {
     ImGui::Render();
+
+    ImDrawData* drawData = ImGui::GetDrawData();
+    if (drawData->DisplaySize.x <= 0.0f || drawData->DisplaySize.y <= 0.0f)
+        return;
 
     // Dynamic rendering: render ImGui on top of existing content
     VkRenderingAttachmentInfo colorAttachment{};
@@ -123,4 +165,30 @@ void UIOverlay::endFrame(VkCommandBuffer cmd, VkImageView colorView, VkExtent2D 
     vkCmdBeginRendering(cmd, &renderInfo);
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
     vkCmdEndRendering(cmd);
+
+    // Update and render secondary viewports
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+    }
 }
+
+void UIOverlay::renderDrawData(VkCommandBuffer cmd) {
+    ImGui::Render();
+
+    ImDrawData* drawData = ImGui::GetDrawData();
+    if (drawData->DisplaySize.x <= 0.0f || drawData->DisplaySize.y <= 0.0f) {
+        return;
+    }
+
+    ImGui_ImplVulkan_RenderDrawData(drawData, cmd);
+
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+    }
+}
+
+} // namespace Tasrovy::UI
