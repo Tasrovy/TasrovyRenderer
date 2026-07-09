@@ -2,7 +2,7 @@
 
 TasrovyRenderer 是一个 C++20 Vulkan 渲染器，目标是把上层渲染对象、RHI 抽象、异步资源加载、PBR 材质、天空盒、预计算 IBL 和 ImGui 调试工具串成一条可迭代的渲染主流程。
 
-[English](docs/README_EN.md)。
+[English](docs/README_EN.md)
 
 ## 当前能力
 
