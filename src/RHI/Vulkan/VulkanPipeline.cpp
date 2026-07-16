@@ -7,8 +7,15 @@ VulkanPipeline::VulkanPipeline(VulkanContext& context, VkPipeline pipeline, VkPi
     : _context(context), _pipeline(pipeline), _layout(layout) {}
 
 VulkanPipeline::~VulkanPipeline() {
-    vkDestroyPipeline(_context.getDevice(), _pipeline, nullptr);
-    vkDestroyPipelineLayout(_context.getDevice(), _layout, nullptr);
+    VkPipeline pipeline = _pipeline;
+    VkPipelineLayout layout = _layout;
+    _pipeline = VK_NULL_HANDLE;
+    _layout = VK_NULL_HANDLE;
+
+    _context.deferDelete([pipeline, layout](VkDevice device) {
+        if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, pipeline, nullptr);
+        if (layout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, layout, nullptr);
+    });
 }
 
 void VulkanPipeline::bind(VkCommandBuffer commandBuffer, VkPipelineBindPoint bindPoint) {
@@ -60,7 +67,11 @@ PipelineBuilder::PipelineBuilder(VulkanContext& context) : _context(context) {
     _depthStencilInfo.stencilTestEnable = VK_FALSE;
 
     // 动态状态：默认视口和裁剪是动态的
-    _dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    _dynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+        VK_DYNAMIC_STATE_FRONT_FACE
+    };
     _dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     _dynamicStateInfo.pDynamicStates = _dynamicStates.data();
     _dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(_dynamicStates.size());

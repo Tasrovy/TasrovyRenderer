@@ -29,17 +29,34 @@ VulkanBuffer::VulkanBuffer(VulkanContext& context, VkDeviceSize size, VkBufferUs
     if(needmap) vkMapMemory(_context->getDevice(), _memory, 0, size, 0, &_mappedMemory);
 }
 VulkanBuffer::~VulkanBuffer(){
+    if (!_context) {
+        return;
+    }
+
     if (_mappedMemory) {
         vkUnmapMemory(_context->getDevice(), _memory);
+        _mappedMemory = nullptr;
     }
-    vkDestroyBuffer(_context->getDevice(), _buffer, nullptr);   
-    vkFreeMemory(_context->getDevice(), _memory, nullptr);
+
+    VkBuffer buffer = _buffer;
+    VkDeviceMemory memory = _memory;
+    _buffer = VK_NULL_HANDLE;
+    _memory = VK_NULL_HANDLE;
+
+    _context->deferDelete([buffer, memory](VkDevice device) {
+        if (buffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(device, buffer, nullptr);
+        }
+        if (memory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, memory, nullptr);
+        }
+    });
 }
 void VulkanBuffer::setData(void* pointer,size_t size){
     memcpy(_mappedMemory, pointer, size);
 }
 void VulkanBuffer::setData(const void* data, VkDeviceSize size, VkDeviceSize offset) {
-    // °²È«¼ì²é
+    // å®‰å…¨æ£€æŸ¥
     if (_mappedMemory == nullptr) {
         throw std::runtime_error("Cannot write to a buffer that is not mapped!");
     }
@@ -47,8 +64,8 @@ void VulkanBuffer::setData(const void* data, VkDeviceSize size, VkDeviceSize off
         throw std::runtime_error("Write operation exceeds buffer capacity!");
     }
 
-    // vvvvvvvvvvvvvvvv ¹Ø¼üĞŞ¸Ä vvvvvvvvvvvvvvvv
-    // ¼ÆËã³öÄ¿±êµØÖ·£ºÆğÊ¼µØÖ· + Æ«ÒÆÁ¿
+    // vvvvvvvvvvvvvvvv å…³é”®ä¿®æ”¹ vvvvvvvvvvvvvvvv
+    // è®¡ç®—å‡ºç›®æ ‡åœ°å€ï¼šèµ·å§‹åœ°å€ + åç§»é‡
     char* memOffset = static_cast<char*>(_mappedMemory) + offset;
     memcpy(memOffset, data, static_cast<size_t>(size));
     // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

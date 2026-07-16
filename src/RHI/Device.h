@@ -41,6 +41,7 @@ constexpr uint32_t PrimitiveTriangleList = 3;
 constexpr uint32_t CullNone = 0;
 constexpr uint32_t CullFront = 0x00000001;
 constexpr uint32_t CullBack = 0x00000002;
+constexpr uint32_t FrontFaceClockwise = 0;
 constexpr uint32_t FrontFaceCounterClockwise = 1;
 constexpr uint32_t CompareLess = 1;
 constexpr uint32_t CompareLessOrEqual = 3;
@@ -86,7 +87,7 @@ struct PipelineDesc {
     std::vector<uint32_t> attributeOffsets;
     uint32_t topology = 3;
     uint32_t cullMode = 2;
-    uint32_t frontFace = 1;
+    uint32_t frontFace = FrontFaceClockwise;
     bool depthTest = true;
     bool depthWrite = true;
     uint32_t depthCompareOp = 1;

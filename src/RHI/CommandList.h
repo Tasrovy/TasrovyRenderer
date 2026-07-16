@@ -14,6 +14,7 @@ enum class ImageLayout {
     Undefined,
     ColorAttachment,
     DepthAttachment,
+    DepthReadOnly,
     ShaderRead,
     Present
 };
@@ -53,10 +54,16 @@ public:
     // --- State ---
     void setViewport(float x, float y, float width, float height, float minDepth = 0.0f, float maxDepth = 1.0f);
     void setScissor(int32_t x, int32_t y, uint32_t width, uint32_t height);
+    void setFrontFace(uint32_t frontFace);
 
     // --- Draw ---
     void draw(uint32_t vertexCount, uint32_t instanceCount = 1);
-    void drawIndexed(uint32_t indexCount, uint32_t instanceCount = 1);
+    void drawIndexed(
+        uint32_t indexCount,
+        uint32_t instanceCount = 1,
+        uint32_t firstIndex = 0,
+        int32_t vertexOffset = 0,
+        uint32_t firstInstance = 0);
 
     // --- Copy ---
     void copyBuffer(Buffer& src, Buffer& dst, uint64_t size);

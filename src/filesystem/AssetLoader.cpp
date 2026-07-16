@@ -4,22 +4,28 @@
 #include <Logger.hpp>
 #include "TSVector.h"
 #include "TSMatrix.h"
+#include <algorithm>
+#include <filesystem>
 
 namespace Tasrovy::FS {
 
 std::shared_ptr<Model> AssetLoader::LoadModel(const std::string& path) {
     Assimp::Importer importer;
 
-    const aiScene* scene = importer.ReadFile(path,
+    auto extension = std::filesystem::path(path).extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    unsigned int postProcessFlags =
         aiProcess_Triangulate |
-        aiProcess_FlipUVs |
         aiProcess_GenSmoothNormals |
         aiProcess_CalcTangentSpace |
-        aiProcess_JoinIdenticalVertices |
         aiProcess_ImproveCacheLocality |
         aiProcess_SortByPType |
-        aiProcess_FindInstances
-    );
+        aiProcess_FindInstances;
+
+    const aiScene* scene = importer.ReadFile(path, postProcessFlags);
 
     if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) {
         LOG_ERROR("Assimp failed to load model '{}': {}", path, importer.GetErrorString());
@@ -50,59 +56,60 @@ void AssetLoader::ProcessNode(aiNode* node, const aiScene* scene, Model& model) 
 void AssetLoader::ProcessMesh(aiMesh* mesh, const aiScene* scene, Model& model) {
     Submesh submesh;
     submesh.indexOffset = static_cast<uint32_t>(model.GetIndices().size());
-    const auto vertexOffset = static_cast<uint32_t>(model.GetVertices().size());
 
     aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
     aiString matName;
     material->Get(AI_MATKEY_NAME, matName);
     submesh.materialName = matName.C_Str();
 
-    for (uint32_t i = 0; i < mesh->mNumVertices; ++i) {
+    auto makeVertex = [&](uint32_t sourceIndex) {
         Vertex vertex{};
 
         // Position
         vertex.position = Tasrovy::TSVec3f(
-            mesh->mVertices[i].x,
-            mesh->mVertices[i].y,
-            mesh->mVertices[i].z
+            mesh->mVertices[sourceIndex].x,
+            mesh->mVertices[sourceIndex].y,
+            mesh->mVertices[sourceIndex].z
         );
 
         // Normal
         if (mesh->HasNormals()) {
             vertex.normal = Tasrovy::TSVec3f(
-                mesh->mNormals[i].x,
-                mesh->mNormals[i].y,
-                mesh->mNormals[i].z
+                mesh->mNormals[sourceIndex].x,
+                mesh->mNormals[sourceIndex].y,
+                mesh->mNormals[sourceIndex].z
             );
         }
 
         // Tangent
         if (mesh->HasTangentsAndBitangents()) {
             vertex.tangent = Tasrovy::TSVec3f(
-                mesh->mTangents[i].x,
-                mesh->mTangents[i].y,
-                mesh->mTangents[i].z
+                mesh->mTangents[sourceIndex].x,
+                mesh->mTangents[sourceIndex].y,
+                mesh->mTangents[sourceIndex].z
             );
             vertex.bitangent = Tasrovy::TSVec3f(
-                mesh->mBitangents[i].x,
-                mesh->mBitangents[i].y,
-                mesh->mBitangents[i].z
+                mesh->mBitangents[sourceIndex].x,
+                mesh->mBitangents[sourceIndex].y,
+                mesh->mBitangents[sourceIndex].z
             );
         }
 
         // Vertex color
         if (mesh->HasVertexColors(0)) {
             vertex.vertexColor = Tasrovy::TSVec3f(
-                mesh->mColors[0][i].r,
-                mesh->mColors[0][i].g,
-                mesh->mColors[0][i].b
+                mesh->mColors[0][sourceIndex].r,
+                mesh->mColors[0][sourceIndex].g,
+                mesh->mColors[0][sourceIndex].b
             );
         }
 
         // UV sets
         auto setUv = [&](TSVec2f& uv, uint32_t set) {
             if (mesh->HasTextureCoords(set)) {
-                uv = Tasrovy::TSVec2f(mesh->mTextureCoords[set][i].x, mesh->mTextureCoords[set][i].y);
+                uv = Tasrovy::TSVec2f(
+                    mesh->mTextureCoords[set][sourceIndex].x,
+                    mesh->mTextureCoords[set][sourceIndex].y);
             }
         };
         setUv(vertex.uv0, 0);
@@ -110,14 +117,17 @@ void AssetLoader::ProcessMesh(aiMesh* mesh, const aiScene* scene, Model& model) 
         setUv(vertex.uv2, 2);
         setUv(vertex.uv3, 3);
 
-        model.GetVertices().push_back(vertex);
-    }
+        return vertex;
+    };
 
-    // Indices
+    // Keep every face corner independent. This deliberately disables vertex
+    // sharing so position/normal/UV associations remain exactly as imported.
     for (uint32_t i = 0; i < mesh->mNumFaces; ++i) {
-        aiFace& face = mesh->mFaces[i];
+        const aiFace& face = mesh->mFaces[i];
         for (uint32_t j = 0; j < face.mNumIndices; ++j) {
-            model.GetIndices().push_back(vertexOffset + face.mIndices[j]);
+            const uint32_t newIndex = static_cast<uint32_t>(model.GetVertices().size());
+            model.GetVertices().push_back(makeVertex(face.mIndices[j]));
+            model.GetIndices().push_back(newIndex);
         }
     }
 

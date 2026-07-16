@@ -1,4 +1,5 @@
 #include "Mesh.h"
+#include "Material.h"
 #include "Model.hpp"
 
 namespace Tasrovy::Render {
@@ -6,7 +7,7 @@ namespace Tasrovy::Render {
 std::shared_ptr<Mesh> Mesh::create(
     std::vector<MeshVertex> vertices,
     std::vector<uint32_t> indices,
-    std::vector<MeshSubmesh> submeshes) {
+    std::vector<Submesh> submeshes) {
     auto mesh = std::shared_ptr<Mesh>(new Mesh());
     mesh->vertices_ = std::move(vertices);
     mesh->indices_ = std::move(indices);
@@ -24,7 +25,8 @@ std::shared_ptr<Mesh> Mesh::fromModel(const Tasrovy::FS::Model& model) {
         mv.position = v.position;
         mv.normal = v.normal;
         mv.tangent = v.tangent;
-        mv.vertexColor = v.bitangent;
+        mv.bitangent = v.bitangent;
+        mv.vertexColor = v.vertexColor;
         mv.uv0 = v.uv0;
         mv.uv1 = v.uv1;
         mv.uv2 = v.uv2;
@@ -36,11 +38,7 @@ std::shared_ptr<Mesh> Mesh::fromModel(const Tasrovy::FS::Model& model) {
 
     mesh->submeshes_.reserve(model.GetSubmeshes().size());
     for (const auto& s : model.GetSubmeshes()) {
-        MeshSubmesh ms;
-        ms.materialName = s.materialName;
-        ms.indexOffset = s.indexOffset;
-        ms.indexCount = s.indexCount;
-        mesh->submeshes_.push_back(ms);
+        mesh->submeshes_.emplace_back(s.materialName, s.indexOffset, s.indexCount);
     }
 
     mesh->buildVertexDescriptions();
@@ -49,11 +47,25 @@ std::shared_ptr<Mesh> Mesh::fromModel(const Tasrovy::FS::Model& model) {
 
 void Mesh::setVertices(std::vector<MeshVertex> vertices) { vertices_ = std::move(vertices); }
 void Mesh::setIndices(std::vector<uint32_t> indices) { indices_ = std::move(indices); }
-void Mesh::setSubmeshes(std::vector<MeshSubmesh> submeshes) { submeshes_ = std::move(submeshes); }
+void Mesh::setSubmeshes(std::vector<Submesh> submeshes) { submeshes_ = std::move(submeshes); }
+
+void Mesh::setSubmeshMaterial(size_t submeshIndex, std::shared_ptr<Material> material) {
+    if (submeshIndex < submeshes_.size()) {
+        submeshes_[submeshIndex].setMaterial(std::move(material));
+    }
+}
 
 const std::vector<MeshVertex>& Mesh::getVertices() const { return vertices_; }
 const std::vector<uint32_t>& Mesh::getIndices() const { return indices_; }
-const std::vector<MeshSubmesh>& Mesh::getSubmeshes() const { return submeshes_; }
+const std::vector<Submesh>& Mesh::getSubmeshes() const { return submeshes_; }
+std::vector<Submesh>& Mesh::getSubmeshes() { return submeshes_; }
+
+std::shared_ptr<Material> Mesh::getSubmeshMaterial(size_t submeshIndex) const {
+    if (submeshIndex < submeshes_.size()) {
+        return submeshes_[submeshIndex].getMaterial();
+    }
+    return nullptr;
+}
 
 size_t Mesh::getVertexCount() const { return vertices_.size(); }
 size_t Mesh::getIndexCount() const { return indices_.size(); }
@@ -110,14 +122,15 @@ void Mesh::buildVertexDescriptions() {
     }};
 
     vertexAttrDesc_ = {
-        { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, position) },
-        { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal) },
-        { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, tangent) },
-        { 3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, vertexColor) },
-        { 4, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(MeshVertex, uv0) },
-        { 5, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(MeshVertex, uv1) },
-        { 6, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(MeshVertex, uv2) },
-        { 7, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(MeshVertex, uv3) },
+        { MeshVertexLocation::Position, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, position) },
+        { MeshVertexLocation::Normal, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal) },
+        { MeshVertexLocation::Tangent, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, tangent) },
+        { MeshVertexLocation::Bitangent, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, bitangent) },
+        { MeshVertexLocation::UV0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(MeshVertex, uv0) },
+        { MeshVertexLocation::VertexColor, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, vertexColor) },
+        { MeshVertexLocation::UV1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(MeshVertex, uv1) },
+        { MeshVertexLocation::UV2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(MeshVertex, uv2) },
+        { MeshVertexLocation::UV3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(MeshVertex, uv3) },
     };
 }
 

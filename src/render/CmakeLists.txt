@@ -18,6 +18,10 @@ add_library(TasrovyRender STATIC
         Transform.h
         Mesh.cpp
         Mesh.h
+        UVDebugMesh.cpp
+        UVDebugMesh.h
+        Submesh.cpp
+        Submesh.h
         Pipeline.cpp
         Pipeline.h
         PipelineResource.h
@@ -27,6 +31,8 @@ add_library(TasrovyRender STATIC
         Skybox.h
         PBRPipeline.cpp
         PBRPipeline.h
+        DeferredPipeline.cpp
+        DeferredPipeline.h
 )
 
 target_include_directories(TasrovyRender PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

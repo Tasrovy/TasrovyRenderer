@@ -11,6 +11,12 @@ namespace Tasrovy::Render {
 
 class PipelinePass;
 
+struct PipelinePassDependency {
+    std::string producerPass;
+    std::string consumerPass;
+    std::string resource;
+};
+
 class PipelineBase : public std::enable_shared_from_this<PipelineBase> {
 public:
     virtual ~PipelineBase() = default;
@@ -28,6 +34,8 @@ public:
 
     const PipelineTextureDesc* getTexture(const std::string& name) const;
     const std::vector<PipelineTextureDesc>& getTextures() const;
+    std::vector<PipelinePassDependency> getPassDependencies() const;
+    std::vector<std::string> validatePassDependencies() const;
     std::vector<std::string> validateResourceFlow() const;
 
 protected:

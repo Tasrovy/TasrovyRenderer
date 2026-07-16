@@ -22,9 +22,12 @@ Object::~Object() = default;
 std::shared_ptr<Object> Object::clone() const {
     auto object = Object::create(name_);
     object->transform_ = transform_;
-    object->mesh_ = mesh_;
-    object->material_ = material_;
+    object->meshKeepAlive_ = getMesh();
+    object->mesh_ = object->meshKeepAlive_;
+    object->materialKeepAlive_ = getMaterial();
+    object->material_ = object->materialKeepAlive_;
     object->active_ = active_;
+    object->flipProjectionY_ = flipProjectionY_;
     for (const auto& child : children_) {
         if (child) {
             object->addChild(child->clone());
@@ -52,11 +55,37 @@ std::shared_ptr<Mesh> Object::getMesh() const { return mesh_.lock(); }
 void Object::setMaterial(std::weak_ptr<Material> material) { material_ = material; }
 std::shared_ptr<Material> Object::getMaterial() const { return material_.lock(); }
 
+void Object::setSubmeshMaterial(size_t submeshIndex, std::weak_ptr<Material> material) {
+    if (auto mesh = getMesh()) {
+        mesh->setSubmeshMaterial(submeshIndex, material.lock());
+    }
+}
+
+std::shared_ptr<Material> Object::getSubmeshMaterial(size_t submeshIndex) const {
+    if (const auto mesh = getMesh()) {
+        if (auto material = mesh->getSubmeshMaterial(submeshIndex)) {
+            return material;
+        }
+    }
+    return getMaterial();
+}
+
+void Object::clearSubmeshMaterials() {
+    if (auto mesh = getMesh()) {
+        for (auto& submesh : mesh->getSubmeshes()) {
+            submesh.setMaterial(nullptr);
+        }
+    }
+}
+
 void Object::setName(const std::string& name) { name_ = name; }
 const std::string& Object::getName() const { return name_; }
 
 void Object::setActive(bool active) { active_ = active; }
 bool Object::isActive() const { return active_; }
+
+void Object::setFlipProjectionY(bool flipProjectionY) { flipProjectionY_ = flipProjectionY; }
+bool Object::getFlipProjectionY() const { return flipProjectionY_; }
 
 void Object::addChild(std::shared_ptr<Object> child) {
     if (auto oldParent = child->parent_.lock()) {

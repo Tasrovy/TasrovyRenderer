@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <cstddef>
 
 namespace Tasrovy::Render {
 
@@ -39,12 +40,18 @@ public:
 
     void setMaterial(std::weak_ptr<Material> material);
     std::shared_ptr<Material> getMaterial() const;
+    void setSubmeshMaterial(size_t submeshIndex, std::weak_ptr<Material> material);
+    std::shared_ptr<Material> getSubmeshMaterial(size_t submeshIndex) const;
+    void clearSubmeshMaterials();
 
     void setName(const std::string& name);
     const std::string& getName() const;
 
     void setActive(bool active);
     bool isActive() const;
+
+    void setFlipProjectionY(bool flipProjectionY);
+    bool getFlipProjectionY() const;
 
     void addChild(std::shared_ptr<Object> child);
     void removeChild(Object* child);
@@ -64,7 +71,10 @@ protected:
 
     std::weak_ptr<Mesh> mesh_;
     std::weak_ptr<Material> material_;
+    std::shared_ptr<Mesh> meshKeepAlive_;
+    std::shared_ptr<Material> materialKeepAlive_;
     bool active_ = true;
+    bool flipProjectionY_ = true;
 
     std::weak_ptr<Object> parent_;
     std::vector<std::shared_ptr<Object>> children_;

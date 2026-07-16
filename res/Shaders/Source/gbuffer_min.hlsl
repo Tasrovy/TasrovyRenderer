@@ -7,11 +7,11 @@ cbuffer UBO : register(b0, space0)
 
 struct VSInput
 {
-    float3 position : POSITION;
-    float3 normal : NORMAL;
-    float3 tangent : TANGENT;
-    float3 color : COLOR;
-    float2 uv0 : TEXCOORD0;
+    [[vk::location(0)]] float3 position : POSITION;
+    [[vk::location(1)]] float3 normal : NORMAL;
+    [[vk::location(2)]] float3 tangent : TANGENT;
+    [[vk::location(3)]] float3 bitangent : BITANGENT;
+    [[vk::location(4)]] float2 uv0 : TEXCOORD0;
 };
 
 struct VSOutput
@@ -34,7 +34,7 @@ VSOutput VSMain(VSInput input)
     VSOutput output;
     output.position = mul(mul(mul(float4(input.position, 1.0f), model), view), proj);
     output.normal = normalize(input.normal);
-    output.color = input.color;
+    output.color = float3(1.0f, 1.0f, 1.0f);
     output.uv0 = input.uv0;
     return output;
 }

@@ -11,6 +11,7 @@
 #include "../render/Shader.h"
 #include "../ui/UI.h"
 #include "../window/Window.h"
+#include <algorithm>
 #include <utility>
 
 #ifdef TASROVY_API_VULKAN
@@ -533,7 +534,12 @@ std::unique_ptr<Tasrovy::UI::UIOverlay> Device::createUIOverlay(Tasrovy::Windowi
     info.graphicsQueue = impl_->graphicsQueue->getQueue();
     info.queueFamily = impl_->context->getQueueFamilyIndices().graphicsFamily.value();
     info.minImageCount = impl_->swapchain->getImageCount();
-    info.imageCount = impl_->swapchain->getImageCount();
+    // ImGui rotates through one vertex/index buffer pair per ImageCount. The
+    // renderer may have more frames in flight than swapchain images, so using
+    // only the swapchain count can make ImGui destroy a buffer that an older
+    // frame command buffer still references.
+    info.imageCount = std::max(
+        impl_->swapchain->getImageCount(), impl_->renderer->getMaxFramesInFlight());
     info.msaaSamples = VK_SAMPLE_COUNT_1_BIT;
     info.colorFormat = impl_->swapchain->getImageFormat();
     return std::make_unique<Tasrovy::UI::UIOverlay>(info);

@@ -15,13 +15,74 @@
 #include "PBRPipeline.h"
 #include "Skybox.h"
 #include "Texture.hpp"
+#include "UVDebugMesh.h"
 #include <algorithm>
+#include <deque>
+#include <filesystem>
 #include <limits>
+#include <string>
+#include <vector>
 
 using namespace Tasrovy;
 using namespace Tasrovy::Render;
 
 namespace {
+
+constexpr const char* kMainModelPath = "res/Models/Taffy/Taffy.obj";
+
+std::shared_ptr<Material> createPbrMaterial(const std::string& baseColorPath)
+{
+    auto material = Material::create();
+    material->setTexture(MaterialTextureSemantic::BaseColor, 1, baseColorPath);
+    material->setTexture(MaterialTextureSemantic::Normal, 2, "res\\Textures\\Taffy\\neutral_normal.png");
+    material->setTexture(MaterialTextureSemantic::Emissive, 3, "res\\Textures\\Taffy\\neutral_emissive.png");
+    material->setTexture(MaterialTextureSemantic::MetallicRoughnessAO, 4, "res\\Textures\\Taffy\\neutral_mra.png");
+    return material;
+}
+
+std::string chooseTaffyBaseColor(const std::string& materialName)
+{
+    if (materialName.find("Hair") != std::string::npos) {
+        return "res\\Textures\\Taffy\\hair.png";
+    }
+    if (materialName.find("Face") != std::string::npos ||
+        materialName.find("Eye") != std::string::npos) {
+        return "res\\Textures\\Taffy\\face.png";
+    }
+    return "res\\Textures\\Taffy\\cloth.png";
+}
+
+void setWorkingDirectoryToAssetRoot()
+{
+    namespace fs = std::filesystem;
+
+    std::error_code ec;
+    fs::path dir = fs::current_path(ec);
+    if (ec) {
+        LOG_WARN("Failed to query current working directory: {}", ec.message());
+        return;
+    }
+
+    while (!dir.empty()) {
+        if (fs::exists(dir / kMainModelPath, ec) && !ec) {
+            fs::current_path(dir, ec);
+            if (ec) {
+                LOG_WARN("Failed to switch working directory to '{}': {}", dir.string(), ec.message());
+            } else {
+                LOG_INFO("Working directory set to asset root '{}'", dir.string());
+            }
+            return;
+        }
+
+        const fs::path parent = dir.parent_path();
+        if (parent == dir) {
+            break;
+        }
+        dir = parent;
+    }
+
+    LOG_WARN("Could not locate asset root containing {} from '{}'", kMainModelPath, fs::current_path().string());
+}
 
 void fitObjectToMeshBounds(const std::shared_ptr<Object>& object, const std::shared_ptr<Mesh>& mesh)
 {
@@ -75,6 +136,7 @@ int main()
         return -1;
     }
     Tasrovy::Log::Logger::Init();
+    setWorkingDirectoryToAssetRoot();
 
     // ======== Create window ========
     Tasrovy::Windowing::Window window(1280, 800, "TasrovyRenderer");
@@ -96,22 +158,26 @@ int main()
     auto mainObj = Object::create("MainModel");
     auto cubeModel = Tasrovy::FS::Model::GenCube();
     std::shared_ptr<Mesh> mainMesh = Mesh::fromModel(*cubeModel);
-    LOG_INFO("Main scene using placeholder cube while res/model.obj loads on filesystem thread");
+    LOG_INFO("Main scene using placeholder cube while {} loads on filesystem thread", kMainModelPath);
 
-    auto material = Material::create();
-    material->setTexture(MaterialTextureSemantic::BaseColor, 1, "res\\diffuse.png");
-    material->setTexture(MaterialTextureSemantic::Normal, 2, "res\\normal.png");
-    material->setTexture(MaterialTextureSemantic::Emissive, 3, "res\\emissive.png");
-    material->setTexture(MaterialTextureSemantic::MetallicRoughnessAO, 4, "res\\msa.png");
-    material->setFloat("uMetallic", 1.0f);
-    material->setFloat("uRoughness", 1.0f);
-    material->setFloat("uAo", 1.0f);
+    auto material = createPbrMaterial("res\\Textures\\Taffy\\cloth.png");
+    auto uvDebugObj = Object::create("UVUnwrapDebug");
+    std::shared_ptr<Mesh> uvDebugMesh = UVDebugMesh::createFromMesh(*mainMesh);
+    std::vector<std::shared_ptr<Material>> mainSubmeshMaterials;
+    std::deque<std::shared_ptr<Mesh>> retiredMeshes;
+    std::deque<std::vector<std::shared_ptr<Material>>> retiredSubmeshMaterials;
+    constexpr size_t maxRetiredSceneResources = 8;
     mainObj->setMesh(mainMesh);
     mainObj->setMaterial(material);
     scene->addObject(mainObj);
+    uvDebugObj->setMesh(uvDebugMesh);
+    uvDebugObj->setMaterial(material);
+    uvDebugObj->setPosition(TSVec3f(3.0f, 0.0f, 0.0f));
+    uvDebugObj->setScale(TSVec3f(0.65f));
+    scene->addObject(uvDebugObj);
 
     auto skybox = Skybox::create("MainSkybox");
-    auto skyTex = Texture::createCubemap("res/PurpleSky");
+    auto skyTex = Texture::createCubemap("res/Skyboxes/PurpleSky");
     skybox->setCubemap(std::move(skyTex));
     scene->addObject(std::move(skybox));
 
@@ -119,7 +185,7 @@ int main()
     pipeline->GenPass(scene);
 
     Tasrovy::FS::AssetManager assets(4);
-    assets.requestModel("res/model.obj");
+    assets.requestModel(kMainModelPath);
     bool modelApplied = false;
 
     // ======== Submit to RHI ========
@@ -135,23 +201,61 @@ int main()
         window.pollEvents();
 
         while (auto event = assets.pollEvent()) {
-            if (!modelApplied && event->kind == Tasrovy::FS::AssetKind::Model && event->path == "res/model.obj") {
+            if (!modelApplied && event->kind == Tasrovy::FS::AssetKind::Model && event->path == kMainModelPath) {
                 modelApplied = true;
                 if (event->success) {
                     auto model = assets.getModel(event->path);
-                    mainMesh = model ? Mesh::fromModel(*model) : nullptr;
-                    if (!mainMesh) {
+                    auto loadedMesh = model ? Mesh::fromModel(*model) : nullptr;
+                    if (!loadedMesh) {
                         LOG_WARN("Async model load completed but no model cache entry was found '{}'", event->path);
                         continue;
                     }
-                    mainObj->setMesh(mainMesh);
-                    fitObjectToMeshBounds(mainObj, mainMesh);
+                    std::vector<std::shared_ptr<Material>> loadedSubmeshMaterials;
+                    const auto& submeshes = loadedMesh->getSubmeshes();
+                    loadedSubmeshMaterials.reserve(submeshes.size());
+                    for (const auto& submesh : submeshes) {
+                        loadedSubmeshMaterials.push_back(
+                            createPbrMaterial(chooseTaffyBaseColor(submesh.getMaterialName())));
+                    }
+
+                    mainObj->setMesh(loadedMesh);
+                    mainObj->clearSubmeshMaterials();
+                    for (size_t i = 0; i < loadedSubmeshMaterials.size(); ++i) {
+                        loadedMesh->setSubmeshMaterial(i, loadedSubmeshMaterials[i]);
+                    }
+                    auto loadedUvDebugMesh = UVDebugMesh::createFromMesh(*loadedMesh);
+                    for (size_t i = 0; i < loadedSubmeshMaterials.size(); ++i) {
+                        loadedUvDebugMesh->setSubmeshMaterial(i, loadedSubmeshMaterials[i]);
+                    }
+                    uvDebugObj->setMesh(loadedUvDebugMesh);
+                    uvDebugObj->setMaterial(loadedSubmeshMaterials.empty() ? material : loadedSubmeshMaterials.front());
+                    fitObjectToMeshBounds(mainObj, loadedMesh);
                     renderer.setScene(scene);
+
+                    if (mainMesh) {
+                        retiredMeshes.push_back(mainMesh);
+                    }
+                    if (uvDebugMesh) {
+                        retiredMeshes.push_back(uvDebugMesh);
+                    }
+                    if (!mainSubmeshMaterials.empty()) {
+                        retiredSubmeshMaterials.push_back(std::move(mainSubmeshMaterials));
+                    }
+                    mainMesh = std::move(loadedMesh);
+                    uvDebugMesh = std::move(loadedUvDebugMesh);
+                    mainSubmeshMaterials = std::move(loadedSubmeshMaterials);
+                    while (retiredMeshes.size() > maxRetiredSceneResources) {
+                        retiredMeshes.pop_front();
+                    }
+                    while (retiredSubmeshMaterials.size() > maxRetiredSceneResources) {
+                        retiredSubmeshMaterials.pop_front();
+                    }
                     LOG_INFO(
-                        "Async model applied '{}': {} vertices, {} indices",
+                        "Async model applied '{}': {} vertices, {} indices, {} submeshes",
                         event->path,
                         mainMesh->getVertexCount(),
-                        mainMesh->getIndexCount());
+                        mainMesh->getIndexCount(),
+                        submeshes.size());
                 } else {
                     LOG_WARN(
                         "Async model load failed '{}': {}",

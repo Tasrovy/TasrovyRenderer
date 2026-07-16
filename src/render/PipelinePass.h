@@ -26,6 +26,14 @@ enum class PipelinePassType {
     PostProcess
 };
 
+enum class PipelinePassExecution {
+    Mesh,
+    Fullscreen,
+    Skybox,
+    Compute,
+    UI
+};
+
 struct VertexInputPass {
     uint32_t vertexNumber = 0;
     uint32_t vertexSize = 0;
@@ -73,6 +81,8 @@ public:
     const std::string& getName() const;
     void setType(PipelinePassType type);
     PipelinePassType getType() const;
+    void setExecution(PipelinePassExecution execution);
+    PipelinePassExecution getExecution() const;
 
     void setState(const PassState& state);
     const PassState& getState() const;
@@ -90,7 +100,7 @@ public:
     const std::vector<std::weak_ptr<Object>>& getObjects() const;
 
     // --- Logical texture resources ---
-    void addSampledTexture(std::string slot, std::string resource);
+    void addSampledTexture(std::string slot, std::string resource, uint32_t binding = 0);
     void addColorAttachment(
         std::string resource,
         AttachmentLoad load = AttachmentLoad::Clear,
@@ -104,6 +114,8 @@ public:
     const std::vector<SampledTextureInput>& getSampledTextures() const;
     const std::vector<ColorAttachmentRef>& getColorAttachments() const;
     const DepthAttachmentRef* getDepthAttachment() const;
+    std::vector<PipelineResourceRef> getReadResources() const;
+    std::vector<PipelineResourceRef> getWriteResources() const;
 
     // --- Per-material texture inputs ---
     void addMaterialTexture(MaterialTextureRequirement requirement);
@@ -137,6 +149,7 @@ private:
 
     std::string name_;
     PipelinePassType type_ = PipelinePassType::Generic;
+    PipelinePassExecution execution_ = PipelinePassExecution::Mesh;
     PassState state_;
     std::vector<std::weak_ptr<Object>> objects_;
     std::vector<SampledTextureInput> sampledTextures_;

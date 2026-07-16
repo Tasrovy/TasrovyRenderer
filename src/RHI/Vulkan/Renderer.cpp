@@ -1,10 +1,44 @@
 #include "Renderer.h"
 #include "VulkanContext.h"
+#include <Logger.hpp>
 #include <stdexcept>
+
+namespace {
+
+const char* vkResultName(VkResult result) {
+    switch (result) {
+    case VK_SUCCESS: return "VK_SUCCESS";
+    case VK_NOT_READY: return "VK_NOT_READY";
+    case VK_TIMEOUT: return "VK_TIMEOUT";
+    case VK_EVENT_SET: return "VK_EVENT_SET";
+    case VK_EVENT_RESET: return "VK_EVENT_RESET";
+    case VK_INCOMPLETE: return "VK_INCOMPLETE";
+    case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+    case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+    case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+    case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+    case VK_ERROR_LAYER_NOT_PRESENT: return "VK_ERROR_LAYER_NOT_PRESENT";
+    case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
+    case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
+    case VK_ERROR_INCOMPATIBLE_DRIVER: return "VK_ERROR_INCOMPATIBLE_DRIVER";
+    case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+    case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+    case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+    case VK_ERROR_OUT_OF_POOL_MEMORY: return "VK_ERROR_OUT_OF_POOL_MEMORY";
+    case VK_ERROR_INVALID_EXTERNAL_HANDLE: return "VK_ERROR_INVALID_EXTERNAL_HANDLE";
+    case VK_ERROR_SURFACE_LOST_KHR: return "VK_ERROR_SURFACE_LOST_KHR";
+    case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR: return "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR";
+    case VK_SUBOPTIMAL_KHR: return "VK_SUBOPTIMAL_KHR";
+    case VK_ERROR_OUT_OF_DATE_KHR: return "VK_ERROR_OUT_OF_DATE_KHR";
+    default: return "VK_UNKNOWN_RESULT";
+    }
+}
+
+} // namespace
 
 Renderer::Renderer(VulkanContext& context, uint32_t maxFramesInFlight)
     : _context(context), _maxFramesInFlight(maxFramesInFlight) {
-
     VkCommandPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     poolInfo.queueFamilyIndex = _context.getQueueFamilyIndices().graphicsFamily.value();
@@ -27,6 +61,7 @@ Renderer::Renderer(VulkanContext& context, uint32_t maxFramesInFlight)
     _imageAvailableSemaphores.resize(_maxFramesInFlight);
     _renderFinishedSemaphores.resize(_swapchainImageCount);
     _inFlightFences.resize(_maxFramesInFlight);
+    _frameSubmissionSerials.resize(_maxFramesInFlight, 0);
     VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT};
     for (uint32_t i = 0; i < _maxFramesInFlight; ++i) {
@@ -54,9 +89,20 @@ Renderer::~Renderer() {
 }
 
 VkCommandBuffer Renderer::beginFrame(VulkanSwapchain& swapchain) {
-    vkWaitForFences(_context.getDevice(), 1, &_inFlightFences[_currentFrame], VK_TRUE, UINT64_MAX);
+    VkResult result = vkWaitForFences(
+        _context.getDevice(), 1, &_inFlightFences[_currentFrame], VK_TRUE, UINT64_MAX);
+    if (result != VK_SUCCESS) {
+        LOG_ERROR("Renderer: vkWaitForFences failed: {} ({})", vkResultName(result), static_cast<int>(result));
+        throw std::runtime_error("failed to wait for frame fence!");
+    }
 
-    VkResult result = swapchain.acquireNextImage(_imageAvailableSemaphores[_currentFrame], &_imageIndex);
+    const uint64_t completedSubmission = _frameSubmissionSerials[_currentFrame];
+    if (completedSubmission != 0) {
+        _context.collectDeferredDeletions(completedSubmission);
+        _frameSubmissionSerials[_currentFrame] = 0;
+    }
+
+    result = swapchain.acquireNextImage(_imageAvailableSemaphores[_currentFrame], &_imageIndex);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         return nullptr;
@@ -64,21 +110,37 @@ VkCommandBuffer Renderer::beginFrame(VulkanSwapchain& swapchain) {
         throw std::runtime_error("failed to acquire swap chain image!");
     }
 
-    vkResetFences(_context.getDevice(), 1, &_inFlightFences[_currentFrame]);
+    result = vkResetFences(_context.getDevice(), 1, &_inFlightFences[_currentFrame]);
+    if (result != VK_SUCCESS) {
+        LOG_ERROR("Renderer: vkResetFences failed: {} ({})", vkResultName(result), static_cast<int>(result));
+        throw std::runtime_error("failed to reset frame fence!");
+    }
 
     VkCommandBuffer commandBuffer = _commandBuffers[_currentFrame];
-    vkResetCommandBuffer(commandBuffer, 0);
+    result = vkResetCommandBuffer(commandBuffer, 0);
+    if (result != VK_SUCCESS) {
+        LOG_ERROR("Renderer: vkResetCommandBuffer failed: {} ({})", vkResultName(result), static_cast<int>(result));
+        throw std::runtime_error("failed to reset draw command buffer!");
+    }
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    result = vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    if (result != VK_SUCCESS) {
+        LOG_ERROR("Renderer: vkBeginCommandBuffer failed: {} ({})", vkResultName(result), static_cast<int>(result));
+        throw std::runtime_error("failed to begin draw command buffer!");
+    }
 
     return commandBuffer;
 }
 
 void Renderer::endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, VulkanQueue& presentQueue) {
     VkCommandBuffer commandBuffer = _commandBuffers[_currentFrame];
-    vkEndCommandBuffer(commandBuffer);
+    VkResult result = vkEndCommandBuffer(commandBuffer);
+    if (result != VK_SUCCESS) {
+        LOG_ERROR("Renderer: vkEndCommandBuffer failed: {} ({})", vkResultName(result), static_cast<int>(result));
+        throw std::runtime_error("failed to end draw command buffer!");
+    }
 
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -96,15 +158,28 @@ void Renderer::endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, 
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
-    if (vkQueueSubmit(graphicsQueue.getQueue(), 1, &submitInfo, _inFlightFences[_currentFrame]) != VK_SUCCESS) {
+    {
+        // VkQueue host access is externally synchronized. Asset uploads may
+        // submit from the RHI worker while the render producer reaches here.
+        std::scoped_lock queueLock(_context.getQueueMutex());
+        result = vkQueueSubmit(graphicsQueue.getQueue(), 1, &submitInfo, _inFlightFences[_currentFrame]);
+    }
+    if (result != VK_SUCCESS) {
+        LOG_ERROR("Renderer: vkQueueSubmit failed: {} ({})", vkResultName(result), static_cast<int>(result));
         throw std::runtime_error("failed to submit draw command buffer!");
     }
+    _frameSubmissionSerials[_currentFrame] = _context.advanceDeletionFrame();
 
-    VkResult result = swapchain.present(presentQueue.getQueue(), _renderFinishedSemaphores[_imageIndex], _imageIndex);
+    {
+        std::scoped_lock queueLock(_context.getQueueMutex());
+        result = swapchain.present(
+            presentQueue.getQueue(), _renderFinishedSemaphores[_imageIndex], _imageIndex);
+    }
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
        // ... 通知上层进行重建 ...
     } else if (result != VK_SUCCESS) {
+        LOG_ERROR("Renderer: vkQueuePresentKHR failed: {} ({})", vkResultName(result), static_cast<int>(result));
         throw std::runtime_error("failed to present swap chain image!");
     }
 
@@ -120,7 +195,9 @@ void Renderer::waitIdle() {
             VK_TRUE,
             UINT64_MAX);
     }
-    vkDeviceWaitIdle(_context.getDevice());
+    // All graphics submissions associated with the frame fences are complete.
+    // This is sufficient for render resources and avoids a device-wide stall.
+    _context.flushDeferredDeletions();
 }
 
 void Renderer::beginRenderPass(VkCommandBuffer cmd, VulkanSwapchain& swapchain) {
@@ -249,6 +326,7 @@ void Renderer::draw(VulkanSwapchain& swapchain, std::unique_ptr<VulkanPipeline>&
     beginRenderPass(commandBuffer, swapchain);
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline->getPipeline());
+    vkCmdSetFrontFace(commandBuffer, VK_FRONT_FACE_CLOCKWISE);
 
     VkViewport viewport{};
     viewport.width = static_cast<float>(swapchain.getExtent().width);

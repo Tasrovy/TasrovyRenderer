@@ -26,14 +26,24 @@ VulkanImage::VulkanImage(VulkanContext& context, VkExtent2D extent, VkFormat for
 }
 
 VulkanImage::~VulkanImage() {
-    if (_context == nullptr) return; // 对象已被移动，资源所有权已转移
-    VkDevice device = _context->getDevice();
-    if (_sampler != VK_NULL_HANDLE) vkDestroySampler(device, _sampler, nullptr);
-    if (_view != VK_NULL_HANDLE) vkDestroyImageView(device, _view, nullptr);
-    if (_image != VK_NULL_HANDLE) vkDestroyImage(device, _image, nullptr);
-    if (_memory != VK_NULL_HANDLE) vkFreeMemory(device, _memory, nullptr);
-}
+    if (_context == nullptr) return;
 
+    VkSampler sampler = _sampler;
+    VkImageView view = _view;
+    VkImage image = _image;
+    VkDeviceMemory memory = _memory;
+    _sampler = VK_NULL_HANDLE;
+    _view = VK_NULL_HANDLE;
+    _image = VK_NULL_HANDLE;
+    _memory = VK_NULL_HANDLE;
+
+    _context->deferDelete([sampler, view, image, memory](VkDevice device) {
+        if (sampler != VK_NULL_HANDLE) vkDestroySampler(device, sampler, nullptr);
+        if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, nullptr);
+        if (image != VK_NULL_HANDLE) vkDestroyImage(device, image, nullptr);
+        if (memory != VK_NULL_HANDLE) vkFreeMemory(device, memory, nullptr);
+    });
+}
 // --- 静态工厂函数 ---
 
 std::unique_ptr<VulkanImage> VulkanImage::createTexture(VulkanContext& context, ImmediateSubmitter& uploader, const std::string& path, bool generateMipmaps, VkFormat format) {
@@ -175,6 +185,9 @@ std::unique_ptr<VulkanImage> VulkanImage::createAttachment(VulkanContext& contex
     );
 
     attachmentImage->createImageView(aspectFlags, VK_IMAGE_VIEW_TYPE_2D);
+    if (usage & VK_IMAGE_USAGE_SAMPLED_BIT) {
+        attachmentImage->createSampler();
+    }
     LOG_INFO("Created attachment image with format: {}", static_cast<int>(format));
     return attachmentImage;
 }

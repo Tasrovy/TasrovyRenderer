@@ -3,21 +3,20 @@ cbuffer UBO : register(b0,space0)
     matrix model;
     matrix view;
     matrix proj;
-    float3 lightDir; // ÊÀ½ç¿Õ¼äÖĞµÄ¹âÕÕ·½Ïò
-    float _pad0; // Ìî³ä
-    float3 lightColor; // ¹âµÄÑÕÉ«
-    float lightIntensity; // ¹âµÄÇ¿¶È
-    float3 camPos; // ÊÀ½ç¿Õ¼äÖĞµÄÏà»úÎ»ÖÃ
-    float uMetallic;
-    float uRoughness;
-    float uAo;
+    float3 lightDir; // ä¸–ç•Œç©ºé—´ä¸­çš„å…‰ç…§æ–¹å‘
+    float _pad0; // å¡«å……
+    float3 lightColor; // å…‰çš„é¢œè‰²
+    float lightIntensity; // å…‰çš„å¼ºåº¦
+    float4 camPosAndMetallic; // xyz: camera position, w: metallic multiplier
+    float4 roughnessAo; // x: roughness multiplier, y: ao multiplier
+    float4 uvTransform; // xy: scale, zw: offset
 };
 struct VSInput {
-    float3 position : POSITION;
-    float3 normal   : NORMAL;
-    float3 tangent : TANGENT;
-    float3 bitangent : BITANGENT;
-    float2 texcoord : TEXCOORD;
+    [[vk::location(0)]] float3 position : POSITION;
+    [[vk::location(1)]] float3 normal   : NORMAL;
+    [[vk::location(2)]] float3 tangent : TANGENT;
+    [[vk::location(3)]] float3 bitangent : BITANGENT;
+    [[vk::location(4)]] float2 texcoord : TEXCOORD0;
 };
 
 struct VSOutput
@@ -32,7 +31,7 @@ VSOutput VSMain(VSInput input)
 {
     VSOutput output;
     
-    // ¼ÆËãÊÀ½ç¿Õ¼äÎ»ÖÃ
+    // è®¡ç®—ä¸–ç•Œç©ºé—´ä½ç½®
     output.worldPos = mul(float4(input.position, 1.0f), model).xyz;
     float4 viewPos = mul(float4(output.worldPos, 1.0f), view);
     output.position = mul(viewPos, proj);
@@ -56,17 +55,41 @@ VSOutput VSMain(VSInput input)
 [[vk::combinedImageSampler]] SamplerState pbrSampler2 : register(s3);
 [[vk::combinedImageSampler]] SamplerState pbrSampler3 : register(s4);
 
-[[vk::combinedImageSampler]] TextureCube  irradianceMap : register(t5); // ·øÕÕ¶ÈÍ¼ (Âş·´Éä)
-[[vk::combinedImageSampler]] TextureCube  prefilteredMap: register(t6); // Ô¤¹ıÂË¾µÃæ·´ÉäÍ¼ (¸ß¹â)
-[[vk::combinedImageSampler]] Texture2D    brdfLUT       : register(t7); // BRDF ²éÕÒ±í
+[[vk::combinedImageSampler]] TextureCube  irradianceMap : register(t5); // è¾ç…§åº¦å›¾ (æ¼«åå°„)
+[[vk::combinedImageSampler]] TextureCube  prefilteredMap: register(t6); // é¢„è¿‡æ»¤é•œé¢åå°„å›¾ (é«˜å…‰)
+[[vk::combinedImageSampler]] Texture2D    brdfLUT       : register(t7); // BRDF æŸ¥æ‰¾è¡¨
 [[vk::combinedImageSampler]] SamplerState iblSampler1      : register(s5); 
 [[vk::combinedImageSampler]] SamplerState iblSampler2     : register(s6); 
 [[vk::combinedImageSampler]] SamplerState iblSampler3      : register(s7); 
-// --- PBR ¸¨Öúº¯Êı (Cook-Torrance BRDF) ---
+float2 ResolveMaterialUV(float2 uv)
+{
+    uint mode = (uint)round(roughnessAo.w);
+    float2 orientedUv = uv;
+    if (mode == 1) {
+        orientedUv = float2(uv.x, 1.0f - uv.y);
+    }
+    else if (mode == 2) {
+        orientedUv = float2(1.0f - uv.x, uv.y);
+    }
+    else if (mode == 3) {
+        orientedUv = float2(1.0f - uv.x, 1.0f - uv.y);
+    }
+    else if (mode == 4) {
+        orientedUv = float2(uv.y, uv.x);
+    }
+    else if (mode == 5) {
+        orientedUv = float2(uv.y, 1.0f - uv.x);
+    }
+    else if (mode == 6) {
+        orientedUv = float2(1.0f - uv.y, uv.x);
+    }
+    return frac(orientedUv * uvTransform.xy + uvTransform.zw);
+}
+// --- PBR è¾…åŠ©å‡½æ•° (Cook-Torrance BRDF) ---
 #define PI 3.14159265359
 
-// D - ÕıÌ¬·Ö²¼º¯Êı (Trowbridge-Reitz GGX)
-// ÃèÊöÁËÎ¢¹Û±íÃæ·¨ÏßµÄ³¯Ïò·Ö²¼Çé¿ö
+// D - æ­£æ€åˆ†å¸ƒå‡½æ•° (Trowbridge-Reitz GGX)
+// æè¿°äº†å¾®è§‚è¡¨é¢æ³•çº¿çš„æœå‘åˆ†å¸ƒæƒ…å†µ
 float DistributionGGX(float3 N, float3 H, float roughness)
 {
     float a = roughness * roughness;
@@ -81,8 +104,8 @@ float DistributionGGX(float3 N, float3 H, float roughness)
     return nom / denom;
 }
 
-// G - ¼¸ºÎÕÚ±Îº¯Êı (Schlick-GGX)
-// ÃèÊöÁËÎ¢¹Û±íÃæ×ÔÕÚ±ÎµÄÊôĞÔ£¨¹âÏß±»Î¢¹Û±íÃæ×ÔÉíµÄ°¼Í¹ÕÚµ²£©
+// G - å‡ ä½•é®è”½å‡½æ•° (Schlick-GGX)
+// æè¿°äº†å¾®è§‚è¡¨é¢è‡ªé®è”½çš„å±æ€§ï¼ˆå…‰çº¿è¢«å¾®è§‚è¡¨é¢è‡ªèº«çš„å‡¹å‡¸é®æŒ¡ï¼‰
 float GeometrySchlickGGX(float NdotV, float roughness)
 {
     float r = (roughness + 1.0);
@@ -100,43 +123,48 @@ float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
     return ggx1 * ggx2;
 }
 
-// F - ·ÆÄù¶û·½³Ì (Schlick ½üËÆ)
-// ÃèÊöÁËÔÚ²»Í¬½Ç¶ÈÏÂ£¬±íÃæ·´Éä¹âÏßËùÕ¼µÄ±ÈÂÊ
+// F - è²æ¶…å°”æ–¹ç¨‹ (Schlick è¿‘ä¼¼)
+// æè¿°äº†åœ¨ä¸åŒè§’åº¦ä¸‹ï¼Œè¡¨é¢åå°„å…‰çº¿æ‰€å çš„æ¯”ç‡
 float3 fresnelSchlick(float cosTheta, float3 F0)
 {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 
-// --- Æ¬¶Î×ÅÉ«Æ÷Ö÷º¯Êı ---
+// --- ç‰‡æ®µç€è‰²å™¨ä¸»å‡½æ•° ---
 float4 PSMain(VSOutput input) : SV_TARGET
 {
-    // --- 1. »ñÈ¡±íÃæ»ù´¡ÊôĞÔ ---
-    float3 albedo = albedoMap.Sample(pbrSampler, input.texcoord).rgb; // sRGB -> Linear
-    float metallic = mraMap.Sample(pbrSampler3, input.texcoord).r*uMetallic; // ¼ÙÉè glTF: B=Metallic
-    float roughness = 1-mraMap.Sample(pbrSampler3, input.texcoord).a*uRoughness; // G=Roughness
-    float ao = mraMap.Sample(pbrSampler3, input.texcoord).b*uAo;       // R=AO
+    // --- 1. è·å–è¡¨é¢åŸºç¡€å±æ€§ ---
+    float2 materialUv = ResolveMaterialUV(input.texcoord);
+    float3 albedo = albedoMap.Sample(pbrSampler, materialUv).rgb; // sRGB -> Linear
+    if ((uint)round(roughnessAo.z) == 1) {
+        return float4(albedo, 1.0f);
+    }
+    float4 mra = mraMap.Sample(pbrSampler3, materialUv);
+    float metallic = saturate(mra.r * camPosAndMetallic.w);
+    float roughness = saturate((1.0f - mra.a) * roughnessAo.x);
+    float ao = saturate(mra.b * roughnessAo.y);
     
-    // --- 2. »ñÈ¡ÊÀ½ç¿Õ¼ä·¨Ïß (À´×Ô·¨ÏßÌùÍ¼) ---
-    float3 tangentNormal = normalMap.Sample(pbrSampler1, input.texcoord).xyz * 2.0 - 1.0;
+    // --- 2. è·å–ä¸–ç•Œç©ºé—´æ³•çº¿ (æ¥è‡ªæ³•çº¿è´´å›¾) ---
+    float3 tangentNormal = normalMap.Sample(pbrSampler1, materialUv).xyz * 2.0 - 1.0;
     float3 N = normalize(mul(tangentNormal, input.TBN));
 
-    // --- 3. ×¼±¸Í¨ÓÃÏòÁ¿ ---
-    float3 V = normalize(camPos - input.worldPos); // ¹Û²ì·½Ïò
-    float3 R = reflect(-V, N);                     // ·´Éä·½Ïò
+    // --- 3. å‡†å¤‡é€šç”¨å‘é‡ ---
+    float3 V = normalize(camPosAndMetallic.xyz - input.worldPos); // è§‚å¯Ÿæ–¹å‘
+    float3 R = reflect(-V, N);                     // åå°„æ–¹å‘
     float NdotV = max(dot(N, V), 0.0);
 
-    // --- 4. ¼ÆËã F0 (0¶ÈÈëÉä½ÇµÄ·ÆÄù¶û·´ÉäÂÊ) ---
+    // --- 4. è®¡ç®— F0 (0åº¦å…¥å°„è§’çš„è²æ¶…å°”åå°„ç‡) ---
     float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
     
     // =================================================================
-    //  Ö±½Ó¹âÕÕ (Direct Lighting) - ¼ÙÉèÖ»ÓĞÒ»¸ö¶¨Ïò¹â
+    //  ç›´æ¥å…‰ç…§ (Direct Lighting) - å‡è®¾åªæœ‰ä¸€ä¸ªå®šå‘å…‰
     // =================================================================
-    float3 L = normalize(lightDir);
+    float3 L = normalize(-lightDir);
     float3 H = normalize(V + L);
     float NdotL = max(dot(N, L), 0.0);
     
-    // ¼ÆËãÖ±½Ó¹âµÄ·øÉä¶È (Radiance)
+    // è®¡ç®—ç›´æ¥å…‰çš„è¾å°„åº¦ (Radiance)
     float3 radiance = lightColor * lightIntensity * NdotL;
     
     // Cook-Torrance BRDF for direct light
@@ -154,18 +182,18 @@ float4 PSMain(VSOutput input) : SV_TARGET
     
     float3 diffuse_direct = kD_direct * albedo / PI;
 
-    // Ö±½Ó¹âÕÕ¹±Ï×
-    float3 Lo_direct = (diffuse_direct + (specular_direct * mraMap.Sample(pbrSampler3, input.texcoord).g)) * radiance;
+    // ç›´æ¥å…‰ç…§è´¡çŒ®
+    float3 Lo_direct = (diffuse_direct + (specular_direct * mraMap.Sample(pbrSampler3, materialUv).g)) * radiance;
 
     // =================================================================
-    //  ¼ä½Ó¹âÕÕ (Indirect Lighting - IBL)
+    //  é—´æ¥å…‰ç…§ (Indirect Lighting - IBL)
     // =================================================================
 
     // a. Indirect Specular
     const float MAX_REFLECTION_LOD = 7.0;
     float3 prefilteredColor = prefilteredMap.SampleLevel(iblSampler2, R, roughness * MAX_REFLECTION_LOD).rgb;
     float2 brdf = brdfLUT.Sample(iblSampler3, float2(NdotV, roughness)).rg;
-    float3 specular_IBL = prefilteredColor * (F * brdf.x + brdf.y) * mraMap.Sample(pbrSampler3, input.texcoord).g;
+    float3 specular_IBL = prefilteredColor * (F * brdf.x + brdf.y) * mraMap.Sample(pbrSampler3, materialUv).g;
 
     // b. Indirect Diffuse
     float3 irradiance = irradianceMap.Sample(iblSampler1, N).rgb;
@@ -177,17 +205,17 @@ float4 PSMain(VSOutput input) : SV_TARGET
     float3 Lo_indirect = diffuse_IBL + specular_IBL;
     
     // =================================================================
-    //  ×îÖÕ×éºÏ
+    //  æœ€ç»ˆç»„åˆ
     // =================================================================
     
-    // ×îÖÕÑÕÉ« = (Ö±½Ó¹âÕÕ + ¼ä½Ó¹âÕÕ) * AO + ×Ô·¢¹â
+    // æœ€ç»ˆé¢œè‰² = (ç›´æ¥å…‰ç…§ + é—´æ¥å…‰ç…§) * AO + è‡ªå‘å…‰
     float3 color = (Lo_indirect * ao) + Lo_direct;
     
-    // Ìí¼Ó×Ô·¢¹â
-    color += emissiveMap.Sample(pbrSampler2, input.texcoord).rgb;
+    // æ·»åŠ è‡ªå‘å…‰
+    color += emissiveMap.Sample(pbrSampler2, materialUv).rgb;
     
-    // HDR É«µ÷Ó³Éä (Reinhard)
-    color = color / (color + float3(1.0, 1.0, 1.0));
-    
-    return float4(color, 1.0);
+    return float4(saturate(color), 1.0);
 }
+
+
+

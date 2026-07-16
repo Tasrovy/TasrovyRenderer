@@ -43,6 +43,22 @@ enum class AttachmentStore {
 struct SampledTextureInput {
     std::string slot;
     std::string resource;
+    uint32_t binding = 0;
+};
+
+enum class PipelineResourceAccess {
+    SampledRead,
+    ColorRead,
+    ColorWrite,
+    DepthRead,
+    DepthWrite
+};
+
+struct PipelineResourceRef {
+    std::string slot;
+    std::string resource;
+    uint32_t binding = 0;
+    PipelineResourceAccess access = PipelineResourceAccess::SampledRead;
 };
 
 struct ColorAttachmentRef {

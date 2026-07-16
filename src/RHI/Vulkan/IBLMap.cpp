@@ -82,14 +82,14 @@ void IBLProcessor::createPipelines() {
         .addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
         .build();
     _brdfLutPipeline = PipelineBuilder(_context)
-        .buildComputePipeline("res\\IBLComputeShader\\brdf.spv", _brdfLutLayout->getLayout(), "CSMain");
+        .buildComputePipeline("res\\Shaders\\IBL\\Bin\\brdf.spv", _brdfLutLayout->getLayout(), "CSMain");
 
     _irradianceLayout = VulkanDescriptorSetLayout::Builder(_context)
         .addBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_COMPUTE_BIT)
         .addBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT)
         .build();
     _irradiancePipeline = PipelineBuilder(_context)
-        .buildComputePipeline("res\\IBLComputeShader\\irradiance.spv", _irradianceLayout->getLayout(), "CSMain");
+        .buildComputePipeline("res\\Shaders\\IBL\\Bin\\irradiance.spv", _irradianceLayout->getLayout(), "CSMain");
 
     _prefilterLayout = VulkanDescriptorSetLayout::Builder(_context)
         .addBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_COMPUTE_BIT)
@@ -97,7 +97,7 @@ void IBLProcessor::createPipelines() {
         .build();
     _prefilterPipeline = createComputePipelineWithPushConstants(
         _context,
-        "res\\IBLComputeShader\\prefilter_specular.spv",
+        "res\\Shaders\\IBL\\Bin\\prefilter_specular.spv",
         _prefilterLayout->getLayout(),
         VK_SHADER_STAGE_COMPUTE_BIT,
         sizeof(float),

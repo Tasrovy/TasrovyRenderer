@@ -55,5 +55,12 @@ VulkanDescriptorSetLayout::VulkanDescriptorSetLayout(VulkanContext& context, VkD
 }
 
 VulkanDescriptorSetLayout::~VulkanDescriptorSetLayout() {
-    vkDestroyDescriptorSetLayout(_context.getDevice(), _layout, nullptr);
+    VkDescriptorSetLayout layout = _layout;
+    _layout = VK_NULL_HANDLE;
+
+    _context.deferDelete([layout](VkDevice device) {
+        if (layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(device, layout, nullptr);
+        }
+    });
 }

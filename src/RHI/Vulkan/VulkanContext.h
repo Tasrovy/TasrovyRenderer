@@ -5,6 +5,7 @@
 #include <optional>
 #include <memory>
 #include <functional>
+#include <mutex>
 
 struct SwapChainSupportDetails {
     VkSurfaceCapabilitiesKHR capabilities;
@@ -51,6 +52,7 @@ public:
     VkSurfaceKHR getSurface() const { return _surface; }
     const QueueFamilyIndices& getQueueFamilyIndices() const { return _queueFamilyIndices; }
     VkSampleCountFlagBits getMsaaSamples() const { return _msaaSamples; }
+    std::mutex& getQueueMutex() const { return _queueMutex; }
 
     // --- 底层辅助函数 ---
     std::vector<char> readFile(const std::string& filename) const;
@@ -102,6 +104,11 @@ public:
     VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) const;
     VkFormat findDepthFormat() const;
     void CheckFormatChange(VulkanSwapchain& swapchain);
+    void deferDelete(std::function<void(VkDevice)> deleter);
+    uint64_t advanceDeletionFrame();
+    void collectDeferredDeletions(uint64_t completedSubmissionSerial);
+    void flushDeferredDeletions();
+    size_t getDeferredDeletionCount() const;
 
     int getFramebufferWidth() const { return _fbWidth; }
     int getFramebufferHeight() const { return _fbHeight; }
@@ -109,6 +116,11 @@ public:
 
     bool framebufferResized = false;
 private:
+    struct DeferredDeletion {
+        uint64_t releaseSubmission = 0;
+        std::function<void(VkDevice)> deleter;
+    };
+
     void createInstance(const std::vector<const char*>& instanceExtensions);
     void setupDebugMessenger();
     void createSurface(VkInstance instance);
@@ -141,4 +153,8 @@ private:
 
     QueueFamilyIndices _queueFamilyIndices;
     VkSampleCountFlagBits _msaaSamples = VK_SAMPLE_COUNT_1_BIT;
+    uint64_t _deletionFrameSerial = 0;
+    mutable std::mutex _deferredDeletionMutex;
+    mutable std::mutex _queueMutex;
+    std::vector<DeferredDeletion> _deferredDeletions;
 };

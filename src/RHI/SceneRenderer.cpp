@@ -11,6 +11,7 @@
 #include "SceneGeometry.h"
 #include "../render/Material.h"
 #include "../render/Camera.h"
+#include "../render/DeferredPipeline.h"
 #include "../render/Light.h"
 #include "../render/Mesh.h"
 #include "../render/Object.h"
@@ -25,8 +26,10 @@
 #include "../window/Window.h"
 #include "Logger.hpp"
 #include <imgui.h>
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -60,6 +63,7 @@ struct UniformBufferObject {
     TSVec4f lightColor;
     TSVec4f camPosAndMetallic;
     TSVec4f roughnessAo;
+    TSVec4f uvTransform;
 };
 
 struct SkyUniformBufferObject {
@@ -69,14 +73,52 @@ struct SkyUniformBufferObject {
 
 struct PassResources {
     std::shared_ptr<PipelinePass> logicalPass;
-    std::shared_ptr<Pass> rhiPass;
+    std::vector<std::shared_ptr<Pass>> rhiPasses;
     std::shared_ptr<Pipeline> gpuPipeline;
     std::shared_ptr<DescriptorSetLayout> descriptorSetLayout;
     std::shared_ptr<DescriptorPool> descriptorPool;
     std::vector<DescriptorSet> descriptorSets;
     std::vector<std::shared_ptr<Buffer>> uniformBuffers;
+    uint32_t descriptorSetsPerFrame = 1;
     bool usesSwapchain = false;
 };
+
+bool passHasExecutableWork(const PipelinePass& pass) {
+    switch (pass.getExecution()) {
+    case PipelinePassExecution::Fullscreen:
+    case PipelinePassExecution::Skybox:
+        return true;
+    case PipelinePassExecution::Mesh:
+        return !pass.getObjects().empty();
+    case PipelinePassExecution::Compute:
+    case PipelinePassExecution::UI:
+        return true;
+    }
+    return !pass.getObjects().empty();
+}
+
+bool passUsesFullscreenDraw(const PipelinePass& pass) {
+    return pass.getExecution() == PipelinePassExecution::Fullscreen;
+}
+
+bool passUsesSkyboxDraw(const PipelinePass& pass) {
+    return pass.getExecution() == PipelinePassExecution::Skybox;
+}
+
+uint32_t countMeshDrawSlots(const PipelinePass& pass) {
+    uint32_t count = 0;
+    for (const auto& objectRef : pass.getObjects()) {
+        const auto object = objectRef.lock();
+        const auto mesh = object ? object->getMesh() : nullptr;
+        if (!mesh) {
+            continue;
+        }
+
+        const auto& submeshes = mesh->getSubmeshes();
+        count += submeshes.empty() ? 1u : static_cast<uint32_t>(submeshes.size());
+    }
+    return std::max(1u, count);
+}
 
 RHIAttachmentLoad toRHILoad(AttachmentLoad load) {
     switch (load) {
@@ -114,6 +156,57 @@ RenderTextureFormat toRHIFormat(PipelineTextureFormat format) {
         return RenderTextureFormat::Swapchain;
     }
     return RenderTextureFormat::RGBA8Unorm;
+}
+
+uint64_t bytesPerPixel(RenderTextureFormat format) {
+    switch (format) {
+    case RenderTextureFormat::RGBA8Unorm:
+    case RenderTextureFormat::RG16Float:
+    case RenderTextureFormat::Depth32Float:
+    case RenderTextureFormat::Swapchain:
+        return 4;
+    case RenderTextureFormat::RGBA16Float:
+        return 8;
+    }
+    return 4;
+}
+
+std::string formatBytes(uint64_t bytes) {
+    constexpr double KiB = 1024.0;
+    constexpr double MiB = KiB * 1024.0;
+    constexpr double GiB = MiB * 1024.0;
+
+    char buffer[64]{};
+    if (bytes >= static_cast<uint64_t>(GiB)) {
+        std::snprintf(buffer, sizeof(buffer), "%.2f GiB", static_cast<double>(bytes) / GiB);
+    } else if (bytes >= static_cast<uint64_t>(MiB)) {
+        std::snprintf(buffer, sizeof(buffer), "%.2f MiB", static_cast<double>(bytes) / MiB);
+    } else if (bytes >= static_cast<uint64_t>(KiB)) {
+        std::snprintf(buffer, sizeof(buffer), "%.2f KiB", static_cast<double>(bytes) / KiB);
+    } else {
+        std::snprintf(buffer, sizeof(buffer), "%llu B", static_cast<unsigned long long>(bytes));
+    }
+    return buffer;
+}
+
+int selectMaterialUvMode(
+    const std::string& materialName,
+    int bodyMode,
+    int hairMode,
+    int faceMode) {
+    auto lowerName = materialName;
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (lowerName.find("hair") != std::string::npos) {
+        return hairMode;
+    }
+    if (lowerName.find("face") != std::string::npos ||
+        lowerName.find("eye") != std::string::npos) {
+        return faceMode;
+    }
+    return bodyMode;
 }
 
 uint32_t toRHICullMode(CullMode cullMode) {
@@ -157,6 +250,30 @@ bool isSRGB(MaterialTextureColorSpace colorSpace) {
     return colorSpace == MaterialTextureColorSpace::SRGB;
 }
 
+MaterialTextureColorSpace colorSpaceForSemantic(MaterialTextureSemantic semantic) {
+    switch (semantic) {
+    case MaterialTextureSemantic::BaseColor:
+    case MaterialTextureSemantic::Emissive:
+        return MaterialTextureColorSpace::SRGB;
+    case MaterialTextureSemantic::Normal:
+    case MaterialTextureSemantic::MetallicRoughnessAO:
+    case MaterialTextureSemantic::Opacity:
+        return MaterialTextureColorSpace::Linear;
+    }
+    return MaterialTextureColorSpace::Linear;
+}
+
+std::string materialTextureCacheKey(
+    const std::string& path,
+    MaterialTextureColorSpace colorSpace) {
+    auto normalized = std::filesystem::path(path).lexically_normal().generic_string();
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    normalized += isSRGB(colorSpace) ? "|srgb" : "|linear";
+    return normalized;
+}
+
 void collectSceneObjects(
     const std::shared_ptr<Object>& object,
     std::vector<std::shared_ptr<Object>>& objects,
@@ -177,6 +294,26 @@ bool drawVec3Control(const char* label, TSVec3f& value, float speed = 0.05f) {
         return false;
     }
     value = TSVec3f(data[0], data[1], data[2]);
+    return true;
+}
+
+TSVec3f radiansToDegrees(TSVec3f radiansValue) {
+    constexpr float radiansToDegreesScale = 57.29577951308232f;
+    return radiansValue * radiansToDegreesScale;
+}
+
+TSVec3f degreesToRadians(TSVec3f degreesValue) {
+    constexpr float degreesToRadiansScale = 0.017453292519943295f;
+    return degreesValue * degreesToRadiansScale;
+}
+
+bool drawEulerDegreesControl(const char* label, TSVec3f& radiansValue, float speed = 0.5f) {
+    TSVec3f degreesValue = radiansToDegrees(radiansValue);
+    float data[3] = { degreesValue.x, degreesValue.y, degreesValue.z };
+    if (!ImGui::DragFloat3(label, data, speed, -360.0f, 360.0f, "%.1f")) {
+        return false;
+    }
+    radiansValue = degreesToRadians(TSVec3f(data[0], data[1], data[2]));
     return true;
 }
 
@@ -235,7 +372,7 @@ std::string normalizePathForAssets(const std::filesystem::path& path) {
 
 std::vector<SkyboxCandidate> discoverSkyboxCandidates(const std::string& preferredPath) {
     std::vector<SkyboxCandidate> candidates;
-    const std::filesystem::path resPath("res");
+    const std::filesystem::path resPath("res/Skyboxes");
 
     if (std::filesystem::exists(resPath)) {
         for (const auto& entry : std::filesystem::directory_iterator(resPath)) {
@@ -295,29 +432,6 @@ bool drawMaterialDebug(Material& material) {
         material.setAlphaCutoff(alphaCutoff);
     }
 
-    if (ImGui::TreeNode("PBR Params")) {
-        float metallic = material.getFloat("uMetallic", 1.0f);
-        float roughness = material.getFloat("uRoughness", 1.0f);
-        float ao = material.getFloat("uAo", 1.0f);
-        if (ImGui::SliderFloat("uMetallic", &metallic, 0.0f, 1.0f)) {
-            material.setFloat("uMetallic", metallic);
-        }
-        if (ImGui::SliderFloat("uRoughness", &roughness, 0.0f, 1.0f)) {
-            material.setFloat("uRoughness", roughness);
-        }
-        if (ImGui::SliderFloat("uAo", &ao, 0.0f, 1.0f)) {
-            material.setFloat("uAo", ao);
-        }
-
-        for (const auto& [name, value] : material.getFloatParams()) {
-            if (name == "uMetallic" || name == "uRoughness" || name == "uAo") {
-                continue;
-            }
-            ImGui::Text("%s: %.3f", name.c_str(), value);
-        }
-        ImGui::TreePop();
-    }
-
     if (ImGui::TreeNode("Textures")) {
         for (const auto& [semantic, binding] : material.getSemanticTextureBindings()) {
             ImGui::Text(
@@ -354,13 +468,21 @@ bool drawObjectDebug(const std::shared_ptr<Object>& object) {
         needsPipelineRefresh = true;
     }
 
+    bool flipProjectionY = object->getFlipProjectionY();
+    if (ImGui::Checkbox("Flip Projection Y", &flipProjectionY)) {
+        object->setFlipProjectionY(flipProjectionY);
+    }
+    ImGui::TextDisabled(
+        "Front face: %s",
+        flipProjectionY ? "Clockwise" : "Counter-Clockwise");
+
     TSVec3f position = object->getPosition();
     TSVec3f rotation = object->getRotationEuler();
     TSVec3f scale = object->getScale();
     if (drawVec3Control("Position", position)) {
         object->setPosition(position);
     }
-    if (drawVec3Control("Rotation", rotation, 0.01f)) {
+    if (drawEulerDegreesControl("Rotation", rotation)) {
         object->setRotation(rotation);
     }
     if (drawVec3Control("Scale", scale, 0.01f)) {
@@ -373,9 +495,9 @@ bool drawObjectDebug(const std::shared_ptr<Object>& object) {
             for (const auto& submesh : mesh->getSubmeshes()) {
                 ImGui::Text(
                     "%s  offset %u  count %u",
-                    submesh.materialName.c_str(),
-                    submesh.indexOffset,
-                    submesh.indexCount);
+                    submesh.getMaterialName().c_str(),
+                    submesh.getIndexOffset(),
+                    submesh.getIndexCount());
             }
             ImGui::TreePop();
         }
@@ -411,10 +533,11 @@ struct SceneRenderer::RenderState {
 
     std::shared_ptr<Device> device;
     std::shared_ptr<CommandList> commandList;
-    std::unordered_map<std::string, std::shared_ptr<Image>> renderTextures;
+    std::unordered_map<std::string, std::vector<std::shared_ptr<Image>>> renderTextures;
     std::unordered_map<std::string, std::shared_ptr<Image>> materialTextures;
     std::unordered_map<const Mesh*, MeshResources> meshes;
     std::vector<PassResources> passes;
+    uint64_t renderTextureBytes = 0;
     std::shared_ptr<Image> defaultDiffuse;
     std::shared_ptr<Image> defaultNormal;
     std::shared_ptr<Image> defaultEmissive;
@@ -427,7 +550,18 @@ struct SceneRenderer::RenderState {
     std::shared_ptr<Buffer> skyboxIndexBuffer;
     uint32_t skyboxIndexCount = 0;
     bool loggedSkyboxDrawState = false;
-    std::vector<std::shared_ptr<void>> retiredResources;
+    bool loggedSubmeshMaterialBindings = false;
+    int selectedPipelineIndex = 0;
+    std::string debugOutputResource;
+    float pbrMetallic = 0.0f;
+    float pbrRoughness = 1.0f;
+    float pbrAo = 1.0f;
+    int materialDebugMode = 0;
+    int bodyUvMode = 1;
+    int hairUvMode = 1;
+    int faceUvMode = 1;
+    float uvOffset[2] = {0.0f, 0.0f};
+    float uvScale[2] = {1.0f, 1.0f};
     std::unique_ptr<Tasrovy::UI::UIOverlay> ui;
     uint32_t maxFramesInFlight = 0;
 
@@ -438,78 +572,6 @@ struct SceneRenderer::RenderState {
         ui = device->createUIOverlay(window);
     }
 };
-
-namespace {
-
-void retireResource(std::vector<std::shared_ptr<void>>& retired, const std::shared_ptr<Buffer>& resource) {
-    if (resource) {
-        retired.push_back(resource);
-    }
-}
-
-void retireResource(std::vector<std::shared_ptr<void>>& retired, const std::shared_ptr<Image>& resource) {
-    if (resource) {
-        retired.push_back(resource);
-    }
-}
-
-void retireResource(std::vector<std::shared_ptr<void>>& retired, const std::shared_ptr<Pipeline>& resource) {
-    if (resource) {
-        retired.push_back(resource);
-    }
-}
-
-void retireResource(std::vector<std::shared_ptr<void>>& retired, const std::shared_ptr<Pass>& resource) {
-    if (resource) {
-        retired.push_back(resource);
-    }
-}
-
-void retireResource(std::vector<std::shared_ptr<void>>& retired, const std::shared_ptr<DescriptorSetLayout>& resource) {
-    if (resource) {
-        retired.push_back(resource);
-    }
-}
-
-void retireResource(std::vector<std::shared_ptr<void>>& retired, const std::shared_ptr<DescriptorPool>& resource) {
-    if (resource) {
-        retired.push_back(resource);
-    }
-}
-
-} // namespace
-
-void SceneRenderer::retireCurrentResources() {
-    auto& state = *renderState_;
-    auto& retired = state.retiredResources;
-
-    for (const auto& [_, image] : state.renderTextures) {
-        retireResource(retired, image);
-    }
-    for (const auto& [_, image] : state.materialTextures) {
-        retireResource(retired, image);
-    }
-    for (const auto& [_, mesh] : state.meshes) {
-        retireResource(retired, mesh.vertexBuffer);
-        retireResource(retired, mesh.indexBuffer);
-    }
-    for (const auto& pass : state.passes) {
-        retireResource(retired, pass.rhiPass);
-        retireResource(retired, pass.gpuPipeline);
-        retireResource(retired, pass.descriptorSetLayout);
-        retireResource(retired, pass.descriptorPool);
-        for (const auto& buffer : pass.uniformBuffers) {
-            retireResource(retired, buffer);
-        }
-    }
-
-    retireResource(retired, state.defaultDiffuse);
-    retireResource(retired, state.defaultNormal);
-    retireResource(retired, state.defaultEmissive);
-    retireResource(retired, state.defaultMsa);
-    retireResource(retired, state.skyboxVertexBuffer);
-    retireResource(retired, state.skyboxIndexBuffer);
-}
 
 void SceneRenderer::prepareSkyboxVariants(const std::string& preferredPath) {
     auto& state = *renderState_;
@@ -596,11 +658,198 @@ void SceneRenderer::drawSceneDebugUI() {
 
     ImGui::SetNextWindowSize(ImVec2(420.0f, 560.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin("Scene Inspector");
+    const float fps = ImGui::GetIO().Framerate;
+    const float frameMs = fps > 0.0f ? 1000.0f / fps : 0.0f;
+
+    uint64_t meshBufferBytes = 0;
+    for (const auto& [_, mesh] : state.meshes) {
+        if (mesh.vertexBuffer) {
+            meshBufferBytes += mesh.vertexBuffer->getSize();
+        }
+        if (mesh.indexBuffer) {
+            meshBufferBytes += mesh.indexBuffer->getSize();
+        }
+    }
+
+    uint64_t skyboxBufferBytes = 0;
+    if (state.skyboxVertexBuffer) {
+        skyboxBufferBytes += state.skyboxVertexBuffer->getSize();
+    }
+    if (state.skyboxIndexBuffer) {
+        skyboxBufferBytes += state.skyboxIndexBuffer->getSize();
+    }
+
+    uint64_t uniformResidentBytes = 0;
+    uint64_t uniformPerFrameBytes = 0;
+    for (auto& pass : state.passes) {
+        if (!pass.uniformBuffers.empty() && pass.uniformBuffers.front()) {
+            uniformPerFrameBytes += pass.uniformBuffers.front()->getSize();
+        }
+        for (const auto& buffer : pass.uniformBuffers) {
+            if (buffer) {
+                uniformResidentBytes += buffer->getSize();
+            }
+        }
+    }
+    const uint64_t uniformBytesPerSecond =
+        static_cast<uint64_t>(static_cast<double>(uniformPerFrameBytes) * static_cast<double>(fps));
+
     ImGui::Text("Tasrovy RHI frame");
+    ImGui::Text("FPS: %.1f  Frame: %.2f ms", fps, frameMs);
+    const char* pipelineNames[] = {"PBR", "Deferred"};
+    if (currentPipeline_) {
+        if (currentPipeline_->getName() == "Deferred") {
+            state.selectedPipelineIndex = 1;
+        } else if (currentPipeline_->getName() == "PBR") {
+            state.selectedPipelineIndex = 0;
+        }
+    }
+    if (ImGui::Combo("Pipeline", &state.selectedPipelineIndex, pipelineNames, 2)) {
+        currentPipeline_ = state.selectedPipelineIndex == 1
+            ? std::static_pointer_cast<PipelineBase>(DeferredPipeline::create())
+            : std::static_pointer_cast<PipelineBase>(PBRPipeline::create());
+        state.debugOutputResource.clear();
+        renderDataDirty_ = true;
+        ++renderDataDirtyVersion_;
+        LOG_INFO("SceneRenderer: switched pipeline to '{}'", currentPipeline_->getName());
+    }
     ImGui::Text("Passes: %zu", state.passes.size());
     ImGui::Text("Meshes: %zu", state.meshes.size());
     ImGui::Text("Render Textures: %zu", state.renderTextures.size());
     ImGui::Text("Material Textures: %zu", state.materialTextures.size());
+    if (ImGui::CollapsingHeader("Data Flow", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Uniform/frame: %s", formatBytes(uniformPerFrameBytes).c_str());
+        ImGui::Text("Uniform/sec: %s/s", formatBytes(uniformBytesPerSecond).c_str());
+        ImGui::Text("Uniform resident: %s", formatBytes(uniformResidentBytes).c_str());
+        ImGui::Text("Mesh buffers: %s", formatBytes(meshBufferBytes).c_str());
+        ImGui::Text("Skybox buffers: %s", formatBytes(skyboxBufferBytes).c_str());
+        ImGui::Text("Render textures: %s", formatBytes(state.renderTextureBytes).c_str());
+        ImGui::Text("Skybox variants: %zu", state.skyboxVariants.size());
+    }
+
+    if (ImGui::CollapsingHeader("PBR Constants", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Metallic", &state.pbrMetallic, 0.0f, 1.0f);
+        ImGui::SliderFloat("Roughness", &state.pbrRoughness, 0.0f, 1.0f);
+        ImGui::SliderFloat("AO", &state.pbrAo, 0.0f, 1.0f);
+        const char* materialDebugModes[] = {
+            "Shaded",
+            "Albedo Only",
+            "Raw UV",
+            "Material UV"
+        };
+        ImGui::Combo(
+            "Material Debug",
+            &state.materialDebugMode,
+            materialDebugModes,
+            IM_ARRAYSIZE(materialDebugModes));
+        const char* uvModes[] = {
+            "UV0",
+            "Flip Y",
+            "Flip X",
+            "Flip X/Y",
+            "Swap X/Y",
+            "Swap + Flip Y",
+            "Swap + Flip X"
+        };
+        const bool uvModesMatch =
+            state.bodyUvMode == state.hairUvMode &&
+            state.bodyUvMode == state.faceUvMode;
+        const char* modelUvPreview = uvModesMatch
+            ? uvModes[state.bodyUvMode]
+            : "Mixed";
+        if (ImGui::BeginCombo("Model UV", modelUvPreview)) {
+            for (int mode = 0; mode < IM_ARRAYSIZE(uvModes); ++mode) {
+                const bool selected = uvModesMatch && state.bodyUvMode == mode;
+                if (ImGui::Selectable(uvModes[mode], selected)) {
+                    state.bodyUvMode = mode;
+                    state.hairUvMode = mode;
+                    state.faceUvMode = mode;
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::DragFloat2("UV Offset", state.uvOffset, 0.01f, -10.0f, 10.0f, "%.3f");
+        ImGui::DragFloat2("UV Scale", state.uvScale, 0.01f, -10.0f, 10.0f, "%.3f");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset UV Transform")) {
+            state.uvOffset[0] = 0.0f;
+            state.uvOffset[1] = 0.0f;
+            state.uvScale[0] = 1.0f;
+            state.uvScale[1] = 1.0f;
+        }
+        ImGui::TextDisabled("Repeat: frac(UV * Scale + Offset)");
+        if (ImGui::TreeNode("Per-Material UV Overrides")) {
+            ImGui::Combo("Body UV", &state.bodyUvMode, uvModes, IM_ARRAYSIZE(uvModes));
+            ImGui::Combo("Hair UV", &state.hairUvMode, uvModes, IM_ARRAYSIZE(uvModes));
+            ImGui::Combo("Face UV", &state.faceUvMode, uvModes, IM_ARRAYSIZE(uvModes));
+            ImGui::TreePop();
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Debug Output", ImGuiTreeNodeFlags_DefaultOpen)) {
+        struct DebugOutputOption {
+            std::string label;
+            std::string resource;
+        };
+        std::vector<DebugOutputOption> options;
+        options.push_back({"Final Output", ""});
+
+        for (const auto& pass : state.passes) {
+            if (!pass.logicalPass || pass.rhiPasses.empty() || !pass.rhiPasses.front()) {
+                continue;
+            }
+
+            const auto& debugPass = *pass.rhiPasses.front();
+            uint32_t colorIndex = 0;
+            for (const auto& attachment : debugPass.getDesc().colorAttachments) {
+                if (attachment.image) {
+                    options.push_back({
+                        pass.logicalPass->getName() + " / Color" +
+                            std::to_string(colorIndex) + " / " + attachment.name,
+                        attachment.name
+                    });
+                }
+                ++colorIndex;
+            }
+
+            if (const auto& depth = debugPass.getDesc().depthAttachment;
+                depth && depth->image) {
+                options.push_back({
+                    pass.logicalPass->getName() + " / Depth / " + depth->name,
+                    depth->name
+                });
+            }
+        }
+
+        int currentOption = 0;
+        for (int i = 0; i < static_cast<int>(options.size()); ++i) {
+            if (options[static_cast<size_t>(i)].resource == state.debugOutputResource) {
+                currentOption = i;
+                break;
+            }
+        }
+
+        if (ImGui::BeginCombo("Display", options[static_cast<size_t>(currentOption)].label.c_str())) {
+            for (int i = 0; i < static_cast<int>(options.size()); ++i) {
+                const bool selected = i == currentOption;
+                if (ImGui::Selectable(options[static_cast<size_t>(i)].label.c_str(), selected)) {
+                    state.debugOutputResource = options[static_cast<size_t>(i)].resource;
+                    LOG_INFO(
+                        "SceneRenderer: debug output '{}'",
+                        state.debugOutputResource.empty()
+                            ? std::string("Final Output")
+                            : state.debugOutputResource);
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+    }
     ImGui::Separator();
 
     const auto scene = currentScene_;
@@ -662,7 +911,7 @@ void SceneRenderer::drawSceneDebugUI() {
             if (drawVec3Control("Position##Camera", position)) {
                 camera->setPosition(position);
             }
-            if (drawVec3Control("Rotation##Camera", rotation, 0.01f)) {
+            if (drawEulerDegreesControl("Rotation##Camera", rotation)) {
                 camera->setRotation(rotation);
             }
             if (ImGui::SliderFloat("FOV", &fov, 10.0f, 120.0f)) {
@@ -840,19 +1089,33 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
         pipeline = PBRPipeline::create();
     }
     pipeline->GenPass(scene);
+    for (const auto& error : pipeline->validatePassDependencies()) {
+        LOG_WARN("SceneRenderer: pipeline dependency issue: {}", error);
+    }
 
+    // Rebuilding the render graph releases vertex/index buffers, descriptor
+    // sets, pipelines, and render targets owned by the previous graph. Frames
+    // submitted before a pipeline/scene switch may still reference them, so
+    // complete all in-flight work before destroying those resources.
     device.waitIdle();
-    state.retiredResources.clear();
-    retireCurrentResources();
 
     state.renderTextures.clear();
     state.materialTextures.clear();
     state.meshes.clear();
     state.passes.clear();
+    state.defaultDiffuse.reset();
+    state.defaultNormal.reset();
+    state.defaultEmissive.reset();
+    state.defaultMsa.reset();
+    state.skyboxVertexBuffer.reset();
+    state.skyboxIndexBuffer.reset();
+    state.skyboxIndexCount = 0;
+    state.renderTextureBytes = 0;
+    state.loggedSubmeshMaterialBindings = false;
 
-    for (const auto& error : pipeline->validateResourceFlow()) {
-        LOG_WARN("SceneRenderer: pipeline resource issue: {}", error);
-    }
+    // The device is already idle. Flush the Vulkan objects whose wrappers
+    // were released above before allocating the replacement render graph.
+    device.waitIdle();
 
     for (const auto& texture : pipeline->getTextures()) {
         RenderTextureDesc desc;
@@ -862,7 +1125,18 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
         desc.format = toRHIFormat(texture.format);
         desc.external = texture.external;
 
-        state.renderTextures[texture.name] = device.createRenderTexture(desc);
+        auto& frameTextures = state.renderTextures[texture.name];
+        frameTextures.resize(maxFramesInFlight_);
+        for (uint32_t frame = 0; frame < maxFramesInFlight_; ++frame) {
+            frameTextures[frame] = device.createRenderTexture(desc);
+        }
+        if (!desc.external) {
+            state.renderTextureBytes +=
+                static_cast<uint64_t>(desc.width) *
+                static_cast<uint64_t>(desc.height) *
+                bytesPerPixel(desc.format) *
+                maxFramesInFlight_;
+        }
     }
 
     std::vector<std::shared_ptr<Object>> objects;
@@ -899,14 +1173,10 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
         state.meshes.emplace(mesh.get(), std::move(resources));
     }
 
-    state.defaultDiffuse = device.createTexture("res\\diffuse.png", true, FormatRGBA8Srgb);
-    state.defaultNormal = device.createTexture("res\\normal.png", false, FormatRGBA8Unorm);
-    state.defaultEmissive = device.createTexture("res\\emissive.png", false, FormatRGBA8Srgb);
-    state.defaultMsa = device.createTexture("res\\msa.png", false, FormatRGBA8Unorm);
-
-    state.skyboxVertexBuffer.reset();
-    state.skyboxIndexBuffer.reset();
-    state.skyboxIndexCount = 0;
+    state.defaultDiffuse = device.createTexture("res\\Textures\\Taffy\\cloth.png", true, FormatRGBA8Srgb);
+    state.defaultNormal = device.createTexture("res\\Textures\\Taffy\\neutral_normal.png", true, FormatRGBA8Unorm);
+    state.defaultEmissive = device.createTexture("res\\Textures\\Taffy\\neutral_emissive.png", true, FormatRGBA8Srgb);
+    state.defaultMsa = device.createTexture("res\\Textures\\Taffy\\neutral_mra.png", true, FormatRGBA8Unorm);
 
     std::string preferredSkyboxPath;
     for (const auto& object : objects) {
@@ -942,67 +1212,97 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
     }
 
     for (const auto& pass : pipeline->getPasses()) {
-        PassDesc passDesc;
-        passDesc.name = pass->getName();
-        passDesc.width = device.getSwapchainWidth();
-        passDesc.height = device.getSwapchainHeight();
-
-        for (const auto& attachment : pass->getColorAttachments()) {
-            const auto textureDesc = pipeline->getTexture(attachment.resource);
-            const auto found = state.renderTextures.find(attachment.resource);
-            if (textureDesc && textureDesc->external) {
-                passDesc.width = device.getSwapchainWidth();
-                passDesc.height = device.getSwapchainHeight();
-            } else if (textureDesc) {
-                passDesc.width = resolveTextureWidth(*textureDesc, device);
-                passDesc.height = resolveTextureHeight(*textureDesc, device);
-            }
-
-            passDesc.colorAttachments.push_back({
-                attachment.resource,
-                found == state.renderTextures.end() ? nullptr : found->second,
-                toRHILoad(attachment.load),
-                toRHIStore(attachment.store),
-                false,
-                pass->getClearColor()
-            });
+        if (!passHasExecutableWork(*pass)) {
+            continue;
         }
 
-        if (const auto* depth = pass->getDepthAttachment()) {
-            const auto textureDesc = pipeline->getTexture(depth->resource);
-            const auto found = state.renderTextures.find(depth->resource);
-            if (textureDesc) {
-                passDesc.width = resolveTextureWidth(*textureDesc, device);
-                passDesc.height = resolveTextureHeight(*textureDesc, device);
+        std::vector<PassDesc> framePassDescs(maxFramesInFlight_);
+        for (uint32_t frame = 0; frame < maxFramesInFlight_; ++frame) {
+            auto& passDesc = framePassDescs[frame];
+            passDesc.name = pass->getName();
+            passDesc.width = device.getSwapchainWidth();
+            passDesc.height = device.getSwapchainHeight();
+
+            for (const auto& attachment : pass->getColorAttachments()) {
+                const auto textureDesc = pipeline->getTexture(attachment.resource);
+                const auto found = state.renderTextures.find(attachment.resource);
+                if (textureDesc && textureDesc->external) {
+                    passDesc.width = device.getSwapchainWidth();
+                    passDesc.height = device.getSwapchainHeight();
+                } else if (textureDesc) {
+                    passDesc.width = resolveTextureWidth(*textureDesc, device);
+                    passDesc.height = resolveTextureHeight(*textureDesc, device);
+                }
+
+                const auto image =
+                    found != state.renderTextures.end() && frame < found->second.size()
+                        ? found->second[frame]
+                        : nullptr;
+                passDesc.colorAttachments.push_back({
+                    attachment.resource,
+                    image,
+                    toRHILoad(attachment.load),
+                    toRHIStore(attachment.store),
+                    false,
+                    pass->getClearColor()
+                });
             }
 
-            passDesc.depthAttachment = RHIAttachmentDesc{
-                depth->resource,
-                found == state.renderTextures.end() ? nullptr : found->second,
-                toRHILoad(depth->load),
-                toRHIStore(depth->store),
-                depth->readOnly,
-                TSVec4f(0.0f),
-                depth->clearDepth
-            };
+            if (const auto* depth = pass->getDepthAttachment()) {
+                const auto textureDesc = pipeline->getTexture(depth->resource);
+                const auto found = state.renderTextures.find(depth->resource);
+                if (textureDesc) {
+                    passDesc.width = resolveTextureWidth(*textureDesc, device);
+                    passDesc.height = resolveTextureHeight(*textureDesc, device);
+                }
+
+                const auto image =
+                    found != state.renderTextures.end() && frame < found->second.size()
+                        ? found->second[frame]
+                        : nullptr;
+                passDesc.depthAttachment = RHIAttachmentDesc{
+                    depth->resource,
+                    image,
+                    toRHILoad(depth->load),
+                    toRHIStore(depth->store),
+                    depth->readOnly,
+                    TSVec4f(0.0f),
+                    depth->clearDepth
+                };
+            }
         }
 
-        for (const auto& objectRef : pass->getObjects()) {
-            const auto object = objectRef.lock();
-            const auto material = object ? object->getMaterial() : nullptr;
+        const auto uploadMaterialTextures = [&](const std::shared_ptr<Material>& material) {
             if (!material) {
-                continue;
+                return;
             }
-
             for (const auto& requirement : pass->getMaterialTextures()) {
                 const auto* binding = material->resolveTexture(requirement);
-                if (!binding || binding->path.empty() || state.materialTextures.contains(binding->path)) {
+                if (!binding || binding->path.empty()) {
                     continue;
                 }
-                state.materialTextures[binding->path] =
+                const auto cacheKey = materialTextureCacheKey(binding->path, requirement.colorSpace);
+                if (state.materialTextures.contains(cacheKey)) {
+                    continue;
+                }
+                state.materialTextures[cacheKey] =
                     device.createTexture(binding->path, true, isSRGB(requirement.colorSpace)
                         ? FormatRGBA8Srgb
                         : FormatRGBA8Unorm);
+            }
+        };
+
+        for (const auto& objectRef : pass->getObjects()) {
+            const auto object = objectRef.lock();
+            if (!object) {
+                continue;
+            }
+
+            uploadMaterialTextures(object->getMaterial());
+            if (const auto mesh = object->getMesh()) {
+                for (const auto& submesh : mesh->getSubmeshes()) {
+                    uploadMaterialTextures(submesh.getMaterial());
+                }
             }
         }
 
@@ -1016,9 +1316,12 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
             }
         }
 
-        resources.rhiPass = device.createPass(std::move(passDesc));
+        resources.rhiPasses.reserve(maxFramesInFlight_);
+        for (auto& passDesc : framePassDescs) {
+            resources.rhiPasses.push_back(device.createPass(std::move(passDesc)));
+        }
 
-        if (pass->getType() == PipelinePassType::Skybox) {
+        if (passUsesSkyboxDraw(*pass)) {
             resources.descriptorSetLayout = device.createDescriptorSetLayout({
                 {
                     DescriptorResourceType::UniformBuffer,
@@ -1040,9 +1343,52 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
                     device.allocateDescriptorSet(*resources.descriptorPool, *resources.descriptorSetLayout);
                 resources.uniformBuffers[i] = device.createUniformBuffer(sizeof(SkyUniformBufferObject));
             }
+        } else if (passUsesFullscreenDraw(*pass)) {
+            std::vector<DescriptorResourceType> bindingTypes;
+            std::vector<uint32_t> stageFlags;
+            uint32_t maxBinding = 0;
+            for (const auto& input : pass->getSampledTextures()) {
+                maxBinding = std::max(maxBinding, input.binding);
+            }
+            if (pass->getName() == "Lighting") {
+                maxBinding = std::max(maxBinding, 10u);
+            }
+            bindingTypes.resize(static_cast<size_t>(maxBinding) + 1, DescriptorResourceType::CombinedImageSampler);
+            stageFlags.resize(static_cast<size_t>(maxBinding) + 1, ShaderStageFragment);
+            bindingTypes[0] = DescriptorResourceType::UniformBuffer;
+            stageFlags[0] = ShaderStageVertex | ShaderStageFragment;
+            for (const auto& input : pass->getSampledTextures()) {
+                bindingTypes[input.binding] = DescriptorResourceType::CombinedImageSampler;
+                stageFlags[input.binding] = ShaderStageFragment;
+            }
+
+            std::vector<DescriptorPoolSizeDesc> poolSizes = {
+                {DescriptorResourceType::UniformBuffer, maxFramesInFlight_}
+            };
+            if (maxBinding > 0) {
+                poolSizes.push_back({
+                    DescriptorResourceType::CombinedImageSampler,
+                    maxBinding * maxFramesInFlight_
+                });
+            }
+
+            resources.descriptorSetLayout = device.createDescriptorSetLayout({
+                std::move(bindingTypes),
+                std::move(stageFlags)
+            });
+            resources.descriptorPool = device.createDescriptorPool(maxFramesInFlight_, poolSizes);
+            resources.descriptorSets.resize(maxFramesInFlight_);
+            resources.uniformBuffers.resize(maxFramesInFlight_);
+            for (uint32_t i = 0; i < maxFramesInFlight_; ++i) {
+                resources.descriptorSets[i] =
+                    device.allocateDescriptorSet(*resources.descriptorPool, *resources.descriptorSetLayout);
+                resources.uniformBuffers[i] = device.createUniformBuffer(sizeof(UniformBufferObject));
+            }
         } else if (
             pass->getName() == "Forward" ||
             pass->getType() == PipelinePassType::Transparent) {
+            resources.descriptorSetsPerFrame = countMeshDrawSlots(*pass);
+            const uint32_t descriptorSetCount = maxFramesInFlight_ * resources.descriptorSetsPerFrame;
             resources.descriptorSetLayout = device.createDescriptorSetLayout({
                 {
                     DescriptorResourceType::UniformBuffer,
@@ -1065,13 +1411,13 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
                     ShaderStageFragment
                 }
             });
-            resources.descriptorPool = device.createDescriptorPool(maxFramesInFlight_, {
-                {DescriptorResourceType::UniformBuffer, maxFramesInFlight_},
-                {DescriptorResourceType::CombinedImageSampler, 7 * maxFramesInFlight_}
+            resources.descriptorPool = device.createDescriptorPool(descriptorSetCount, {
+                {DescriptorResourceType::UniformBuffer, descriptorSetCount},
+                {DescriptorResourceType::CombinedImageSampler, 7 * descriptorSetCount}
             });
-            resources.descriptorSets.resize(maxFramesInFlight_);
-            resources.uniformBuffers.resize(maxFramesInFlight_);
-            for (uint32_t i = 0; i < maxFramesInFlight_; ++i) {
+            resources.descriptorSets.resize(descriptorSetCount);
+            resources.uniformBuffers.resize(descriptorSetCount);
+            for (uint32_t i = 0; i < descriptorSetCount; ++i) {
                 resources.descriptorSets[i] =
                     device.allocateDescriptorSet(*resources.descriptorPool, *resources.descriptorSetLayout);
                 resources.uniformBuffers[i] = device.createUniformBuffer(sizeof(UniformBufferObject));
@@ -1079,16 +1425,33 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
         } else if (
             pass->getType() == PipelinePassType::Shadow ||
             pass->getType() == PipelinePassType::Geometry) {
+            resources.descriptorSetsPerFrame = countMeshDrawSlots(*pass);
+            const uint32_t descriptorSetCount = maxFramesInFlight_ * resources.descriptorSetsPerFrame;
+            std::vector<DescriptorResourceType> bindingTypes = {DescriptorResourceType::UniformBuffer};
+            std::vector<uint32_t> stageFlags = {ShaderStageVertex | ShaderStageFragment};
+            for (size_t i = 0; i < pass->getMaterialTextures().size(); ++i) {
+                bindingTypes.push_back(DescriptorResourceType::CombinedImageSampler);
+                stageFlags.push_back(ShaderStageFragment);
+            }
+
+            std::vector<DescriptorPoolSizeDesc> poolSizes = {
+                {DescriptorResourceType::UniformBuffer, descriptorSetCount}
+            };
+            if (!pass->getMaterialTextures().empty()) {
+                poolSizes.push_back({
+                    DescriptorResourceType::CombinedImageSampler,
+                    static_cast<uint32_t>(pass->getMaterialTextures().size() * descriptorSetCount)
+                });
+            }
+
             resources.descriptorSetLayout = device.createDescriptorSetLayout({
-                {DescriptorResourceType::UniformBuffer},
-                {ShaderStageVertex}
+                std::move(bindingTypes),
+                std::move(stageFlags)
             });
-            resources.descriptorPool = device.createDescriptorPool(maxFramesInFlight_, {
-                {DescriptorResourceType::UniformBuffer, maxFramesInFlight_}
-            });
-            resources.descriptorSets.resize(maxFramesInFlight_);
-            resources.uniformBuffers.resize(maxFramesInFlight_);
-            for (uint32_t i = 0; i < maxFramesInFlight_; ++i) {
+            resources.descriptorPool = device.createDescriptorPool(descriptorSetCount, poolSizes);
+            resources.descriptorSets.resize(descriptorSetCount);
+            resources.uniformBuffers.resize(descriptorSetCount);
+            for (uint32_t i = 0; i < descriptorSetCount; ++i) {
                 resources.descriptorSets[i] =
                     device.allocateDescriptorSet(*resources.descriptorPool, *resources.descriptorSetLayout);
                 resources.uniformBuffers[i] = device.createUniformBuffer(sizeof(UniformBufferObject));
@@ -1109,14 +1472,22 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
             if (!fragmentShader->getEntry().empty()) {
                 pipelineDesc.fragEntryPoint = fragmentShader->getEntry();
             }
-            if (pass->getType() == PipelinePassType::Skybox) {
+            if (passUsesSkyboxDraw(*pass)) {
                 pipelineDesc.vertexStride = sizeof(SkyboxVertexData);
                 pipelineDesc.attributeLocations = {0};
                 pipelineDesc.attributeFormats = {FormatRGB32Float};
                 pipelineDesc.attributeOffsets = {offsetof(SkyboxVertexData, pos)};
+            } else if (passUsesFullscreenDraw(*pass)) {
+                pipelineDesc.vertexStride = 0;
             } else {
                 pipelineDesc.vertexStride = sizeof(MeshVertex);
-                pipelineDesc.attributeLocations = {0, 1, 2, 3, 4};
+                pipelineDesc.attributeLocations = {
+                    MeshVertexLocation::Position,
+                    MeshVertexLocation::Normal,
+                    MeshVertexLocation::Tangent,
+                    MeshVertexLocation::Bitangent,
+                    MeshVertexLocation::UV0
+                };
                 pipelineDesc.attributeFormats = {
                     FormatRGB32Float,
                     FormatRGB32Float,
@@ -1128,7 +1499,7 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
                     offsetof(MeshVertex, position),
                     offsetof(MeshVertex, normal),
                     offsetof(MeshVertex, tangent),
-                    offsetof(MeshVertex, vertexColor),
+                    offsetof(MeshVertex, bitangent),
                     offsetof(MeshVertex, uv0)
                 };
             }
@@ -1155,10 +1526,7 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
                 }
             }
 
-            const bool passDrawsGeometry =
-                pass->getType() == PipelinePassType::Skybox ||
-                !pass->getObjects().empty();
-            if (!passDrawsGeometry) {
+            if (!passHasExecutableWork(*pass)) {
                 continue;
             }
 
@@ -1200,7 +1568,8 @@ void SceneRenderer::renderFrame(Scene& scene) {
 
     auto* cam = scene.getPrimaryCamera();
     TSMat4f viewMat = cam->getViewMatrix();
-    TSMat4f projMat = cam->getProjectionMatrix();
+    const TSMat4f unflippedProjMat = cam->getProjectionMatrix();
+    TSMat4f projMat = unflippedProjMat;
     projMat[1][1] *= -1;
 
     TSVec3f lightDir(-0.5f, -1.0f, -0.8f);
@@ -1221,7 +1590,7 @@ void SceneRenderer::renderFrame(Scene& scene) {
             continue;
         }
 
-        if (pass.logicalPass->getType() == PipelinePassType::Skybox) {
+        if (passUsesSkyboxDraw(*pass.logicalPass)) {
             TSMat4f skyView = TSMat4f(TSMat3f(viewMat));
             SkyUniformBufferObject skyUbo{};
             skyUbo.view = transpose(skyView);
@@ -1232,6 +1601,94 @@ void SceneRenderer::renderFrame(Scene& scene) {
                 {0, DescriptorResourceType::UniformBuffer, pass.uniformBuffers[frameIdx]},
                 {1, DescriptorResourceType::CombinedImageSampler, nullptr, state.skyCubemap}
             });
+        } else if (passUsesFullscreenDraw(*pass.logicalPass)) {
+            UniformBufferObject ubo{};
+            ubo.model = transpose(TSMat4f(1.0f));
+            ubo.view = transpose(viewMat);
+            ubo.proj = transpose(projMat);
+            ubo.lightDir = TSVec4f(normalize(lightDir), 0.0f);
+            ubo.lightColor = TSVec4f(lightColor, lightIntensity);
+            ubo.camPosAndMetallic = TSVec4f(cam->getPosition(), 1.0f);
+            const bool debugPostProcess =
+                pass.logicalPass->getType() == PipelinePassType::PostProcess &&
+                !state.debugOutputResource.empty();
+            ubo.roughnessAo = TSVec4f(
+                1.0f,
+                1.0f,
+                debugPostProcess ? 1.0f : static_cast<float>(state.materialDebugMode),
+                0.0f);
+            ubo.uvTransform = TSVec4f(
+                state.uvScale[0], state.uvScale[1],
+                state.uvOffset[0], state.uvOffset[1]);
+            pass.uniformBuffers[frameIdx]->setData(&ubo, sizeof(ubo));
+
+            std::vector<DescriptorWriteDesc> writes;
+            writes.push_back({
+                0,
+                DescriptorResourceType::UniformBuffer,
+                pass.uniformBuffers[frameIdx]
+            });
+
+            for (const auto& input : pass.logicalPass->getSampledTextures()) {
+                const auto resourceName =
+                    debugPostProcess && input.binding == 1
+                        ? state.debugOutputResource
+                        : input.resource;
+                const auto found = state.renderTextures.find(resourceName);
+                if (found == state.renderTextures.end() ||
+                    frameIdx >= found->second.size() ||
+                    !found->second[frameIdx]) {
+                    LOG_WARN(
+                        "SceneRenderer: pass '{}' missing sampled texture '{}' for slot '{}'",
+                        pass.logicalPass->getName(),
+                        resourceName,
+                        input.slot);
+                    continue;
+                }
+                writes.push_back({
+                    input.binding,
+                    DescriptorResourceType::CombinedImageSampler,
+                    nullptr,
+                    found->second[frameIdx]
+                });
+            }
+
+            if (pass.logicalPass->getName() == "Lighting") {
+                const auto& iblName = state.activeSkyboxName;
+                auto irradianceInfo = device.getIBLDescriptorInfo(IBLMapType::Irradiance, iblName);
+                auto prefilteredInfo = device.getIBLDescriptorInfo(IBLMapType::Prefiltered, iblName);
+                auto brdfInfo = device.getIBLDescriptorInfo(IBLMapType::BrdfLut, iblName);
+                if (irradianceInfo.nativeView == 0 ||
+                    prefilteredInfo.nativeView == 0 ||
+                    brdfInfo.nativeView == 0) {
+                    LOG_WARN("SceneRenderer: missing precomputed IBL descriptors for skybox '{}'", iblName);
+                }
+                writes.push_back({
+                    8,
+                    DescriptorResourceType::CombinedImageSampler,
+                    nullptr,
+                    nullptr,
+                    irradianceInfo
+                });
+                writes.push_back({
+                    9,
+                    DescriptorResourceType::CombinedImageSampler,
+                    nullptr,
+                    nullptr,
+                    prefilteredInfo
+                });
+                writes.push_back({
+                    10,
+                    DescriptorResourceType::CombinedImageSampler,
+                    nullptr,
+                    nullptr,
+                    brdfInfo
+                });
+            }
+
+            device.updateDescriptorSet(pass.descriptorSets[frameIdx], writes);
+        } else if (pass.logicalPass->getExecution() == PipelinePassExecution::Mesh) {
+            // Mesh pass descriptors contain per-draw model/material state and are updated when each submesh is drawn.
         } else if (
             pass.logicalPass->getName() == "Forward" ||
             pass.logicalPass->getType() == PipelinePassType::Transparent) {
@@ -1258,13 +1715,14 @@ void SceneRenderer::renderFrame(Scene& scene) {
                     if (path.empty()) {
                         return fallback;
                     }
-                    const auto found = state.materialTextures.find(path);
+                    const auto found = state.materialTextures.find(
+                        materialTextureCacheKey(path, colorSpaceForSemantic(semantic)));
                     return found == state.materialTextures.end() ? fallback : found->second;
                 };
 
-            const float metallic = material ? material->getFloat("uMetallic", 1.0f) : 1.0f;
-            const float roughness = material ? material->getFloat("uRoughness", 1.0f) : 1.0f;
-            const float ao = material ? material->getFloat("uAo", 1.0f) : 1.0f;
+            const float metallic = state.pbrMetallic;
+            const float roughness = state.pbrRoughness;
+            const float ao = state.pbrAo;
 
             const auto& iblName = state.activeSkyboxName;
             auto irradianceInfo = device.getIBLDescriptorInfo(IBLMapType::Irradiance, iblName);
@@ -1283,7 +1741,14 @@ void SceneRenderer::renderFrame(Scene& scene) {
             ubo.lightDir = TSVec4f(normalize(lightDir), 0.0f);
             ubo.lightColor = TSVec4f(lightColor, lightIntensity);
             ubo.camPosAndMetallic = TSVec4f(cam->getPosition(), metallic);
-            ubo.roughnessAo = TSVec4f(roughness, ao, 0.0f, 0.0f);
+            ubo.roughnessAo = TSVec4f(
+                roughness,
+                ao,
+                static_cast<float>(state.materialDebugMode),
+                static_cast<float>(state.bodyUvMode));
+            ubo.uvTransform = TSVec4f(
+                state.uvScale[0], state.uvScale[1],
+                state.uvOffset[0], state.uvOffset[1]);
             pass.uniformBuffers[frameIdx]->setData(&ubo, sizeof(ubo));
 
             device.updateDescriptorSet(pass.descriptorSets[frameIdx], {
@@ -1303,36 +1768,209 @@ void SceneRenderer::renderFrame(Scene& scene) {
         } else if (
             pass.logicalPass->getType() == PipelinePassType::Shadow ||
             pass.logicalPass->getType() == PipelinePassType::Geometry) {
-            UniformBufferObject ubo{};
-            TSMat4f modelMat(1.0f);
+            std::shared_ptr<Object> drawObject;
+            std::shared_ptr<Material> material;
             for (const auto& objectRef : pass.logicalPass->getObjects()) {
                 const auto object = objectRef.lock();
-                if (object && object->getMesh()) {
-                    modelMat = object->getModelMatrix();
+                if (!drawObject && object && object->getMesh()) {
+                    drawObject = object;
+                }
+                material = object ? object->getMaterial() : nullptr;
+                if (material) {
                     break;
                 }
             }
-            ubo.model = transpose(modelMat);
+
+            const auto resolveImage =
+                [&](MaterialTextureSemantic semantic,
+                    const std::shared_ptr<Image>& fallback) -> std::shared_ptr<Image> {
+                    if (!material) {
+                        return fallback;
+                    }
+                    const auto path = material->getTexture(semantic);
+                    if (path.empty()) {
+                        return fallback;
+                    }
+                    const auto found = state.materialTextures.find(
+                        materialTextureCacheKey(path, colorSpaceForSemantic(semantic)));
+                    return found == state.materialTextures.end() ? fallback : found->second;
+                };
+
+            const float metallic = state.pbrMetallic;
+            const float roughness = state.pbrRoughness;
+            const float ao = state.pbrAo;
+
+            UniformBufferObject ubo{};
+            ubo.model = transpose(drawObject ? drawObject->getModelMatrix() : TSMat4f(1.0f));
             ubo.view = transpose(viewMat);
             ubo.proj = transpose(projMat);
+            ubo.lightDir = TSVec4f(normalize(lightDir), 0.0f);
+            ubo.lightColor = TSVec4f(lightColor, lightIntensity);
+            ubo.camPosAndMetallic = TSVec4f(cam->getPosition(), metallic);
+            ubo.roughnessAo = TSVec4f(
+                roughness,
+                ao,
+                static_cast<float>(state.materialDebugMode),
+                static_cast<float>(state.bodyUvMode));
+            ubo.uvTransform = TSVec4f(
+                state.uvScale[0], state.uvScale[1],
+                state.uvOffset[0], state.uvOffset[1]);
             pass.uniformBuffers[frameIdx]->setData(&ubo, sizeof(ubo));
 
-            device.updateDescriptorSet(pass.descriptorSets[frameIdx], {
+            std::vector<DescriptorWriteDesc> writes = {
                 {0, DescriptorResourceType::UniformBuffer, pass.uniformBuffers[frameIdx]}
-            });
+            };
+            if (pass.logicalPass->getType() == PipelinePassType::Geometry &&
+                !pass.logicalPass->getMaterialTextures().empty()) {
+                writes.push_back({
+                    1,
+                    DescriptorResourceType::CombinedImageSampler,
+                    nullptr,
+                    resolveImage(MaterialTextureSemantic::BaseColor, state.defaultDiffuse)
+                });
+            }
+
+            device.updateDescriptorSet(pass.descriptorSets[frameIdx], writes);
         }
     }
 
+    const auto resolveMaterialImage =
+        [&](const std::shared_ptr<Material>& material,
+            MaterialTextureSemantic semantic,
+            const std::shared_ptr<Image>& fallback) -> std::shared_ptr<Image> {
+            if (!material) {
+                return fallback;
+            }
+            const auto path = material->getTexture(semantic);
+            if (path.empty()) {
+                return fallback;
+            }
+            const auto found = state.materialTextures.find(
+                materialTextureCacheKey(path, colorSpaceForSemantic(semantic)));
+            return found == state.materialTextures.end() ? fallback : found->second;
+        };
+
+    const auto updateMeshDrawDescriptors =
+        [&](PassResources& pass,
+            const Object& object,
+            const std::shared_ptr<Material>& submeshMaterial,
+            uint32_t submeshIndex,
+            const std::string& submeshMaterialName,
+            uint32_t descriptorSlot) -> const DescriptorSet* {
+            const uint32_t descriptorIndex = frameIdx * pass.descriptorSetsPerFrame + descriptorSlot;
+            if (descriptorIndex >= pass.descriptorSets.size() ||
+                descriptorIndex >= pass.uniformBuffers.size()) {
+                LOG_WARN(
+                    "SceneRenderer: pass '{}' descriptor slot {} out of {}",
+                    pass.logicalPass ? pass.logicalPass->getName() : std::string("<null>"),
+                    descriptorSlot,
+                    pass.descriptorSetsPerFrame);
+                return nullptr;
+            }
+
+            const float metallic = state.pbrMetallic;
+            const float roughness = state.pbrRoughness;
+            const float ao = state.pbrAo;
+
+            UniformBufferObject ubo{};
+            ubo.model = transpose(object.getModelMatrix());
+            ubo.view = transpose(viewMat);
+            ubo.proj = transpose(object.getFlipProjectionY() ? projMat : unflippedProjMat);
+            ubo.lightDir = TSVec4f(normalize(lightDir), 0.0f);
+            ubo.lightColor = TSVec4f(lightColor, lightIntensity);
+            ubo.camPosAndMetallic = TSVec4f(cam->getPosition(), metallic);
+            const int uvMode = selectMaterialUvMode(
+                submeshMaterialName,
+                state.bodyUvMode,
+                state.hairUvMode,
+                state.faceUvMode);
+            ubo.roughnessAo = TSVec4f(
+                roughness,
+                ao,
+                static_cast<float>(state.materialDebugMode),
+                static_cast<float>(uvMode));
+            ubo.uvTransform = TSVec4f(
+                state.uvScale[0], state.uvScale[1],
+                state.uvOffset[0], state.uvOffset[1]);
+            pass.uniformBuffers[descriptorIndex]->setData(&ubo, sizeof(ubo));
+
+            std::vector<DescriptorWriteDesc> writes = {
+                {0, DescriptorResourceType::UniformBuffer, pass.uniformBuffers[descriptorIndex]}
+            };
+
+            const auto material = submeshMaterial ? submeshMaterial : object.getMaterial();
+            if (!state.loggedSubmeshMaterialBindings) {
+                LOG_INFO(
+                    "SceneRenderer: pass '{}' submesh {} '{}' baseColor '{}'",
+                    pass.logicalPass ? pass.logicalPass->getName() : std::string("<null>"),
+                    submeshIndex,
+                    submeshMaterialName,
+                    material ? material->getTexture(MaterialTextureSemantic::BaseColor) : std::string("<null>"));
+            }
+            if (pass.logicalPass->getName() == "Forward" ||
+                pass.logicalPass->getType() == PipelinePassType::Transparent) {
+                const auto& iblName = state.activeSkyboxName;
+                auto irradianceInfo = device.getIBLDescriptorInfo(IBLMapType::Irradiance, iblName);
+                auto prefilteredInfo = device.getIBLDescriptorInfo(IBLMapType::Prefiltered, iblName);
+                auto brdfInfo = device.getIBLDescriptorInfo(IBLMapType::BrdfLut, iblName);
+                if (irradianceInfo.nativeView == 0 ||
+                    prefilteredInfo.nativeView == 0 ||
+                    brdfInfo.nativeView == 0) {
+                    LOG_WARN("SceneRenderer: missing precomputed IBL descriptors for skybox '{}'", iblName);
+                }
+                writes.push_back({
+                    1,
+                    DescriptorResourceType::CombinedImageSampler,
+                    nullptr,
+                    resolveMaterialImage(material, MaterialTextureSemantic::BaseColor, state.defaultDiffuse)
+                });
+                writes.push_back({
+                    2,
+                    DescriptorResourceType::CombinedImageSampler,
+                    nullptr,
+                    resolveMaterialImage(material, MaterialTextureSemantic::Normal, state.defaultNormal)
+                });
+                writes.push_back({
+                    3,
+                    DescriptorResourceType::CombinedImageSampler,
+                    nullptr,
+                    resolveMaterialImage(material, MaterialTextureSemantic::Emissive, state.defaultEmissive)
+                });
+                writes.push_back({
+                    4,
+                    DescriptorResourceType::CombinedImageSampler,
+                    nullptr,
+                    resolveMaterialImage(material, MaterialTextureSemantic::MetallicRoughnessAO, state.defaultMsa)
+                });
+                writes.push_back({5, DescriptorResourceType::CombinedImageSampler, nullptr, nullptr, irradianceInfo});
+                writes.push_back({6, DescriptorResourceType::CombinedImageSampler, nullptr, nullptr, prefilteredInfo});
+                writes.push_back({7, DescriptorResourceType::CombinedImageSampler, nullptr, nullptr, brdfInfo});
+            } else if (
+                pass.logicalPass->getType() == PipelinePassType::Geometry &&
+                !pass.logicalPass->getMaterialTextures().empty()) {
+                writes.push_back({
+                    1,
+                    DescriptorResourceType::CombinedImageSampler,
+                    nullptr,
+                    resolveMaterialImage(material, MaterialTextureSemantic::BaseColor, state.defaultDiffuse)
+                });
+            }
+
+            device.updateDescriptorSet(pass.descriptorSets[descriptorIndex], writes);
+            return &pass.descriptorSets[descriptorIndex];
+        };
+
     bool swapchainPassOpen = false;
-    for (const auto& pass : state.passes) {
-        if (!pass.rhiPass) {
+    for (auto& pass : state.passes) {
+        if (frameIdx >= pass.rhiPasses.size() || !pass.rhiPasses[frameIdx]) {
             continue;
         }
+        const auto& activeRhiPass = pass.rhiPasses[frameIdx];
         if (!pass.usesSwapchain && !pass.gpuPipeline) {
             continue;
         }
 
-        const auto& passDesc = pass.rhiPass->getDesc();
+        const auto& passDesc = activeRhiPass->getDesc();
         cmdList.setViewport(
             0.0f,
             0.0f,
@@ -1354,22 +1992,27 @@ void SceneRenderer::renderFrame(Scene& scene) {
                 }
                 swapchainPassOpen = false;
             }
-            for (const auto& attachment : pass.rhiPass->getDesc().colorAttachments) {
+            for (const auto& attachment : activeRhiPass->getDesc().colorAttachments) {
                 if (attachment.image) {
                     cmdList.transitionImage(
                         *attachment.image,
-                        ImageLayout::Undefined,
+                        attachment.load == RHIAttachmentLoad::Load
+                            ? ImageLayout::ShaderRead
+                            : ImageLayout::Undefined,
                         ImageLayout::ColorAttachment);
                 }
             }
-            if (const auto& depth = pass.rhiPass->getDesc().depthAttachment;
-                depth && depth->image && !depth->readOnly) {
-                cmdList.transitionImage(
-                    *depth->image,
-                    ImageLayout::Undefined,
-                    ImageLayout::DepthAttachment);
+            if (const auto& depth = activeRhiPass->getDesc().depthAttachment;
+                depth && depth->image) {
+                const auto newLayout = depth->readOnly
+                    ? ImageLayout::DepthReadOnly
+                    : ImageLayout::DepthAttachment;
+                const auto oldLayout = depth->load == RHIAttachmentLoad::Load || depth->readOnly
+                    ? ImageLayout::ShaderRead
+                    : ImageLayout::Undefined;
+                cmdList.transitionImage(*depth->image, oldLayout, newLayout);
             }
-            cmdList.beginRenderPass(*pass.rhiPass);
+            cmdList.beginRenderPass(*activeRhiPass);
         }
 
         if (pass.gpuPipeline) {
@@ -1377,11 +2020,12 @@ void SceneRenderer::renderFrame(Scene& scene) {
                 pass.gpuPipeline->getNativePipeline(),
                 pass.gpuPipeline->getNativeLayout());
 
-            if (frameIdx < pass.descriptorSets.size()) {
+            if (pass.logicalPass->getExecution() != PipelinePassExecution::Mesh &&
+                frameIdx < pass.descriptorSets.size()) {
                 cmdList.bindDescriptorSet(0, pass.descriptorSets[frameIdx]);
             }
 
-            if (pass.logicalPass->getType() == PipelinePassType::Skybox) {
+            if (passUsesSkyboxDraw(*pass.logicalPass)) {
                 if (!state.loggedSkyboxDrawState) {
                     LOG_INFO(
                         "SceneRenderer: skybox draw state cubemap {} vb {} ib {} indices {}",
@@ -1396,7 +2040,10 @@ void SceneRenderer::renderFrame(Scene& scene) {
                     cmdList.bindIndexBuffer(*state.skyboxIndexBuffer);
                     cmdList.drawIndexed(state.skyboxIndexCount);
                 }
+            } else if (passUsesFullscreenDraw(*pass.logicalPass)) {
+                cmdList.draw(3);
             } else {
+                uint32_t descriptorSlot = 0;
                 for (const auto& objectRef : pass.logicalPass->getObjects()) {
                     const auto object = objectRef.lock();
                     const auto mesh = object ? object->getMesh() : nullptr;
@@ -1411,14 +2058,53 @@ void SceneRenderer::renderFrame(Scene& scene) {
 
                     cmdList.bindVertexBuffer(*resources->second.vertexBuffer);
                     cmdList.bindIndexBuffer(*resources->second.indexBuffer);
-                    cmdList.drawIndexed(resources->second.indexCount);
+                    cmdList.setFrontFace(
+                        object->getFlipProjectionY()
+                            ? FrontFaceClockwise
+                            : FrontFaceCounterClockwise);
+                    const auto& submeshes = mesh->getSubmeshes();
+                    if (submeshes.empty()) {
+                        const auto* descriptorSet =
+                            updateMeshDrawDescriptors(
+                                pass,
+                                *object,
+                                object->getMaterial(),
+                                0,
+                                "<mesh>",
+                                descriptorSlot++);
+                        if (!descriptorSet) {
+                            continue;
+                        }
+                        cmdList.bindDescriptorSet(0, *descriptorSet);
+                        cmdList.drawIndexed(resources->second.indexCount);
+                    } else {
+                        for (size_t submeshIndex = 0; submeshIndex < submeshes.size(); ++submeshIndex) {
+                            const auto& submesh = submeshes[submeshIndex];
+                            if (submesh.getIndexCount() == 0) {
+                                continue;
+                            }
+                            const auto* descriptorSet =
+                                updateMeshDrawDescriptors(
+                                    pass,
+                                    *object,
+                                    submesh.getMaterial(),
+                                    static_cast<uint32_t>(submeshIndex),
+                                    submesh.getMaterialName(),
+                                    descriptorSlot++);
+                            if (!descriptorSet) {
+                                continue;
+                            }
+                            cmdList.bindDescriptorSet(0, *descriptorSet);
+                            cmdList.drawIndexed(submesh.getIndexCount(), 1, submesh.getIndexOffset());
+                        }
+                    }
                 }
             }
         }
 
         if (!pass.usesSwapchain) {
             cmdList.endRenderPass();
-            for (const auto& attachment : pass.rhiPass->getDesc().colorAttachments) {
+            for (const auto& attachment : activeRhiPass->getDesc().colorAttachments) {
                 if (attachment.image) {
                     cmdList.transitionImage(
                         *attachment.image,
@@ -1426,11 +2112,11 @@ void SceneRenderer::renderFrame(Scene& scene) {
                         ImageLayout::ShaderRead);
                 }
             }
-            if (const auto& depth = pass.rhiPass->getDesc().depthAttachment;
-                depth && depth->image && !depth->readOnly) {
+            if (const auto& depth = activeRhiPass->getDesc().depthAttachment;
+                depth && depth->image) {
                 cmdList.transitionImage(
                     *depth->image,
-                    ImageLayout::DepthAttachment,
+                    depth->readOnly ? ImageLayout::DepthReadOnly : ImageLayout::DepthAttachment,
                     ImageLayout::ShaderRead);
             }
         }
@@ -1443,6 +2129,7 @@ void SceneRenderer::renderFrame(Scene& scene) {
         }
     }
 
+    state.loggedSubmeshMaterialBindings = true;
     device.endFrame();
 }
 

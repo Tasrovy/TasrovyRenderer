@@ -16,7 +16,17 @@ static VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFor
         }
     }
 
+    for (const auto& availableFormat : availableFormats) {
+        if (availableFormat.format == VK_FORMAT_R8G8B8A8_SRGB && availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            return availableFormat;
+        }
+    }
+
     if (!availableFormats.empty()) {
+        LOG_WARN(
+            "No sRGB swapchain format is available; falling back to format {}. "
+            "The final display path will not receive automatic linear-to-sRGB encoding.",
+            static_cast<int>(availableFormats[0].format));
         return availableFormats[0];
     } else {
         throw std::runtime_error("No surface formats available!");

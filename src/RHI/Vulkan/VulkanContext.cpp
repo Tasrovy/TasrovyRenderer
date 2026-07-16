@@ -74,6 +74,11 @@ VulkanContext::VulkanContext(const char* appName,
 }
 
 VulkanContext::~VulkanContext() {
+    if (_device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(_device);
+        flushDeferredDeletions();
+    }
+
     if (enableValidationLayers) {
         auto func = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(_instance, "vkDestroyDebugUtilsMessengerEXT");
         if (func != nullptr) {
@@ -86,6 +91,60 @@ VulkanContext::~VulkanContext() {
     vkDestroyInstance(_instance, nullptr);
 
     LOG_INFO("VulkanContext destroyed.");
+}
+
+void VulkanContext::deferDelete(std::function<void(VkDevice)> deleter) {
+    if (!deleter) {
+        return;
+    }
+
+    std::scoped_lock lock(_deferredDeletionMutex);
+    // A resource may be released while commands for the next frame are still
+    // being recorded. Retire it after that next submission has completed.
+    _deferredDeletions.push_back(DeferredDeletion{
+        _deletionFrameSerial + 1,
+        std::move(deleter)
+    });
+}
+
+uint64_t VulkanContext::advanceDeletionFrame() {
+    std::scoped_lock lock(_deferredDeletionMutex);
+    return ++_deletionFrameSerial;
+}
+
+void VulkanContext::collectDeferredDeletions(uint64_t completedSubmissionSerial) {
+    std::scoped_lock lock(_deferredDeletionMutex);
+    if (_device == VK_NULL_HANDLE || _deferredDeletions.empty()) {
+        return;
+    }
+    std::vector<DeferredDeletion> pending;
+    pending.reserve(_deferredDeletions.size());
+    for (auto& deletion : _deferredDeletions) {
+        if (deletion.releaseSubmission <= completedSubmissionSerial) {
+            deletion.deleter(_device);
+        } else {
+            pending.push_back(std::move(deletion));
+        }
+    }
+    _deferredDeletions = std::move(pending);
+}
+
+void VulkanContext::flushDeferredDeletions() {
+    std::scoped_lock lock(_deferredDeletionMutex);
+    if (_device == VK_NULL_HANDLE) {
+        _deferredDeletions.clear();
+        return;
+    }
+
+    for (auto& deletion : _deferredDeletions) {
+        deletion.deleter(_device);
+    }
+    _deferredDeletions.clear();
+}
+
+size_t VulkanContext::getDeferredDeletionCount() const {
+    std::scoped_lock lock(_deferredDeletionMutex);
+    return _deferredDeletions.size();
 }
 
 void VulkanContext::createInstance(const std::vector<const char*>& extensions) {
@@ -213,9 +272,14 @@ void VulkanContext::createLogicalDevice() {
     VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
     dynamicRenderingFeatures.dynamicRendering = VK_TRUE;
 
+    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extendedDynamicStateFeatures{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT};
+    extendedDynamicStateFeatures.extendedDynamicState = VK_TRUE;
+    extendedDynamicStateFeatures.pNext = &dynamicRenderingFeatures;
+
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pNext = &dynamicRenderingFeatures;
+    createInfo.pNext = &extendedDynamicStateFeatures;
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
     createInfo.pEnabledFeatures = &deviceFeatures;
@@ -507,8 +571,11 @@ void VulkanContext::endSingleTimeCommands(VkCommandBuffer commandBuffer, VkQueue
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
-    vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(queue);
+    {
+        std::scoped_lock queueLock(_queueMutex);
+        vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(queue);
+    }
     vkFreeCommandBuffers(_device, commandPool, 1, &commandBuffer);
 }
 

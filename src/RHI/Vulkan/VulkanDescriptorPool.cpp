@@ -41,7 +41,14 @@ VulkanDescriptorPool::VulkanDescriptorPool(VulkanContext& context, VkDescriptorP
 }
 
 VulkanDescriptorPool::~VulkanDescriptorPool() {
-    vkDestroyDescriptorPool(_context.getDevice(), _descriptorPool, nullptr);
+    VkDescriptorPool descriptorPool = _descriptorPool;
+    _descriptorPool = VK_NULL_HANDLE;
+
+    _context.deferDelete([descriptorPool](VkDevice device) {
+        if (descriptorPool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+        }
+    });
 }
 
 VkDescriptorSet VulkanDescriptorPool::allocateSet(const VulkanDescriptorSetLayout& setLayout) {

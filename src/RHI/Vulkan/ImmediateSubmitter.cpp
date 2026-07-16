@@ -1,8 +1,8 @@
 #include "ImmediateSubmitter.h"
 #include <stdexcept>
 
-// 辅助函数，确定布局转换的阶段和访问掩码
-// 您可以根据需要扩展这个函数以支持更多的转换类�?
+// 杈呭姪鍑芥暟锛岀‘瀹氬竷灞€杞崲鐨勯樁娈靛拰璁块棶鎺╃爜
+// 鎮ㄥ彲浠ユ牴鎹渶瑕佹墿灞曡繖涓嚱鏁颁互鏀寔鏇村鐨勮浆鎹㈢被鍨?
 static void getPipelineStageAndAccessMasks(
     VkImageLayout oldLayout, 
     VkImageLayout newLayout, 
@@ -27,7 +27,7 @@ static void getPipelineStageAndAccessMasks(
         sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         destinationStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     } else {
-        // 默认情况或未支持的转�?
+        // 榛樿鎯呭喌鎴栨湭鏀寔鐨勮浆鎹?
         sourceAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
         destinationAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
         sourceStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
@@ -39,25 +39,25 @@ static void getPipelineStageAndAccessMasks(
 ImmediateSubmitter::ImmediateSubmitter(VulkanContext& context, VulkanQueue& queue)
     : _context(context), _queue(queue) {
     
-    // 1. 创建一个专用于一次性命令的命令�?
+    // 1. 鍒涘缓涓€涓笓鐢ㄤ簬涓€娆℃€у懡浠ょ殑鍛戒护姹?
     VkCommandPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     poolInfo.queueFamilyIndex = _queue.getFamilyIndex();
-    // VK_COMMAND_POOL_CREATE_TRANSIENT_BIT 提示驱动这个池的命令缓冲区是短暂的，可能带来性能优化
+    // VK_COMMAND_POOL_CREATE_TRANSIENT_BIT 鎻愮ず椹卞姩杩欎釜姹犵殑鍛戒护缂撳啿鍖烘槸鐭殏鐨勶紝鍙兘甯︽潵鎬ц兘浼樺寲
     poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT; 
     
     if (vkCreateCommandPool(_context.getDevice(), &poolInfo, nullptr, &_commandPool) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create immediate submit command pool!");
     }
 
-    // 2. 创建一个用于同步的 Fence，初始状态为已触发，以便第一次等待可以立即通过
+    // 2. 鍒涘缓涓€涓敤浜庡悓姝ョ殑 Fence锛屽垵濮嬬姸鎬佷负宸茶Е鍙戯紝浠ヤ究绗竴娆＄瓑寰呭彲浠ョ珛鍗抽€氳繃
     VkFenceCreateInfo fenceInfo{};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     if (vkCreateFence(_context.getDevice(), &fenceInfo, nullptr, &_fence) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create immediate submit fence!");
     }
-    // 立即重置，使其进入未触发状�?
+    // 绔嬪嵆閲嶇疆锛屼娇鍏惰繘鍏ユ湭瑙﹀彂鐘舵€?
 }
 
 ImmediateSubmitter::~ImmediateSubmitter() {
@@ -78,7 +78,7 @@ void ImmediateSubmitter::submit(std::function<void(VkCommandBuffer cmd)>&& funct
         throw std::runtime_error("Failed to reset immediate submit fence!");
     }
 
-    // 1. 分配命令缓冲�?
+    // 1. 鍒嗛厤鍛戒护缂撳啿鍖?
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = _commandPool;
@@ -90,7 +90,7 @@ void ImmediateSubmitter::submit(std::function<void(VkCommandBuffer cmd)>&& funct
         throw std::runtime_error("Failed to allocate immediate command buffer!");
     }
 
-    // 2. 开始记录命�?
+    // 2. 寮€濮嬭褰曞懡浠?
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -99,38 +99,43 @@ void ImmediateSubmitter::submit(std::function<void(VkCommandBuffer cmd)>&& funct
         throw std::runtime_error("Failed to begin immediate command buffer!");
     }
 
-    // 3. 执行调用者提供的、用于记录具体命令的函数
+    // 3. 鎵ц璋冪敤鑰呮彁渚涚殑銆佺敤浜庤褰曞叿浣撳懡浠ょ殑鍑芥暟
     function(cmd);
 
-    // 4. 结束记录
+    // 4. 缁撴潫璁板綍
     if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
         vkFreeCommandBuffers(device, _commandPool, 1, &cmd);
         throw std::runtime_error("Failed to end immediate command buffer!");
     }
 
-    // 5. 将命令提交到队列
+    // 5. 灏嗗懡浠ゆ彁浜ゅ埌闃熷垪
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
 
-    // 使用 fence 来等待执行完�?
-    // 首先重置 fence 为未触发状�?
-    if (vkQueueSubmit(queue, 1, &submitInfo, _fence) != VK_SUCCESS) {
-        vkFreeCommandBuffers(device, _commandPool, 1, &cmd);
-        throw std::runtime_error("Failed to submit immediate command buffer!");
+    // 浣跨敤 fence 鏉ョ瓑寰呮墽琛屽畬鎴?
+    // 棣栧厛閲嶇疆 fence 涓烘湭瑙﹀彂鐘舵€?
+    {
+        // Renderer and upload work can reach the same VkQueue from different
+        // threads. Vulkan requires all host access to a queue to be serialized.
+        std::scoped_lock queueLock(_context.getQueueMutex());
+        if (vkQueueSubmit(queue, 1, &submitInfo, _fence) != VK_SUCCESS) {
+            vkFreeCommandBuffers(device, _commandPool, 1, &cmd);
+            throw std::runtime_error("Failed to submit immediate command buffer!");
+        }
     }
 
-    // 6. 阻塞CPU，直到GPU完成命令
+    // 6. 闃诲CPU锛岀洿鍒癎PU瀹屾垚鍛戒护
     if (vkWaitForFences(device, 1, &_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
         throw std::runtime_error("Failed to wait for immediate command buffer!");
     }
 
-    // 7. 释放临时的命令缓冲区
+    // 7. 閲婃斁涓存椂鐨勫懡浠ょ紦鍐插尯
     vkFreeCommandBuffers(device, _commandPool, 1, &cmd);
 }
 
-// --- 高级便利函数的实�?---
+// --- 楂樼骇渚垮埄鍑芥暟鐨勫疄鐜?---
 
 void ImmediateSubmitter::copyBuffer(VulkanBuffer& src, VulkanBuffer& dst, VkDeviceSize size) {
     submit([&](VkCommandBuffer cmd) {
@@ -143,7 +148,7 @@ void ImmediateSubmitter::copyBuffer(VulkanBuffer& src, VulkanBuffer& dst, VkDevi
 }
 
 void ImmediateSubmitter::copyDataToBuffer(void* src, VulkanBuffer& dst, VkDeviceSize size) {
-    // 1. 创建 staging buffer
+    // 1. 鍒涘缓 staging buffer
     VulkanBuffer staging(
         _context,
         size,
@@ -151,7 +156,7 @@ void ImmediateSubmitter::copyDataToBuffer(void* src, VulkanBuffer& dst, VkDevice
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
     );
     staging.setData(src, size);
-    // 3. �?staging buffer 的内容复制到真正�?buffer
+    // 3. 鎶?staging buffer 鐨勫唴瀹瑰鍒跺埌鐪熸鐨?buffer
     submit([&](VkCommandBuffer cmd) {        
         VkBufferCopy copyRegion{};
         copyRegion.srcOffset = 0;

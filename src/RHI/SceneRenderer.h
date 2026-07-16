@@ -37,7 +37,6 @@ private:
     void renderLoop();
     void processScene(const std::shared_ptr<Tasrovy::Render::Scene>& scene);
     void renderFrame(Tasrovy::Render::Scene& scene);
-    void retireCurrentResources();
     void prepareSkyboxVariants(const std::string& preferredPath);
 
     Tasrovy::Windowing::Window& window_;

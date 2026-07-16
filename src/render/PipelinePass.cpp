@@ -17,6 +17,8 @@ void PipelinePass::setName(const std::string& name) { name_ = name; }
 const std::string& PipelinePass::getName() const { return name_; }
 void PipelinePass::setType(PipelinePassType type) { type_ = type; }
 PipelinePassType PipelinePass::getType() const { return type_; }
+void PipelinePass::setExecution(PipelinePassExecution execution) { execution_ = execution; }
+PipelinePassExecution PipelinePass::getExecution() const { return execution_; }
 
 // Bulk
 void PipelinePass::setState(const PassState& state) { state_ = state; }
@@ -64,8 +66,11 @@ const std::vector<std::weak_ptr<Object>>& PipelinePass::getObjects() const {
 }
 
 // --- Logical texture resources ---
-void PipelinePass::addSampledTexture(std::string slot, std::string resource) {
-    sampledTextures_.push_back({std::move(slot), std::move(resource)});
+void PipelinePass::addSampledTexture(std::string slot, std::string resource, uint32_t binding) {
+    if (binding == 0) {
+        binding = static_cast<uint32_t>(sampledTextures_.size() + 1);
+    }
+    sampledTextures_.push_back({std::move(slot), std::move(resource), binding});
 }
 
 void PipelinePass::addColorAttachment(
@@ -95,6 +100,48 @@ const std::vector<ColorAttachmentRef>& PipelinePass::getColorAttachments() const
 
 const DepthAttachmentRef* PipelinePass::getDepthAttachment() const {
     return depthAttachment_.get();
+}
+
+std::vector<PipelineResourceRef> PipelinePass::getReadResources() const {
+    std::vector<PipelineResourceRef> resources;
+    resources.reserve(sampledTextures_.size() + colorAttachments_.size() + (depthAttachment_ ? 1 : 0));
+
+    for (const auto& input : sampledTextures_) {
+        resources.push_back({
+            input.slot,
+            input.resource,
+            input.binding,
+            PipelineResourceAccess::SampledRead
+        });
+    }
+    for (const auto& attachment : colorAttachments_) {
+        if (attachment.load == AttachmentLoad::Load) {
+            resources.push_back({"", attachment.resource, 0, PipelineResourceAccess::ColorRead});
+        }
+    }
+    if (depthAttachment_ &&
+        (depthAttachment_->readOnly || depthAttachment_->load == AttachmentLoad::Load)) {
+        resources.push_back({"", depthAttachment_->resource, 0, PipelineResourceAccess::DepthRead});
+    }
+
+    return resources;
+}
+
+std::vector<PipelineResourceRef> PipelinePass::getWriteResources() const {
+    std::vector<PipelineResourceRef> resources;
+    resources.reserve(colorAttachments_.size() + (depthAttachment_ ? 1 : 0));
+
+    for (const auto& attachment : colorAttachments_) {
+        if (attachment.store == AttachmentStore::Store) {
+            resources.push_back({"", attachment.resource, 0, PipelineResourceAccess::ColorWrite});
+        }
+    }
+    if (depthAttachment_ && !depthAttachment_->readOnly &&
+        depthAttachment_->store == AttachmentStore::Store) {
+        resources.push_back({"", depthAttachment_->resource, 0, PipelineResourceAccess::DepthWrite});
+    }
+
+    return resources;
 }
 
 // --- Per-material texture inputs ---

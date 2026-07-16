@@ -196,7 +196,7 @@ void CommandList::beginRenderPass(Pass& pass,
     colorAtt.clearValue.color.float32[2] = 0.0f;
     colorAtt.clearValue.color.float32[3] = 1.0f;
 
-    // Resolve attachment (for MSAA) â€?set on color attachment, not VkRenderingInfo
+    // Resolve attachment (for MSAA) éˆ¥?set on color attachment, not VkRenderingInfo
     if (resolveView != 0) {
         colorAtt.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
         colorAtt.resolveImageView = reinterpret_cast<VkImageView>(resolveView);
@@ -247,6 +247,9 @@ void CommandList::bindPipeline(uint64_t nativePipeline, uint64_t nativeLayout, u
     vkCmdBindPipeline(impl_->activeCmdBuffer,
         bindPoint == 0 ? VK_PIPELINE_BIND_POINT_GRAPHICS : VK_PIPELINE_BIND_POINT_COMPUTE,
         reinterpret_cast<VkPipeline>(nativePipeline));
+    if (bindPoint == 0) {
+        vkCmdSetFrontFace(impl_->activeCmdBuffer, VK_FRONT_FACE_CLOCKWISE);
+    }
 #endif
 }
 
@@ -303,6 +306,14 @@ void CommandList::setScissor(int32_t x, int32_t y, uint32_t width, uint32_t heig
 #endif
 }
 
+void CommandList::setFrontFace(uint32_t frontFace) {
+#ifdef TASROVY_API_VULKAN
+    vkCmdSetFrontFace(
+        impl_->activeCmdBuffer,
+        static_cast<VkFrontFace>(frontFace));
+#endif
+}
+
 // --- Draw ---
 
 void CommandList::draw(uint32_t vertexCount, uint32_t instanceCount) {
@@ -311,9 +322,20 @@ void CommandList::draw(uint32_t vertexCount, uint32_t instanceCount) {
 #endif
 }
 
-void CommandList::drawIndexed(uint32_t indexCount, uint32_t instanceCount) {
+void CommandList::drawIndexed(
+    uint32_t indexCount,
+    uint32_t instanceCount,
+    uint32_t firstIndex,
+    int32_t vertexOffset,
+    uint32_t firstInstance) {
 #ifdef TASROVY_API_VULKAN
-    vkCmdDrawIndexed(impl_->activeCmdBuffer, indexCount, instanceCount, 0, 0, 0);
+    vkCmdDrawIndexed(
+        impl_->activeCmdBuffer,
+        indexCount,
+        instanceCount,
+        firstIndex,
+        vertexOffset,
+        firstInstance);
 #endif
 }
 
@@ -353,6 +375,8 @@ void CommandList::transitionImage(
             return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         case ImageLayout::DepthAttachment:
             return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        case ImageLayout::DepthReadOnly:
+            return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         case ImageLayout::ShaderRead:
             return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         case ImageLayout::Present:
@@ -366,7 +390,9 @@ void CommandList::transitionImage(
             return static_cast<VkImageAspectFlags>(aspectMask);
         }
         if (oldLayout == ImageLayout::DepthAttachment ||
-            newLayout == ImageLayout::DepthAttachment) {
+            oldLayout == ImageLayout::DepthReadOnly ||
+            newLayout == ImageLayout::DepthAttachment ||
+            newLayout == ImageLayout::DepthReadOnly) {
             return VK_IMAGE_ASPECT_DEPTH_BIT;
         }
         return VK_IMAGE_ASPECT_COLOR_BIT;
@@ -385,23 +411,45 @@ void CommandList::transitionImage(
     barrier.subresourceRange.baseArrayLayer = 0;
     barrier.subresourceRange.layerCount = 1;
 
-    VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-    VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    struct BarrierState {
+        VkPipelineStageFlags stage;
+        VkAccessFlags access;
+    };
+    const auto stateForLayout = [](ImageLayout layout, bool destination) -> BarrierState {
+        switch (layout) {
+        case ImageLayout::Undefined:
+            return {VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0};
+        case ImageLayout::ColorAttachment:
+            return {
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT};
+        case ImageLayout::DepthAttachment:
+            return {
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
+        case ImageLayout::DepthReadOnly:
+            return {
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT};
+        case ImageLayout::ShaderRead:
+            return {VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT};
+        case ImageLayout::Present:
+            return {VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_ACCESS_MEMORY_READ_BIT};
+        }
+        return {
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            static_cast<VkAccessFlags>(
+                destination ? VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT
+                            : VK_ACCESS_MEMORY_WRITE_BIT)};
+    };
 
-    if (newLayout == ImageLayout::ColorAttachment) {
-        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        dstStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    } else if (newLayout == ImageLayout::DepthAttachment) {
-        barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        dstStage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    } else if (newLayout == ImageLayout::ShaderRead) {
-        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        srcStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-        dstStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    }
+    const auto src = stateForLayout(oldLayout, false);
+    const auto dst = stateForLayout(newLayout, true);
+    barrier.srcAccessMask = src.access;
+    barrier.dstAccessMask = dst.access;
+    const VkPipelineStageFlags srcStage = src.stage;
+    const VkPipelineStageFlags dstStage = dst.stage;
 
     vkCmdPipelineBarrier(
         impl_->activeCmdBuffer,
