@@ -92,10 +92,10 @@ TasrovyRenderer/
 
 ## 构建与运行
 
-在项目根目录执行：
+先将 `VCPKG_ROOT` 环境变量设置为本机的 vcpkg 安装目录，然后在项目根目录执行：
 
 ```powershell
-cmake -B cmake-build-debug -DCMAKE_TOOLCHAIN_FILE=C:/Libraries/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake -B cmake-build-debug -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 cmake --build cmake-build-debug --config Debug
 ```
 

@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build Commands
 
-```bash
+```powershell
 # CMake configure
-cmake -B cmake-build-debug -DCMAKE_TOOLCHAIN_FILE=C:/Libraries/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake -B cmake-build-debug -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 
 # Build
 cmake --build cmake-build-debug --config Debug
@@ -16,7 +16,7 @@ cmake --build cmake-build-debug --config Release
 rd /s /q cmake-build-debug
 ```
 
-The project uses **vcpkg** for dependency management (`C:\Libraries\vcpkg`). Dependencies are defined in `vcpkg.json` at the project root.
+The project uses **vcpkg** for dependency management. Its installation directory is referenced through `VCPKG_ROOT`, and dependencies are defined in `vcpkg.json` at the project root.
 
 Shaders are compiled with **DXC** (DirectX Shader Compiler) to SPIR-V. See `res/compile.bat` for reference.
 

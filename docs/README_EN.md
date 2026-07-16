@@ -46,10 +46,10 @@ Dependencies are declared in `vcpkg.json`, including Vulkan-related libraries, A
 
 ## Build
 
-Configure:
+Set the `VCPKG_ROOT` environment variable to your local vcpkg installation directory, then configure:
 
 ```powershell
-cmake -B cmake-build-debug -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake
+cmake -B cmake-build-debug -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 ```
 
 Build:
