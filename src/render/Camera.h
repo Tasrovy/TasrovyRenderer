@@ -34,6 +34,8 @@ public:
     TSQuatf getRotationQuat() const;
     float getFOV() const;
     float getAspect() const;
+    float getNearPlane() const;
+    float getFarPlane() const;
 
     TSMat4f getViewMatrix() const;
     TSMat4f getProjectionMatrix() const;

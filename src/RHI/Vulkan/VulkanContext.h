@@ -103,7 +103,6 @@ public:
     SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device) const;
     VkFormat findSupportedFormat(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features) const;
     VkFormat findDepthFormat() const;
-    void CheckFormatChange(VulkanSwapchain& swapchain);
     void deferDelete(std::function<void(VkDevice)> deleter);
     uint64_t advanceDeletionFrame();
     void collectDeferredDeletions(uint64_t completedSubmissionSerial);
@@ -114,7 +113,6 @@ public:
     int getFramebufferHeight() const { return _fbHeight; }
     void updateFramebufferSize(int w, int h) { _fbWidth = w; _fbHeight = h; }
 
-    bool framebufferResized = false;
 private:
     struct DeferredDeletion {
         uint64_t releaseSubmission = 0;

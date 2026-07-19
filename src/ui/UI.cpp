@@ -123,14 +123,13 @@ UIOverlay::~UIOverlay() {
     vkDestroyDescriptorPool(_device, _descriptorPool, nullptr);
 }
 
-bool UIOverlay::beginFrame() {
-    int w, h;
-    glfwGetFramebufferSize(_window, &w, &h);
-    if (w == 0 || h == 0) {
-        ImGui_ImplGlfw_Sleep(10);
+bool UIOverlay::beginFrame(uint32_t framebufferWidth, uint32_t framebufferHeight) {
+    if (framebufferWidth == 0 || framebufferHeight == 0) {
         return false;
     }
-    ImGui::GetIO().DisplaySize = ImVec2((float)w, (float)h);
+    ImGui::GetIO().DisplaySize = ImVec2(
+        static_cast<float>(framebufferWidth),
+        static_cast<float>(framebufferHeight));
 
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();

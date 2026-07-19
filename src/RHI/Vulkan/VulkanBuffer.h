@@ -9,6 +9,7 @@ private:
     VkDeviceSize _size;
     VkBufferUsageFlags _usage;
     VkMemoryPropertyFlags _properties;
+    VkDeviceSize _allocationSize = 0;
     void* _mappedMemory;
     VulkanContext* _context;
 public:

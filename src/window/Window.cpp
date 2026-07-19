@@ -41,6 +41,21 @@ void Window::waitEvents() {
     glfwWaitEvents();
 }
 
+int Window::getWidth() const {
+    std::lock_guard<std::mutex> lock(_framebufferMutex);
+    return _width;
+}
+
+int Window::getHeight() const {
+    std::lock_guard<std::mutex> lock(_framebufferMutex);
+    return _height;
+}
+
+FramebufferState Window::getFramebufferState() const {
+    std::lock_guard<std::mutex> lock(_framebufferMutex);
+    return {_width, _height, _resizeGeneration.load(std::memory_order_relaxed)};
+}
+
 std::vector<const char*> Window::getRequiredVulkanExtensions() const {
     uint32_t count = 0;
     const char** extensions = glfwGetRequiredInstanceExtensions(&count);
@@ -56,15 +71,21 @@ VkSurfaceKHR Window::createVulkanSurface(VkInstance instance) const {
 }
 
 void Window::updateFramebufferSize() {
-    glfwGetFramebufferSize(_window, &_width, &_height);
+    int width = 0;
+    int height = 0;
+    glfwGetFramebufferSize(_window, &width, &height);
+    std::lock_guard<std::mutex> lock(_framebufferMutex);
+    _width = width;
+    _height = height;
 }
 
 void Window::framebufferResizeCallback(GLFWwindow* window, int width, int height) {
     auto self = static_cast<Window*>(glfwGetWindowUserPointer(window));
     if (self) {
+        std::lock_guard<std::mutex> lock(self->_framebufferMutex);
         self->_width = width;
         self->_height = height;
-        self->_framebufferResized = true;
+        self->_resizeGeneration.fetch_add(1, std::memory_order_release);
     }
 }
 

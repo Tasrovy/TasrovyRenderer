@@ -1,6 +1,7 @@
 #include "VulkanImage.h"
 #include "ImmediateSubmitter.h"
 #include "VulkanBuffer.h"
+#include "../ResourceTracker.h"
 #include "../../filesystem/Image.hpp"
 #include <stdexcept>
 #include <cmath>
@@ -23,6 +24,12 @@ VulkanImage::VulkanImage(VulkanContext& context, VkExtent2D extent, VkFormat for
     }
 
     _context->createImage(extent.width, extent.height, mipLevels, numSamples, format, VK_IMAGE_TILING_OPTIMAL, usage, properties, _image, _memory, createFlags, arrayLayers);
+    VkMemoryRequirements memoryRequirements{};
+    vkGetImageMemoryRequirements(_context->getDevice(), _image, &memoryRequirements);
+    _allocationSize = memoryRequirements.size;
+    Tasrovy::RHI::ResourceTracker::created(
+        Tasrovy::RHI::TrackedResourceKind::Image,
+        static_cast<uint64_t>(_allocationSize));
 }
 
 VulkanImage::~VulkanImage() {
@@ -32,16 +39,23 @@ VulkanImage::~VulkanImage() {
     VkImageView view = _view;
     VkImage image = _image;
     VkDeviceMemory memory = _memory;
+    const VkDeviceSize allocationSize = _allocationSize;
     _sampler = VK_NULL_HANDLE;
     _view = VK_NULL_HANDLE;
     _image = VK_NULL_HANDLE;
     _memory = VK_NULL_HANDLE;
+    _allocationSize = 0;
 
-    _context->deferDelete([sampler, view, image, memory](VkDevice device) {
+    _context->deferDelete([sampler, view, image, memory, allocationSize](VkDevice device) {
         if (sampler != VK_NULL_HANDLE) vkDestroySampler(device, sampler, nullptr);
         if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, nullptr);
         if (image != VK_NULL_HANDLE) vkDestroyImage(device, image, nullptr);
         if (memory != VK_NULL_HANDLE) vkFreeMemory(device, memory, nullptr);
+        if (image != VK_NULL_HANDLE || memory != VK_NULL_HANDLE) {
+            Tasrovy::RHI::ResourceTracker::destroyed(
+                Tasrovy::RHI::TrackedResourceKind::Image,
+                static_cast<uint64_t>(allocationSize));
+        }
     });
 }
 // --- 静态工厂函数 ---

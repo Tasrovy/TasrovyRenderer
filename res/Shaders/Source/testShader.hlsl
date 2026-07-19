@@ -10,6 +10,7 @@ cbuffer UBO : register(b0,space0)
     float4 camPosAndMetallic; // xyz: camera position, w: metallic multiplier
     float4 roughnessAo; // x: roughness multiplier, y: ao multiplier
     float4 uvTransform; // xy: scale, zw: offset
+    float4 baseColorFactorAndTexture;
 };
 struct VSInput {
     [[vk::location(0)]] float3 position : POSITION;
@@ -136,7 +137,10 @@ float4 PSMain(VSOutput input) : SV_TARGET
 {
     // --- 1. 获取表面基础属性 ---
     float2 materialUv = ResolveMaterialUV(input.texcoord);
-    float3 albedo = albedoMap.Sample(pbrSampler, materialUv).rgb; // sRGB -> Linear
+    float3 sampledAlbedo = albedoMap.Sample(pbrSampler, materialUv).rgb; // sRGB -> Linear
+    float3 albedo = baseColorFactorAndTexture.w > 0.5f
+        ? sampledAlbedo * baseColorFactorAndTexture.rgb
+        : baseColorFactorAndTexture.rgb;
     if ((uint)round(roughnessAo.z) == 1) {
         return float4(albedo, 1.0f);
     }

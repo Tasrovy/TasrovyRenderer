@@ -80,7 +80,7 @@ public:
     VulkanSwapchain(const VulkanSwapchain&) = delete;
     VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
 
-    void recreate(VkExtent2D newExtent);
+    void recreate();
     VkResult acquireNextImage(VkSemaphore imageAvailableSemaphore, uint32_t* imageIndex);
     VkResult present(VkQueue presentQueue, VkSemaphore waitSemaphore, uint32_t imageIndex);
 
@@ -119,9 +119,9 @@ public:
         return VK_NULL_HANDLE;
     }
     void recordLayoutTransition(VkCommandBuffer cmd, uint32_t imageIndex, VkImageLayout newLayout);
-    void recreate();
 private:
-    void init();
+    void init(VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE);
+    void createAttachments();
     void cleanup();
     VulkanContext& _context;
     VkSwapchainKHR _swapchain = VK_NULL_HANDLE;

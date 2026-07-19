@@ -72,6 +72,47 @@ private:
     float quadratic_ = 0.032f;
 };
 
+class AreaLight : public Light {
+public:
+    static std::unique_ptr<AreaLight> create(
+        TSVec3f position,
+        TSVec3f direction,
+        TSVec3f color,
+        float intensity,
+        float width = 1.0f,
+        float height = 1.0f,
+        bool twoSided = false,
+        const std::string& name = "");
+    std::unique_ptr<Light> clone() const override;
+
+    void setPosition(TSVec3f position);
+    TSVec3f getPosition() const;
+    void setWidth(float width);
+    void setHeight(float height);
+    void setSize(float width, float height);
+    float getWidth() const;
+    float getHeight() const;
+    void setTwoSided(bool twoSided);
+    bool isTwoSided() const;
+
+private:
+    AreaLight() = default;
+    AreaLight(
+        const std::string& name,
+        TSVec3f position,
+        TSVec3f direction,
+        TSVec3f color,
+        float intensity,
+        float width,
+        float height,
+        bool twoSided);
+
+    TSVec3f position_;
+    float width_ = 1.0f;
+    float height_ = 1.0f;
+    bool twoSided_ = false;
+};
+
 class SpotLight : public Light {
 public:
     static std::unique_ptr<SpotLight> create(TSVec3f position, TSVec3f direction, TSVec3f color,

@@ -1,4 +1,5 @@
 #include "VulkanDescriptorSetLayout.h"
+#include "../ResourceTracker.h"
 #include <stdexcept>
 
 // --- Builder Implementation ---
@@ -52,6 +53,9 @@ std::unique_ptr<VulkanDescriptorSetLayout> VulkanDescriptorSetLayout::Builder::b
 
 VulkanDescriptorSetLayout::VulkanDescriptorSetLayout(VulkanContext& context, VkDescriptorSetLayout layout)
     : _context(context), _layout(layout) {
+    if (_layout != VK_NULL_HANDLE) {
+        Tasrovy::RHI::ResourceTracker::created(Tasrovy::RHI::TrackedResourceKind::DescriptorSetLayout);
+    }
 }
 
 VulkanDescriptorSetLayout::~VulkanDescriptorSetLayout() {
@@ -61,6 +65,7 @@ VulkanDescriptorSetLayout::~VulkanDescriptorSetLayout() {
     _context.deferDelete([layout](VkDevice device) {
         if (layout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(device, layout, nullptr);
+            Tasrovy::RHI::ResourceTracker::destroyed(Tasrovy::RHI::TrackedResourceKind::DescriptorSetLayout);
         }
     });
 }

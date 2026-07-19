@@ -8,6 +8,7 @@
 #include "Pass.h"
 #include "Pipeline.h"
 #include "RHIConfig.h"
+#include "ResourceMonitor.h"
 #include "SceneGeometry.h"
 #include "../render/Material.h"
 #include "../render/Camera.h"
@@ -27,7 +28,9 @@
 #include "Logger.hpp"
 #include <imgui.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
@@ -55,6 +58,19 @@ struct MeshResources {
     uint32_t indexCount = 0;
 };
 
+constexpr size_t MaxSceneLights = 8;
+
+struct GpuLightData {
+    // positionAndType.w: 0 directional, 1 point, 2 area.
+    TSVec4f positionAndType = TSVec4f(0.0f);
+    // directionAndRange.xyz: emission direction; w: optional range.
+    TSVec4f directionAndRange = TSVec4f(0.0f);
+    // colorAndIntensity.rgb: linear color; w: intensity.
+    TSVec4f colorAndIntensity = TSVec4f(0.0f);
+    // Point: constant/linear/quadratic. Area: width/height/two-sided.
+    TSVec4f parameters = TSVec4f(0.0f);
+};
+
 struct UniformBufferObject {
     TSMat4f model;
     TSMat4f view;
@@ -64,6 +80,32 @@ struct UniformBufferObject {
     TSVec4f camPosAndMetallic;
     TSVec4f roughnessAo;
     TSVec4f uvTransform;
+    TSVec4f baseColorFactorAndTexture;
+    // x: scalar HDR emission; positive values use the unlit shading model.
+    TSVec4f materialEmission;
+    TSVec4f materialRimColorAndStrength;
+    // x: rim power.
+    TSVec4f materialRimParams;
+    TSVec4f lightMeta;
+    std::array<GpuLightData, MaxSceneLights> lights;
+    TSMat4f lightViewProj;
+    // x: slope bias, y: minimum bias, z: shadow-light index, w: strength.
+    TSVec4f shadowParams;
+    // x: adaptive PCSS, y: half-resolution HBAO, z: SSDO, w: SSR.
+    TSVec4f advancedLightingParams;
+    // x: light size in shadow UV, y: maximum filter radius.
+    TSVec4f pcssParams;
+    // x: screen radius in pixels, y: intensity, z: world radius, w: bias.
+    TSVec4f ssaoParams;
+    // x: screen radius in pixels, y: intensity, z: world radius, w: bias.
+    TSVec4f ssdoParams;
+    // x: max distance, y: step size, z: thickness, w: intensity.
+    TSVec4f ssrParams;
+    TSMat4f previousView;
+    TSMat4f previousProj;
+    TSMat4f previousModel;
+    // x: enabled and valid, y: history weight.
+    TSVec4f taaParams;
 };
 
 struct SkyUniformBufferObject {
@@ -75,6 +117,7 @@ struct PassResources {
     std::shared_ptr<PipelinePass> logicalPass;
     std::vector<std::shared_ptr<Pass>> rhiPasses;
     std::shared_ptr<Pipeline> gpuPipeline;
+    std::array<std::shared_ptr<Pipeline>, 8> postProcessPipelines{};
     std::shared_ptr<DescriptorSetLayout> descriptorSetLayout;
     std::shared_ptr<DescriptorPool> descriptorPool;
     std::vector<DescriptorSet> descriptorSets;
@@ -83,11 +126,46 @@ struct PassResources {
     bool usesSwapchain = false;
 };
 
+struct MaterialPbrValues {
+    float metallic = 0.0f;
+    float roughness = 1.0f;
+    float ao = 1.0f;
+};
+
+MaterialPbrValues resolveMaterialPbr(const std::shared_ptr<Material>& material) {
+    if (!material) {
+        return {};
+    }
+    return {
+        std::clamp(material->getFloat("metallic", 0.0f), 0.0f, 1.0f),
+        std::clamp(material->getFloat("roughness", 1.0f), 0.04f, 1.0f),
+        std::clamp(material->getFloat("ao", 1.0f), 0.0f, 1.0f)
+    };
+}
+
+TSMat4f orthographicProjection(
+    float left,
+    float right,
+    float bottom,
+    float top,
+    float nearPlane,
+    float farPlane) {
+    TSMat4f result(1.0f);
+    result[0][0] = 2.0f / (right - left);
+    result[1][1] = 2.0f / (top - bottom);
+    result[2][2] = -1.0f / (farPlane - nearPlane);
+    result[3][0] = -(right + left) / (right - left);
+    result[3][1] = -(top + bottom) / (top - bottom);
+    result[3][2] = -nearPlane / (farPlane - nearPlane);
+    return result;
+}
+
 bool passHasExecutableWork(const PipelinePass& pass) {
     switch (pass.getExecution()) {
     case PipelinePassExecution::Fullscreen:
-    case PipelinePassExecution::Skybox:
         return true;
+    case PipelinePassExecution::Skybox:
+        return !pass.getObjects().empty();
     case PipelinePassExecution::Mesh:
         return !pass.getObjects().empty();
     case PipelinePassExecution::Compute:
@@ -103,6 +181,17 @@ bool passUsesFullscreenDraw(const PipelinePass& pass) {
 
 bool passUsesSkyboxDraw(const PipelinePass& pass) {
     return pass.getExecution() == PipelinePassExecution::Skybox;
+}
+
+float halton(uint64_t index, uint32_t base) {
+    float result = 0.0f;
+    float fraction = 1.0f;
+    while (index > 0) {
+        fraction /= static_cast<float>(base);
+        result += fraction * static_cast<float>(index % base);
+        index /= base;
+    }
+    return result;
 }
 
 uint32_t countMeshDrawSlots(const PipelinePass& pass) {
@@ -227,6 +316,12 @@ uint32_t toRHICompare(DepthTestMode mode) {
         return CompareLess;
     case DepthTestMode::LessOrEqual:
         return CompareLessOrEqual;
+    case DepthTestMode::Equal:
+        return CompareEqual;
+    case DepthTestMode::Greater:
+        return CompareGreater;
+    case DepthTestMode::NotEqual:
+        return CompareNotEqual;
     default:
         return CompareLess;
     }
@@ -414,6 +509,44 @@ std::vector<SkyboxCandidate> discoverSkyboxCandidates(const std::string& preferr
 
 bool drawMaterialDebug(Material& material) {
     bool needsPipelineRefresh = false;
+    TSVec4f baseColorFactor = material.getVec4("baseColorFactor", TSVec4f(1.0f));
+    float baseColor[3] = {baseColorFactor.x, baseColorFactor.y, baseColorFactor.z};
+    if (ImGui::ColorEdit3("Base Color", baseColor)) {
+        material.setVec4(
+            "baseColorFactor",
+            TSVec4f(baseColor[0], baseColor[1], baseColor[2], baseColorFactor.w));
+    }
+
+    float metallic = material.getFloat("metallic", 0.0f);
+    float roughness = material.getFloat("roughness", 1.0f);
+    float ao = material.getFloat("ao", 1.0f);
+    if (ImGui::SliderFloat("Metallic", &metallic, 0.0f, 1.0f)) {
+        material.setFloat("metallic", metallic);
+    }
+    if (ImGui::SliderFloat("Roughness", &roughness, 0.04f, 1.0f)) {
+        material.setFloat("roughness", roughness);
+    }
+    if (ImGui::SliderFloat("AO", &ao, 0.0f, 1.0f)) {
+        material.setFloat("ao", ao);
+    }
+    float emissiveIntensity = material.getFloat("emissiveIntensity", 0.0f);
+    if (ImGui::SliderFloat("Emission", &emissiveIntensity, 0.0f, 50.0f)) {
+        material.setFloat("emissiveIntensity", emissiveIntensity);
+    }
+    float rimStrength = material.getFloat("rimStrength", 0.0f);
+    float rimPower = material.getFloat("rimPower", 3.0f);
+    TSVec3f rimColorValue = material.getVec3("rimColor", TSVec3f(1.0f));
+    float rimColor[3] = {rimColorValue.x, rimColorValue.y, rimColorValue.z};
+    if (ImGui::SliderFloat("Rim Strength", &rimStrength, 0.0f, 5.0f)) {
+        material.setFloat("rimStrength", rimStrength);
+    }
+    if (ImGui::SliderFloat("Rim Power", &rimPower, 0.25f, 12.0f)) {
+        material.setFloat("rimPower", rimPower);
+    }
+    if (ImGui::ColorEdit3("Rim Color", rimColor)) {
+        material.setVec3("rimColor", TSVec3f(rimColor[0], rimColor[1], rimColor[2]));
+    }
+
     int surface = static_cast<int>(material.getSurface());
     const char* surfaceNames[] = { "Opaque", "Masked", "Transparent" };
     if (ImGui::Combo("Surface", &surface, surfaceNames, 3)) {
@@ -489,10 +622,12 @@ bool drawObjectDebug(const std::shared_ptr<Object>& object) {
         object->setScale(scale);
     }
 
-    if (const auto mesh = object->getMesh()) {
+    const auto mesh = object->getMesh();
+    if (mesh) {
         ImGui::Text("Mesh: %zu vertices, %zu indices", mesh->getVertexCount(), mesh->getIndexCount());
         if (ImGui::TreeNode("Submeshes")) {
-            for (const auto& submesh : mesh->getSubmeshes()) {
+            for (size_t index = 0; index < mesh->getSubmeshes().size(); ++index) {
+                const auto& submesh = mesh->getSubmeshes()[index];
                 ImGui::Text(
                     "%s  offset %u  count %u",
                     submesh.getMaterialName().c_str(),
@@ -505,13 +640,30 @@ bool drawObjectDebug(const std::shared_ptr<Object>& object) {
         ImGui::TextUnformatted("Mesh: none");
     }
 
-    if (const auto material = object->getMaterial()) {
-        if (ImGui::TreeNode("Material")) {
+    if (ImGui::TreeNode("PBR Parameters")) {
+        if (mesh && !mesh->getSubmeshes().empty()) {
+            for (size_t index = 0; index < mesh->getSubmeshes().size(); ++index) {
+                const auto& submesh = mesh->getSubmeshes()[index];
+                ImGui::PushID(static_cast<int>(index));
+                const std::string label = submesh.getMaterialName().empty()
+                    ? "Submesh " + std::to_string(index)
+                    : submesh.getMaterialName();
+                if (ImGui::TreeNode(label.c_str())) {
+                    if (const auto material = object->getSubmeshMaterial(index)) {
+                        needsPipelineRefresh |= drawMaterialDebug(*material);
+                    } else {
+                        ImGui::TextUnformatted("Material: none");
+                    }
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+        } else if (const auto material = object->getMaterial()) {
             needsPipelineRefresh |= drawMaterialDebug(*material);
-            ImGui::TreePop();
+        } else {
+            ImGui::TextUnformatted("Material: none");
         }
-    } else {
-        ImGui::TextUnformatted("Material: none");
+        ImGui::TreePop();
     }
 
     for (const auto& child : object->getChildren()) {
@@ -543,6 +695,7 @@ struct SceneRenderer::RenderState {
     std::shared_ptr<Image> defaultEmissive;
     std::shared_ptr<Image> defaultMsa;
     std::shared_ptr<Image> skyCubemap;
+    bool environmentLightingEnabled = false;
     std::vector<SkyboxVariant> skyboxVariants;
     int selectedSkyboxIndex = 0;
     std::string activeSkyboxName;
@@ -551,18 +704,64 @@ struct SceneRenderer::RenderState {
     uint32_t skyboxIndexCount = 0;
     bool loggedSkyboxDrawState = false;
     bool loggedSubmeshMaterialBindings = false;
-    int selectedPipelineIndex = 0;
+    int selectedPipelineIndex = 1;
     std::string debugOutputResource;
-    float pbrMetallic = 0.0f;
-    float pbrRoughness = 1.0f;
-    float pbrAo = 1.0f;
-    int materialDebugMode = 0;
     int bodyUvMode = 1;
     int hairUvMode = 1;
     int faceUvMode = 1;
+    float shadowSlopeBias = 0.003f;
+    float shadowMinimumBias = 0.0005f;
+    float shadowStrength = 1.0f;
+    bool bloomEnabled = true;
+    float bloomThreshold = 1.0f;
+    float bloomIntensity = 0.25f;
+    float bloomRadius = 1.0f;
+    float exposure = 1.0f;
+    bool taaEnabled = true;
+    // This simple implementation combines the current and immediately
+    // preceding jittered lighting result rather than recursively filtering an
+    // unbounded history, so an even default weight is the least biased.
+    float taaHistoryWeight = 0.5f;
+    bool taaHistoryValid = false;
+    uint64_t taaFrameIndex = 0;
+    TSMat4f previousView = TSMat4f(1.0f);
+    TSMat4f previousFlippedProjection = TSMat4f(1.0f);
+    TSMat4f previousUnflippedProjection = TSMat4f(1.0f);
+    std::unordered_map<const Object*, TSMat4f> previousModelMatrices;
+    std::vector<std::vector<std::string>> gpuTimingNamesPerFrame;
+    std::vector<std::pair<std::string, double>> gpuPassTimings;
+    Object* animatedTaffy = nullptr;
+    TSVec3f taffyBaseRotation = TSVec3f(0.0f);
+    float taffyYawOffset = 0.0f;
+    std::chrono::steady_clock::time_point lastTaffyAnimationTime{};
+    bool pcssEnabled = true;
+    float pcssLightSize = 0.018f;
+    float pcssMaxFilterRadius = 0.04f;
+    bool ssaoEnabled = true;
+    float ssaoRadiusPixels = 12.0f;
+    float ssaoIntensity = 1.0f;
+    float ssaoWorldRadius = 0.75f;
+    float ssaoBias = 0.02f;
+    bool ssdoEnabled = false;
+    float ssdoRadiusPixels = 18.0f;
+    float ssdoIntensity = 0.18f;
+    float ssdoWorldRadius = 1.25f;
+    float ssdoBias = 0.02f;
+    bool ssrEnabled = false;
+    float ssrMaxDistance = 8.0f;
+    float ssrStepSize = 0.05f;
+    float ssrThickness = 0.25f;
+    float ssrIntensity = 0.65f;
+    bool outlineEnabled = true;
+    float outlineThreshold = 0.12f;
+    float outlineThickness = 1.0f;
+    float outlineStrength = 0.85f;
+    float outlineSoftness = 0.05f;
+    TSVec3f outlineColor = TSVec3f(0.02f, 0.015f, 0.02f);
     float uvOffset[2] = {0.0f, 0.0f};
     float uvScale[2] = {1.0f, 1.0f};
     std::unique_ptr<Tasrovy::UI::UIOverlay> ui;
+    std::unique_ptr<ResourceMonitor> resourceMonitor;
     uint32_t maxFramesInFlight = 0;
 
     RenderState(Tasrovy::Windowing::Window& window, uint32_t maxFrames)
@@ -570,6 +769,8 @@ struct SceneRenderer::RenderState {
         device = Device::createForWindow(window, maxFrames);
         commandList = CommandList::create();
         ui = device->createUIOverlay(window);
+        resourceMonitor = std::make_unique<ResourceMonitor>();
+        gpuTimingNamesPerFrame.resize(maxFrames);
     }
 };
 
@@ -626,6 +827,11 @@ SceneRenderer::SceneRenderer(Tasrovy::Windowing::Window& window, uint32_t maxFra
     if (renderState_->ui) {
         renderState_->ui->setDrawCallback([this]() {
             drawSceneDebugUI();
+            if (renderState_->resourceMonitor) {
+                renderState_->resourceMonitor->draw(
+                    renderState_->device ? renderState_->device->getDeferredDeletionCount() : 0,
+                    renderState_->gpuPassTimings);
+            }
         });
     }
     LOG_INFO("SceneRenderer: RHI initialized with {}", TASROVY_API_NAME);
@@ -727,21 +933,7 @@ void SceneRenderer::drawSceneDebugUI() {
         ImGui::Text("Skybox variants: %zu", state.skyboxVariants.size());
     }
 
-    if (ImGui::CollapsingHeader("PBR Constants", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Metallic", &state.pbrMetallic, 0.0f, 1.0f);
-        ImGui::SliderFloat("Roughness", &state.pbrRoughness, 0.0f, 1.0f);
-        ImGui::SliderFloat("AO", &state.pbrAo, 0.0f, 1.0f);
-        const char* materialDebugModes[] = {
-            "Shaded",
-            "Albedo Only",
-            "Raw UV",
-            "Material UV"
-        };
-        ImGui::Combo(
-            "Material Debug",
-            &state.materialDebugMode,
-            materialDebugModes,
-            IM_ARRAYSIZE(materialDebugModes));
+    if (ImGui::CollapsingHeader("UV Settings")) {
         const char* uvModes[] = {
             "UV0",
             "Flip Y",
@@ -786,6 +978,78 @@ void SceneRenderer::drawSceneDebugUI() {
             ImGui::Combo("Hair UV", &state.hairUvMode, uvModes, IM_ARRAYSIZE(uvModes));
             ImGui::Combo("Face UV", &state.faceUvMode, uvModes, IM_ARRAYSIZE(uvModes));
             ImGui::TreePop();
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Slope Bias", &state.shadowSlopeBias, 0.0f, 0.02f, "%.5f");
+        ImGui::SliderFloat("Minimum Bias", &state.shadowMinimumBias, 0.0f, 0.01f, "%.5f");
+        ImGui::SliderFloat("Strength", &state.shadowStrength, 0.0f, 1.0f);
+        ImGui::TextDisabled("2048 x 2048; adaptive blocker search and edge filtering");
+    }
+
+    if (ImGui::CollapsingHeader("Advanced Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Adaptive PCSS", &state.pcssEnabled);
+        if (state.pcssEnabled) {
+            ImGui::SliderFloat("PCSS Light Size", &state.pcssLightSize, 0.001f, 0.08f, "%.4f");
+            ImGui::SliderFloat(
+                "PCSS Max Radius", &state.pcssMaxFilterRadius, 0.002f, 0.12f, "%.4f");
+        }
+
+        ImGui::Checkbox("HBAO", &state.ssaoEnabled);
+        if (state.ssaoEnabled) {
+            ImGui::SliderFloat("HBAO Screen Radius", &state.ssaoRadiusPixels, 2.0f, 64.0f);
+            ImGui::SliderFloat("HBAO World Radius", &state.ssaoWorldRadius, 0.05f, 5.0f);
+            ImGui::SliderFloat("HBAO Intensity", &state.ssaoIntensity, 0.0f, 4.0f);
+            ImGui::SliderFloat("HBAO Bias", &state.ssaoBias, 0.0f, 0.2f, "%.4f");
+        }
+
+        ImGui::Checkbox("SSDO", &state.ssdoEnabled);
+        if (state.ssdoEnabled) {
+            ImGui::SliderFloat("SSDO Screen Radius", &state.ssdoRadiusPixels, 2.0f, 64.0f);
+            ImGui::SliderFloat("SSDO World Radius", &state.ssdoWorldRadius, 0.05f, 5.0f);
+            ImGui::SliderFloat("SSDO Intensity", &state.ssdoIntensity, 0.0f, 2.0f);
+            ImGui::SliderFloat("SSDO Bias", &state.ssdoBias, 0.0f, 0.2f, "%.4f");
+        }
+
+        ImGui::Checkbox("SSR", &state.ssrEnabled);
+        if (state.ssrEnabled) {
+            ImGui::SliderFloat("SSR Max Distance", &state.ssrMaxDistance, 0.5f, 30.0f);
+            ImGui::SliderFloat("SSR Step Size", &state.ssrStepSize, 0.02f, 1.0f);
+            ImGui::SliderFloat("SSR Thickness", &state.ssrThickness, 0.01f, 1.0f);
+            ImGui::SliderFloat("SSR Intensity", &state.ssrIntensity, 0.0f, 1.0f);
+        }
+    }
+
+    if (ImGui::CollapsingHeader("Post Processing", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::Checkbox("TAA", &state.taaEnabled)) {
+            state.taaHistoryValid = false;
+            state.previousModelMatrices.clear();
+        }
+        if (state.taaEnabled) {
+            ImGui::SliderFloat(
+                "TAA History Weight", &state.taaHistoryWeight, 0.0f, 0.95f);
+        }
+        ImGui::Separator();
+        ImGui::Checkbox("Bloom", &state.bloomEnabled);
+        ImGui::SliderFloat("Bloom Threshold", &state.bloomThreshold, 0.0f, 10.0f);
+        ImGui::SliderFloat("Bloom Intensity", &state.bloomIntensity, 0.0f, 3.0f);
+        ImGui::SliderFloat("Bloom Radius", &state.bloomRadius, 0.25f, 4.0f);
+        ImGui::SliderFloat("Exposure", &state.exposure, 0.05f, 5.0f);
+        ImGui::Separator();
+        ImGui::Checkbox("Normal Outline", &state.outlineEnabled);
+        if (state.outlineEnabled) {
+            ImGui::SliderFloat("Outline Threshold", &state.outlineThreshold, 0.001f, 1.0f);
+            ImGui::SliderFloat("Outline Thickness", &state.outlineThickness, 0.5f, 5.0f);
+            ImGui::SliderFloat("Outline Strength", &state.outlineStrength, 0.0f, 1.0f);
+            ImGui::SliderFloat("Outline Softness", &state.outlineSoftness, 0.001f, 0.5f);
+            float outlineColor[3] = {
+                state.outlineColor.x, state.outlineColor.y, state.outlineColor.z
+            };
+            if (ImGui::ColorEdit3("Outline Color", outlineColor)) {
+                state.outlineColor = TSVec3f(
+                    outlineColor[0], outlineColor[1], outlineColor[2]);
+            }
         }
     }
 
@@ -971,6 +1235,25 @@ void SceneRenderer::drawSceneDebugUI() {
                     }
                 }
 
+                if (auto* area = dynamic_cast<AreaLight*>(light)) {
+                    TSVec3f position = area->getPosition();
+                    float width = area->getWidth();
+                    float height = area->getHeight();
+                    bool twoSided = area->isTwoSided();
+                    if (drawVec3Control("Position", position)) {
+                        area->setPosition(position);
+                    }
+                    if (ImGui::DragFloat("Width", &width, 0.05f, 0.01f, 100.0f)) {
+                        area->setWidth(width);
+                    }
+                    if (ImGui::DragFloat("Height", &height, 0.05f, 0.01f, 100.0f)) {
+                        area->setHeight(height);
+                    }
+                    if (ImGui::Checkbox("Two Sided", &twoSided)) {
+                        area->setTwoSided(twoSided);
+                    }
+                }
+
                 if (auto* spot = dynamic_cast<SpotLight*>(light)) {
                     TSVec3f position = spot->getPosition();
                     float cutoff = spot->getCutoff();
@@ -1028,6 +1311,7 @@ void SceneRenderer::stop() {
 }
 
 void SceneRenderer::renderLoop() {
+    uint64_t appliedResizeGeneration = 0;
     while (running_) {
         std::shared_ptr<Scene> scene;
         bool dirty = false;
@@ -1052,22 +1336,36 @@ void SceneRenderer::renderLoop() {
             }
         }
 
-        if (window_.wasResized()) {
-            window_.resetResizedFlag();
-            while (window_.getWidth() == 0 || window_.getHeight() == 0) {
-                window_.waitEvents();
-                window_.pollEvents();
+        const auto framebuffer = window_.getFramebufferState();
+        if (framebuffer.width <= 0 || framebuffer.height <= 0) {
+            // GLFW event processing stays on the main thread. A minimized
+            // surface has no valid extent, so pause rendering until the next
+            // framebuffer callback publishes a usable size.
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            continue;
+        }
+
+        const bool windowSizeChanged =
+            framebuffer.resizeGeneration != appliedResizeGeneration;
+        if (windowSizeChanged || renderState_->device->isSwapchainRebuildRequired()) {
+            if (!renderState_->device->recreateSwapchain(
+                    static_cast<uint32_t>(framebuffer.width),
+                    static_cast<uint32_t>(framebuffer.height))) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
             }
-            renderState_->device->handleResize(window_);
+            appliedResizeGeneration = framebuffer.resizeGeneration;
             if (auto* cam = scene->getPrimaryCamera()) {
                 cam->setAspect(
-                    static_cast<float>(window_.getWidth()) /
-                    static_cast<float>(window_.getHeight()));
+                    static_cast<float>(renderState_->device->getSwapchainWidth()) /
+                    static_cast<float>(renderState_->device->getSwapchainHeight()));
             }
+            // Every deferred target, Hi-Z mip, pass extent, viewport and
+            // descriptor that depends on the swapchain must be rebuilt using
+            // the new extent before another frame is recorded.
             processScene(scene);
         }
 
-        renderState_->device->checkSwapchain();
         renderFrame(*scene);
     }
 }
@@ -1086,8 +1384,9 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
     }
 
     if (!pipeline) {
-        pipeline = PBRPipeline::create();
+        pipeline = DeferredPipeline::create();
     }
+
     pipeline->GenPass(scene);
     for (const auto& error : pipeline->validatePassDependencies()) {
         LOG_WARN("SceneRenderer: pipeline dependency issue: {}", error);
@@ -1112,6 +1411,16 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
     state.skyboxIndexCount = 0;
     state.renderTextureBytes = 0;
     state.loggedSubmeshMaterialBindings = false;
+    state.taaHistoryValid = false;
+    state.taaFrameIndex = 0;
+    state.previousModelMatrices.clear();
+    for (auto& timingNames : state.gpuTimingNamesPerFrame) {
+        timingNames.clear();
+    }
+    state.gpuPassTimings.clear();
+    state.animatedTaffy = nullptr;
+    state.taffyYawOffset = 0.0f;
+    state.lastTaffyAnimationTime = {};
 
     // The device is already idle. Flush the Vulkan objects whose wrappers
     // were released above before allocating the replacement render graph.
@@ -1188,11 +1497,11 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
         break;
     }
 
-    if (!preferredSkyboxPath.empty()) {
-        prepareSkyboxVariants(preferredSkyboxPath);
-    } else {
-        state.skyCubemap.reset();
-    }
+    state.environmentLightingEnabled = !preferredSkyboxPath.empty();
+    // The deferred-lighting descriptor always contains the IBL bindings.
+    // Prepare a valid environment even for closed scenes, then disable its
+    // lighting contribution through the UBO when no Skybox object is present.
+    prepareSkyboxVariants(preferredSkyboxPath);
 
     if (state.skyCubemap) {
 
@@ -1536,7 +1845,20 @@ void SceneRenderer::processScene(const std::shared_ptr<Scene>& scene) {
                 pipelineDesc.colorAttachmentFormats.size(),
                 pipelineDesc.depthAttachmentFormat,
                 resources.usesSwapchain ? 1 : 0);
-            resources.gpuPipeline = device.createGraphicsPipeline(pipelineDesc);
+            if (pass->getName() == "PostProcessing") {
+                for (uint32_t permutation = 0; permutation < 8u; ++permutation) {
+                    PipelineDesc permutationDesc = pipelineDesc;
+                    permutationDesc.fragShaderPath =
+                        "res\\Shaders\\Bin\\deferred_postprocess_" +
+                        std::to_string(permutation) + "_frag.spv";
+                    resources.postProcessPipelines[permutation] =
+                        device.createGraphicsPipeline(permutationDesc);
+                }
+                // SSR off, Bloom and Outline on.
+                resources.gpuPipeline = resources.postProcessPipelines[6];
+            } else {
+                resources.gpuPipeline = device.createGraphicsPipeline(pipelineDesc);
+            }
         }
 
         state.passes.push_back(std::move(resources));
@@ -1564,24 +1886,216 @@ void SceneRenderer::renderFrame(Scene& scene) {
     }
 
     const uint32_t frameIdx = device.getCurrentFrameIndex();
+    const auto completedGpuDurations = device.consumeGpuTimestampDurations();
+    state.gpuPassTimings.clear();
+    if (frameIdx < state.gpuTimingNamesPerFrame.size()) {
+        const auto& completedNames = state.gpuTimingNamesPerFrame[frameIdx];
+        const size_t completedCount = std::min(
+            completedNames.size(), completedGpuDurations.size());
+        state.gpuPassTimings.reserve(completedCount);
+        for (size_t timingIndex = 0; timingIndex < completedCount; ++timingIndex) {
+            state.gpuPassTimings.emplace_back(
+                completedNames[timingIndex], completedGpuDurations[timingIndex]);
+        }
+        state.gpuTimingNamesPerFrame[frameIdx].clear();
+    }
+    device.beginGpuTimestampFrame(
+        cmdList, static_cast<uint32_t>(state.passes.size() * 2u));
+    std::unordered_map<const Object*, TSMat4f> currentModelMatrices;
+    currentModelMatrices.reserve(state.previousModelMatrices.size() + 4u);
     bool drawUI = state.ui && device.beginUIFrame(*state.ui);
+
+    // Run the TAA comparison animation on the render thread so transform
+    // writes cannot race command generation on the RHI/render path.
+    const auto animationNow = std::chrono::steady_clock::now();
+    Object* taffy = scene.findObject("Taffy");
+    if (taffy != state.animatedTaffy) {
+        state.animatedTaffy = taffy;
+        state.taffyBaseRotation = taffy ? taffy->getRotationEuler() : TSVec3f(0.0f);
+        state.taffyYawOffset = 0.0f;
+        state.lastTaffyAnimationTime = animationNow;
+    } else if (taffy) {
+        const float deltaSeconds = std::clamp(
+            std::chrono::duration<float>(
+                animationNow - state.lastTaffyAnimationTime).count(),
+            0.0f,
+            0.1f);
+        const float taffyYawRadiansPerSecond = pi<float>() * 0.25f;
+        state.taffyYawOffset = std::fmod(
+            state.taffyYawOffset + taffyYawRadiansPerSecond * deltaSeconds,
+            2.0f * pi<float>());
+        TSVec3f animatedRotation = state.taffyBaseRotation;
+        animatedRotation.y += state.taffyYawOffset;
+        taffy->setRotation(animatedRotation);
+        state.lastTaffyAnimationTime = animationNow;
+    }
 
     auto* cam = scene.getPrimaryCamera();
     TSMat4f viewMat = cam->getViewMatrix();
-    const TSMat4f unflippedProjMat = cam->getProjectionMatrix();
+    TSMat4f unflippedProjMat = cam->getProjectionMatrix();
+    if (state.taaEnabled) {
+        const uint64_t jitterIndex = state.taaFrameIndex % 8u + 1u;
+        const float jitterX = halton(jitterIndex, 2u) - 0.5f;
+        const float jitterY = halton(jitterIndex, 3u) - 0.5f;
+        unflippedProjMat[2][0] +=
+            jitterX * 2.0f / static_cast<float>(device.getSwapchainWidth());
+        unflippedProjMat[2][1] +=
+            jitterY * 2.0f / static_cast<float>(device.getSwapchainHeight());
+    }
     TSMat4f projMat = unflippedProjMat;
     projMat[1][1] *= -1;
 
     TSVec3f lightDir(-0.5f, -1.0f, -0.8f);
     TSVec3f lightColor(1.0f);
     float lightIntensity = 10.0f;
-    if (!scene.getLights().empty()) {
-        if (auto* light = dynamic_cast<DirectionalLight*>(scene.getLights()[0].get())) {
-            lightDir = light->getDirection();
-            lightColor = light->getColor();
-            lightIntensity = light->getIntensity();
+    if (!scene.getLights().empty() && scene.getLights()[0]) {
+        const auto* firstLight = scene.getLights()[0].get();
+        lightDir = firstLight->getDirection();
+        lightColor = firstLight->getColor();
+        lightIntensity = firstLight->getIntensity();
+    }
+
+    // A single shadow map currently follows one light. Prefer the area light
+    // used by the Cornell scene, then fall back to the first directional light.
+    const Light* shadowLight = nullptr;
+    for (const auto& light : scene.getLights()) {
+        if (light && dynamic_cast<const AreaLight*>(light.get())) {
+            shadowLight = light.get();
+            break;
         }
     }
+    if (!shadowLight) {
+        for (const auto& light : scene.getLights()) {
+            if (light && dynamic_cast<const DirectionalLight*>(light.get())) {
+                shadowLight = light.get();
+                break;
+            }
+        }
+    }
+
+    std::array<GpuLightData, MaxSceneLights> gpuLights{};
+    uint32_t gpuLightCount = 0;
+    int32_t shadowLightIndex = -1;
+    for (const auto& lightPtr : scene.getLights()) {
+        if (!lightPtr || gpuLightCount >= MaxSceneLights) {
+            continue;
+        }
+
+        auto& gpuLight = gpuLights[gpuLightCount];
+        gpuLight.colorAndIntensity = TSVec4f(lightPtr->getColor(), lightPtr->getIntensity());
+        if (const auto* directional = dynamic_cast<const DirectionalLight*>(lightPtr.get())) {
+            gpuLight.positionAndType = TSVec4f(0.0f, 0.0f, 0.0f, 0.0f);
+            gpuLight.directionAndRange = TSVec4f(normalize(directional->getDirection()), 0.0f);
+        } else if (const auto* point = dynamic_cast<const PointLight*>(lightPtr.get())) {
+            gpuLight.positionAndType = TSVec4f(point->getPosition(), 1.0f);
+            gpuLight.parameters = TSVec4f(
+                point->getConstant(), point->getLinear(), point->getQuadratic(), 0.0f);
+        } else if (const auto* area = dynamic_cast<const AreaLight*>(lightPtr.get())) {
+            gpuLight.positionAndType = TSVec4f(area->getPosition(), 2.0f);
+            gpuLight.directionAndRange = TSVec4f(normalize(area->getDirection()), 0.0f);
+            gpuLight.parameters = TSVec4f(
+                area->getWidth(), area->getHeight(), area->isTwoSided() ? 1.0f : 0.0f, 0.0f);
+        } else if (const auto* spot = dynamic_cast<const SpotLight*>(lightPtr.get())) {
+            // Until a dedicated cone model is added, keep spot lights usable
+            // as positional lights in the deferred path.
+            gpuLight.positionAndType = TSVec4f(spot->getPosition(), 1.0f);
+            gpuLight.directionAndRange = TSVec4f(normalize(spot->getDirection()), spot->getCutoff());
+            gpuLight.parameters = TSVec4f(1.0f, 0.09f, 0.032f, 0.0f);
+        } else {
+            continue;
+        }
+        if (lightPtr.get() == shadowLight) {
+            shadowLightIndex = static_cast<int32_t>(gpuLightCount);
+        }
+        ++gpuLightCount;
+    }
+
+    TSMat4f shadowView(1.0f);
+    TSMat4f shadowProjection(1.0f);
+    if (const auto* area = dynamic_cast<const AreaLight*>(shadowLight)) {
+        const TSVec3f direction = normalize(area->getDirection());
+        const TSVec3f up = std::abs(direction.y) > 0.95f
+            ? TSVec3f(0.0f, 0.0f, 1.0f)
+            : TSVec3f(0.0f, 1.0f, 0.0f);
+        shadowView = lookAt(area->getPosition(), area->getPosition() + direction, up);
+        shadowProjection = orthographicProjection(-3.1f, 3.1f, -3.1f, 3.1f, 0.05f, 12.0f);
+    } else if (const auto* directional = dynamic_cast<const DirectionalLight*>(shadowLight)) {
+        const TSVec3f direction = normalize(directional->getDirection());
+        const TSVec3f center(0.0f, 2.5f, 0.0f);
+        const TSVec3f eye = center - direction * 10.0f;
+        const TSVec3f up = std::abs(direction.y) > 0.95f
+            ? TSVec3f(0.0f, 0.0f, 1.0f)
+            : TSVec3f(0.0f, 1.0f, 0.0f);
+        shadowView = lookAt(eye, center, up);
+        shadowProjection = orthographicProjection(-6.5f, 6.5f, -6.5f, 6.5f, 0.1f, 25.0f);
+    }
+    // Vulkan NDC has an inverted framebuffer Y relative to the math helpers.
+    shadowProjection[1][1] *= -1.0f;
+    const TSMat4f shadowViewProjection = shadowProjection * shadowView;
+
+    const auto populateExtendedMaterialAndLights =
+        [&](UniformBufferObject& ubo, const std::shared_ptr<Material>& material) {
+            const TSVec4f baseColorFactor = material
+                ? material->getVec4("baseColorFactor", TSVec4f(1.0f))
+                : TSVec4f(1.0f);
+            const bool hasBaseColorTexture = material &&
+                !material->getTexture(MaterialTextureSemantic::BaseColor).empty();
+            ubo.baseColorFactorAndTexture = TSVec4f(
+                baseColorFactor.x,
+                baseColorFactor.y,
+                baseColorFactor.z,
+                hasBaseColorTexture ? 1.0f : 0.0f);
+            ubo.materialEmission = TSVec4f(
+                material ? material->getFloat("emissiveIntensity", 0.0f) : 0.0f,
+                0.0f,
+                0.0f,
+                0.0f);
+            const TSVec3f rimColor = material
+                ? material->getVec3("rimColor", TSVec3f(1.0f))
+                : TSVec3f(1.0f);
+            ubo.materialRimColorAndStrength = TSVec4f(
+                rimColor,
+                material ? material->getFloat("rimStrength", 0.0f) : 0.0f);
+            ubo.materialRimParams = TSVec4f(
+                material ? material->getFloat("rimPower", 3.0f) : 3.0f,
+                0.0f,
+                0.0f,
+                0.0f);
+            ubo.lightMeta = TSVec4f(
+                static_cast<float>(gpuLightCount),
+                state.environmentLightingEnabled ? 1.0f : 0.0f,
+                0.0f,
+                0.0f);
+            ubo.lights = gpuLights;
+            ubo.lightViewProj = transpose(shadowViewProjection);
+            ubo.shadowParams = TSVec4f(
+                state.shadowSlopeBias,
+                state.shadowMinimumBias,
+                static_cast<float>(shadowLightIndex),
+                state.shadowStrength);
+            ubo.advancedLightingParams = TSVec4f(
+                state.pcssEnabled ? 1.0f : 0.0f,
+                state.ssaoEnabled ? 1.0f : 0.0f,
+                state.ssdoEnabled ? 1.0f : 0.0f,
+                state.ssrEnabled ? 1.0f : 0.0f);
+            ubo.pcssParams = TSVec4f(
+                state.pcssLightSize, state.pcssMaxFilterRadius, 0.0f, 0.0f);
+            ubo.ssaoParams = TSVec4f(
+                state.ssaoRadiusPixels,
+                state.ssaoIntensity,
+                state.ssaoWorldRadius,
+                state.ssaoBias);
+            ubo.ssdoParams = TSVec4f(
+                state.ssdoRadiusPixels,
+                state.ssdoIntensity,
+                state.ssdoWorldRadius,
+                state.ssdoBias);
+            ubo.ssrParams = TSVec4f(
+                state.ssrMaxDistance,
+                state.ssrStepSize,
+                state.ssrThickness,
+                state.ssrIntensity);
+        };
 
     for (auto& pass : state.passes) {
         if (!pass.descriptorSetLayout ||
@@ -1610,16 +2124,50 @@ void SceneRenderer::renderFrame(Scene& scene) {
             ubo.lightColor = TSVec4f(lightColor, lightIntensity);
             ubo.camPosAndMetallic = TSVec4f(cam->getPosition(), 1.0f);
             const bool debugPostProcess =
-                pass.logicalPass->getType() == PipelinePassType::PostProcess &&
+                pass.logicalPass->getName() == "PostProcessing" &&
                 !state.debugOutputResource.empty();
             ubo.roughnessAo = TSVec4f(
                 1.0f,
                 1.0f,
-                debugPostProcess ? 1.0f : static_cast<float>(state.materialDebugMode),
+                debugPostProcess ? 1.0f : 0.0f,
+                state.bloomRadius);
+            const bool isPostProcessingPass =
+                pass.logicalPass->getType() == PipelinePassType::PostProcess;
+            ubo.uvTransform = isPostProcessingPass
+                ? TSVec4f(
+                    state.bloomEnabled ? 1.0f : 0.0f,
+                    state.bloomThreshold,
+                    state.bloomIntensity,
+                    state.exposure)
+                : TSVec4f(
+                    state.uvScale[0], state.uvScale[1],
+                    state.uvOffset[0], state.uvOffset[1]);
+            if (pass.logicalPass->getName() == "PostProcessing") {
+                ubo.lightDir = TSVec4f(
+                    state.outlineColor,
+                    state.outlineEnabled ? 1.0f : 0.0f);
+                ubo.lightColor = TSVec4f(
+                    state.outlineThreshold,
+                    state.outlineThickness,
+                    state.outlineStrength,
+                    state.outlineSoftness);
+            }
+            populateExtendedMaterialAndLights(ubo, nullptr);
+            const bool isTaaPass =
+                pass.logicalPass->getName() == "PostProcessing";
+            const bool taaHistoryUsable =
+                isTaaPass && state.taaEnabled && state.taaHistoryValid &&
+                !debugPostProcess;
+            ubo.previousView = transpose(
+                state.taaHistoryValid ? state.previousView : viewMat);
+            ubo.previousProj = transpose(
+                state.taaHistoryValid ? state.previousFlippedProjection : projMat);
+            ubo.previousModel = transpose(TSMat4f(1.0f));
+            ubo.taaParams = TSVec4f(
+                taaHistoryUsable ? 1.0f : 0.0f,
+                state.taaHistoryWeight,
+                0.0f,
                 0.0f);
-            ubo.uvTransform = TSVec4f(
-                state.uvScale[0], state.uvScale[1],
-                state.uvOffset[0], state.uvOffset[1]);
             pass.uniformBuffers[frameIdx]->setData(&ubo, sizeof(ubo));
 
             std::vector<DescriptorWriteDesc> writes;
@@ -1635,9 +2183,16 @@ void SceneRenderer::renderFrame(Scene& scene) {
                         ? state.debugOutputResource
                         : input.resource;
                 const auto found = state.renderTextures.find(resourceName);
+                uint32_t sampledFrame = frameIdx;
+                if ((input.slot == "taaHistoryColor" ||
+                     input.slot == "taaHistoryDepth") &&
+                    state.taaHistoryValid) {
+                    sampledFrame =
+                        (frameIdx + maxFramesInFlight_ - 1u) % maxFramesInFlight_;
+                }
                 if (found == state.renderTextures.end() ||
-                    frameIdx >= found->second.size() ||
-                    !found->second[frameIdx]) {
+                    sampledFrame >= found->second.size() ||
+                    !found->second[sampledFrame]) {
                     LOG_WARN(
                         "SceneRenderer: pass '{}' missing sampled texture '{}' for slot '{}'",
                         pass.logicalPass->getName(),
@@ -1649,7 +2204,7 @@ void SceneRenderer::renderFrame(Scene& scene) {
                     input.binding,
                     DescriptorResourceType::CombinedImageSampler,
                     nullptr,
-                    found->second[frameIdx]
+                    found->second[sampledFrame]
                 });
             }
 
@@ -1720,9 +2275,7 @@ void SceneRenderer::renderFrame(Scene& scene) {
                     return found == state.materialTextures.end() ? fallback : found->second;
                 };
 
-            const float metallic = state.pbrMetallic;
-            const float roughness = state.pbrRoughness;
-            const float ao = state.pbrAo;
+            const auto pbr = resolveMaterialPbr(material);
 
             const auto& iblName = state.activeSkyboxName;
             auto irradianceInfo = device.getIBLDescriptorInfo(IBLMapType::Irradiance, iblName);
@@ -1740,15 +2293,16 @@ void SceneRenderer::renderFrame(Scene& scene) {
             ubo.proj = transpose(projMat);
             ubo.lightDir = TSVec4f(normalize(lightDir), 0.0f);
             ubo.lightColor = TSVec4f(lightColor, lightIntensity);
-            ubo.camPosAndMetallic = TSVec4f(cam->getPosition(), metallic);
+            ubo.camPosAndMetallic = TSVec4f(cam->getPosition(), pbr.metallic);
             ubo.roughnessAo = TSVec4f(
-                roughness,
-                ao,
-                static_cast<float>(state.materialDebugMode),
+                pbr.roughness,
+                pbr.ao,
+                0.0f,
                 static_cast<float>(state.bodyUvMode));
             ubo.uvTransform = TSVec4f(
                 state.uvScale[0], state.uvScale[1],
                 state.uvOffset[0], state.uvOffset[1]);
+            populateExtendedMaterialAndLights(ubo, material);
             pass.uniformBuffers[frameIdx]->setData(&ubo, sizeof(ubo));
 
             device.updateDescriptorSet(pass.descriptorSets[frameIdx], {
@@ -1796,9 +2350,7 @@ void SceneRenderer::renderFrame(Scene& scene) {
                     return found == state.materialTextures.end() ? fallback : found->second;
                 };
 
-            const float metallic = state.pbrMetallic;
-            const float roughness = state.pbrRoughness;
-            const float ao = state.pbrAo;
+            const auto pbr = resolveMaterialPbr(material);
 
             UniformBufferObject ubo{};
             ubo.model = transpose(drawObject ? drawObject->getModelMatrix() : TSMat4f(1.0f));
@@ -1806,15 +2358,16 @@ void SceneRenderer::renderFrame(Scene& scene) {
             ubo.proj = transpose(projMat);
             ubo.lightDir = TSVec4f(normalize(lightDir), 0.0f);
             ubo.lightColor = TSVec4f(lightColor, lightIntensity);
-            ubo.camPosAndMetallic = TSVec4f(cam->getPosition(), metallic);
+            ubo.camPosAndMetallic = TSVec4f(cam->getPosition(), pbr.metallic);
             ubo.roughnessAo = TSVec4f(
-                roughness,
-                ao,
-                static_cast<float>(state.materialDebugMode),
+                pbr.roughness,
+                pbr.ao,
+                0.0f,
                 static_cast<float>(state.bodyUvMode));
             ubo.uvTransform = TSVec4f(
                 state.uvScale[0], state.uvScale[1],
                 state.uvOffset[0], state.uvOffset[1]);
+            populateExtendedMaterialAndLights(ubo, material);
             pass.uniformBuffers[frameIdx]->setData(&ubo, sizeof(ubo));
 
             std::vector<DescriptorWriteDesc> writes = {
@@ -1868,37 +2421,60 @@ void SceneRenderer::renderFrame(Scene& scene) {
                 return nullptr;
             }
 
-            const float metallic = state.pbrMetallic;
-            const float roughness = state.pbrRoughness;
-            const float ao = state.pbrAo;
+            const auto material = submeshMaterial ? submeshMaterial : object.getMaterial();
+            const auto pbr = resolveMaterialPbr(material);
 
             UniformBufferObject ubo{};
-            ubo.model = transpose(object.getModelMatrix());
-            ubo.view = transpose(viewMat);
-            ubo.proj = transpose(object.getFlipProjectionY() ? projMat : unflippedProjMat);
+            const TSMat4f currentModel = object.getModelMatrix();
+            if (pass.logicalPass->getName() == "GBuffer") {
+                currentModelMatrices[&object] = currentModel;
+            }
+            ubo.model = transpose(currentModel);
+            const bool isShadowPass =
+                pass.logicalPass->getType() == PipelinePassType::Shadow;
+            ubo.view = transpose(isShadowPass ? shadowView : viewMat);
+            ubo.proj = transpose(
+                isShadowPass
+                    ? shadowProjection
+                    : (object.getFlipProjectionY() ? projMat : unflippedProjMat));
             ubo.lightDir = TSVec4f(normalize(lightDir), 0.0f);
             ubo.lightColor = TSVec4f(lightColor, lightIntensity);
-            ubo.camPosAndMetallic = TSVec4f(cam->getPosition(), metallic);
+            ubo.camPosAndMetallic = TSVec4f(cam->getPosition(), pbr.metallic);
             const int uvMode = selectMaterialUvMode(
                 submeshMaterialName,
                 state.bodyUvMode,
                 state.hairUvMode,
                 state.faceUvMode);
             ubo.roughnessAo = TSVec4f(
-                roughness,
-                ao,
-                static_cast<float>(state.materialDebugMode),
+                pbr.roughness,
+                pbr.ao,
+                0.0f,
                 static_cast<float>(uvMode));
             ubo.uvTransform = TSVec4f(
                 state.uvScale[0], state.uvScale[1],
                 state.uvOffset[0], state.uvOffset[1]);
+            populateExtendedMaterialAndLights(ubo, material);
+            ubo.previousView = transpose(
+                state.taaHistoryValid ? state.previousView : viewMat);
+            const TSMat4f& previousObjectProjection = object.getFlipProjectionY()
+                ? state.previousFlippedProjection
+                : state.previousUnflippedProjection;
+            ubo.previousProj = transpose(
+                state.taaHistoryValid
+                    ? previousObjectProjection
+                    : (object.getFlipProjectionY() ? projMat : unflippedProjMat));
+            const auto previousModel = state.previousModelMatrices.find(&object);
+            ubo.previousModel = transpose(
+                state.taaHistoryValid && previousModel != state.previousModelMatrices.end()
+                    ? previousModel->second
+                    : currentModel);
+            ubo.taaParams = TSVec4f(0.0f);
             pass.uniformBuffers[descriptorIndex]->setData(&ubo, sizeof(ubo));
 
             std::vector<DescriptorWriteDesc> writes = {
                 {0, DescriptorResourceType::UniformBuffer, pass.uniformBuffers[descriptorIndex]}
             };
 
-            const auto material = submeshMaterial ? submeshMaterial : object.getMaterial();
             if (!state.loggedSubmeshMaterialBindings) {
                 LOG_INFO(
                     "SceneRenderer: pass '{}' submesh {} '{}' baseColor '{}'",
@@ -1961,7 +2537,26 @@ void SceneRenderer::renderFrame(Scene& scene) {
         };
 
     bool swapchainPassOpen = false;
+    uint32_t gpuTimestampCount = 0;
     for (auto& pass : state.passes) {
+        const std::string& passName = pass.logicalPass->getName();
+        const bool isHiZPass =
+            passName == "HiZHalf" ||
+            passName == "HiZQuarter" ||
+            passName == "HiZEighth" ||
+            passName == "HiZSixteenth";
+        // Hi-Z exists exclusively for SSR. Avoid four fullscreen draws and
+        // their attachment transitions while SSR is disabled. Enabling SSR
+        // rebuilds every level earlier in this same command list.
+        if (isHiZPass && !state.ssrEnabled) {
+            continue;
+        }
+        if (passName == "HBAO" && !state.ssaoEnabled) {
+            continue;
+        }
+        if (passName == "BloomLowRes" && !state.bloomEnabled) {
+            continue;
+        }
         if (frameIdx >= pass.rhiPasses.size() || !pass.rhiPasses[frameIdx]) {
             continue;
         }
@@ -1971,6 +2566,10 @@ void SceneRenderer::renderFrame(Scene& scene) {
         }
 
         const auto& passDesc = activeRhiPass->getDesc();
+        device.writeGpuTimestamp(cmdList, gpuTimestampCount++, true);
+        if (frameIdx < state.gpuTimingNamesPerFrame.size()) {
+            state.gpuTimingNamesPerFrame[frameIdx].push_back(passName);
+        }
         cmdList.setViewport(
             0.0f,
             0.0f,
@@ -2015,10 +2614,20 @@ void SceneRenderer::renderFrame(Scene& scene) {
             cmdList.beginRenderPass(*activeRhiPass);
         }
 
-        if (pass.gpuPipeline) {
+        std::shared_ptr<Pipeline> activeGpuPipeline = pass.gpuPipeline;
+        if (passName == "PostProcessing") {
+            const uint32_t permutation =
+                (state.ssrEnabled ? 1u : 0u) |
+                (state.bloomEnabled ? 2u : 0u) |
+                (state.outlineEnabled ? 4u : 0u);
+            if (pass.postProcessPipelines[permutation]) {
+                activeGpuPipeline = pass.postProcessPipelines[permutation];
+            }
+        }
+        if (activeGpuPipeline) {
             cmdList.bindPipeline(
-                pass.gpuPipeline->getNativePipeline(),
-                pass.gpuPipeline->getNativeLayout());
+                activeGpuPipeline->getNativePipeline(),
+                activeGpuPipeline->getNativeLayout());
 
             if (pass.logicalPass->getExecution() != PipelinePassExecution::Mesh &&
                 frameIdx < pass.descriptorSets.size()) {
@@ -2120,6 +2729,7 @@ void SceneRenderer::renderFrame(Scene& scene) {
                     ImageLayout::ShaderRead);
             }
         }
+        device.writeGpuTimestamp(cmdList, gpuTimestampCount++, false);
     }
 
     if (swapchainPassOpen) {
@@ -2129,8 +2739,20 @@ void SceneRenderer::renderFrame(Scene& scene) {
         }
     }
 
+    device.endGpuTimestampFrame(gpuTimestampCount);
     state.loggedSubmeshMaterialBindings = true;
     device.endFrame();
+
+    // Queue submission order guarantees that the preceding frame's color and
+    // depth attachments are complete before the next frame samples them.
+    // Publish the exact jittered matrices used for this submitted frame only
+    // after recording and submission have succeeded.
+    state.previousView = viewMat;
+    state.previousFlippedProjection = projMat;
+    state.previousUnflippedProjection = unflippedProjMat;
+    state.previousModelMatrices = std::move(currentModelMatrices);
+    state.taaHistoryValid = true;
+    ++state.taaFrameIndex;
 }
 
 } // namespace Tasrovy::RHI

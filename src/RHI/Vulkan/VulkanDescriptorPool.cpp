@@ -1,4 +1,5 @@
 #include "VulkanDescriptorPool.h"
+#include "../ResourceTracker.h"
 #include <stdexcept>
 
 // --- Builder Implementation ---
@@ -38,6 +39,9 @@ std::unique_ptr<VulkanDescriptorPool> VulkanDescriptorPool::Builder::build() con
 // --- VulkanDescriptorPool Implementation ---
 VulkanDescriptorPool::VulkanDescriptorPool(VulkanContext& context, VkDescriptorPool pool)
     : _context(context), _descriptorPool(pool) {
+    if (_descriptorPool != VK_NULL_HANDLE) {
+        Tasrovy::RHI::ResourceTracker::created(Tasrovy::RHI::TrackedResourceKind::DescriptorPool);
+    }
 }
 
 VulkanDescriptorPool::~VulkanDescriptorPool() {
@@ -47,6 +51,7 @@ VulkanDescriptorPool::~VulkanDescriptorPool() {
     _context.deferDelete([descriptorPool](VkDevice device) {
         if (descriptorPool != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+            Tasrovy::RHI::ResourceTracker::destroyed(Tasrovy::RHI::TrackedResourceKind::DescriptorPool);
         }
     });
 }

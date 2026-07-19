@@ -33,6 +33,7 @@ struct Bone {
 class Model {
 public:
     static std::unique_ptr<Model> GenCube();
+    static std::unique_ptr<Model> GenPlane();
     static std::unique_ptr<Model> GenSphere(uint32_t sectors = 32, uint32_t stacks = 16);
 
     Model() = default;

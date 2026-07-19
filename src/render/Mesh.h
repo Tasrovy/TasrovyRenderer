@@ -6,6 +6,7 @@
 #include <vector>
 #include <memory>
 #include <cstdint>
+#include <string>
 
 namespace Tasrovy::FS {
 class Model;
@@ -61,6 +62,8 @@ public:
 
     size_t getVertexCount() const;
     size_t getIndexCount() const;
+    void setSourcePath(std::string sourcePath);
+    const std::string& getSourcePath() const;
 
     void calculateTangents();
 
@@ -75,6 +78,7 @@ private:
     std::vector<MeshVertex> vertices_;
     std::vector<uint32_t> indices_;
     std::vector<Submesh> submeshes_;
+    std::string sourcePath_;
     std::vector<VkVertexInputBindingDescription> vertexBindingDesc_;
     std::vector<VkVertexInputAttributeDescription> vertexAttrDesc_;
 };

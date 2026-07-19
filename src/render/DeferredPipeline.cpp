@@ -102,8 +102,33 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     declareTexture({"GBufferNormal", PipelineTextureFormat::RGBA16Float});
     declareTexture({"GBufferMaterial", PipelineTextureFormat::RGBA8Unorm});
     declareTexture({"GBufferWorldPos", PipelineTextureFormat::RGBA16Float});
+    declareTexture({"GBufferEffects", PipelineTextureFormat::RGBA16Float});
     declareTexture({"SceneDepth", PipelineTextureFormat::Depth32Float});
+    declareTexture({
+        "HBAO", PipelineTextureFormat::RG16Float,
+        PipelineTextureExtent::RenderRelative, 0.5f, 0.5f
+    });
+    declareTexture({
+        "HiZHalf", PipelineTextureFormat::RG16Float,
+        PipelineTextureExtent::RenderRelative, 0.5f, 0.5f
+    });
+    declareTexture({
+        "HiZQuarter", PipelineTextureFormat::RG16Float,
+        PipelineTextureExtent::RenderRelative, 0.25f, 0.25f
+    });
+    declareTexture({
+        "HiZEighth", PipelineTextureFormat::RG16Float,
+        PipelineTextureExtent::RenderRelative, 0.125f, 0.125f
+    });
+    declareTexture({
+        "HiZSixteenth", PipelineTextureFormat::RG16Float,
+        PipelineTextureExtent::RenderRelative, 0.0625f, 0.0625f
+    });
     declareTexture({"SceneColor", PipelineTextureFormat::RGBA16Float});
+    declareTexture({
+        "BloomLowRes", PipelineTextureFormat::RGBA16Float,
+        PipelineTextureExtent::RenderRelative, 0.25f, 0.25f
+    });
     declareTexture({
         "FinalColor", PipelineTextureFormat::Swapchain,
         PipelineTextureExtent::RenderRelative, 1.0f, 1.0f, 0, 0, true
@@ -111,21 +136,45 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
 
     auto shadowPass = createDeferredPass(
         "Shadow", PipelinePassType::Shadow, PipelinePassExecution::Mesh,
-        CullMode::Front, true, true, DepthTestMode::Less, BlendMode::Off);
+        // Use the same winding convention as visible geometry. Shader-side
+        // slope/minimum bias handles self-shadowing without dropping thin meshes.
+        CullMode::Back, true, true, DepthTestMode::Less, BlendMode::Off);
     auto gBufferPass = createDeferredPass(
         "GBuffer", PipelinePassType::Geometry, PipelinePassExecution::Mesh,
-        CullMode::None, true, true, DepthTestMode::Less, BlendMode::Off);
+        CullMode::Back, true, true, DepthTestMode::Less, BlendMode::Off);
     auto lightingPass = createDeferredPass(
         "Lighting", PipelinePassType::Lighting, PipelinePassExecution::Fullscreen,
+        // Fullscreen triangles must not depend on model winding.
+        CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
+    auto hbaoPass = createDeferredPass(
+        "HBAO", PipelinePassType::PostProcess, PipelinePassExecution::Fullscreen,
+        CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
+    auto hiZInitPass = createDeferredPass(
+        "HiZHalf", PipelinePassType::PostProcess, PipelinePassExecution::Fullscreen,
+        CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
+    auto hiZQuarterPass = createDeferredPass(
+        "HiZQuarter", PipelinePassType::PostProcess, PipelinePassExecution::Fullscreen,
+        CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
+    auto hiZEighthPass = createDeferredPass(
+        "HiZEighth", PipelinePassType::PostProcess, PipelinePassExecution::Fullscreen,
+        CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
+    auto hiZSixteenthPass = createDeferredPass(
+        "HiZSixteenth", PipelinePassType::PostProcess, PipelinePassExecution::Fullscreen,
         CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
     auto skyboxPass = createDeferredPass(
         "Skybox", PipelinePassType::Skybox, PipelinePassExecution::Skybox,
+        // The skybox cube is viewed from inside; rendering both sides keeps
+        // this independent of the source cube's winding convention.
         CullMode::None, true, false, DepthTestMode::LessOrEqual, BlendMode::Off);
     auto transparentPass = createDeferredPass(
         "Transparent", PipelinePassType::Transparent, PipelinePassExecution::Mesh,
         CullMode::Back, true, false, DepthTestMode::Less, BlendMode::Alpha);
+    auto bloomPass = createDeferredPass(
+        "BloomLowRes", PipelinePassType::PostProcess, PipelinePassExecution::Fullscreen,
+        CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
     auto postProcessPass = createDeferredPass(
         "PostProcessing", PipelinePassType::PostProcess, PipelinePassExecution::Fullscreen,
+        // Fullscreen triangles must not depend on model winding.
         CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
 
     shadowPass->setDepthAttachment("ShadowMap");
@@ -134,14 +183,32 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     gBufferPass->addColorAttachment("GBufferNormal");
     gBufferPass->addColorAttachment("GBufferMaterial");
     gBufferPass->addColorAttachment("GBufferWorldPos");
+    gBufferPass->addColorAttachment("GBufferEffects");
     gBufferPass->setDepthAttachment("SceneDepth");
+
+    hbaoPass->addSampledTexture("sceneDepth", "SceneDepth", 1);
+    hbaoPass->addSampledTexture("gBufferWorldPos", "GBufferWorldPos", 2);
+    hbaoPass->addSampledTexture("gBufferNormal", "GBufferNormal", 3);
+    hbaoPass->addColorAttachment("HBAO");
+
+    hiZInitPass->addSampledTexture("sceneDepth", "SceneDepth", 1);
+    hiZInitPass->addSampledTexture("gBufferWorldPos", "GBufferWorldPos", 2);
+    hiZInitPass->addColorAttachment("HiZHalf");
+    hiZQuarterPass->addSampledTexture("hiZInput", "HiZHalf", 1);
+    hiZQuarterPass->addColorAttachment("HiZQuarter");
+    hiZEighthPass->addSampledTexture("hiZInput", "HiZQuarter", 1);
+    hiZEighthPass->addColorAttachment("HiZEighth");
+    hiZSixteenthPass->addSampledTexture("hiZInput", "HiZEighth", 1);
+    hiZSixteenthPass->addColorAttachment("HiZSixteenth");
 
     lightingPass->addSampledTexture("shadowMap", "ShadowMap", 1);
     lightingPass->addSampledTexture("gBufferAlbedo", "GBufferAlbedo", 2);
     lightingPass->addSampledTexture("gBufferNormal", "GBufferNormal", 3);
     lightingPass->addSampledTexture("gBufferMaterial", "GBufferMaterial", 4);
+    lightingPass->addSampledTexture("gBufferEffects", "GBufferEffects", 5);
     lightingPass->addSampledTexture("gBufferWorldPos", "GBufferWorldPos", 6);
     lightingPass->addSampledTexture("sceneDepth", "SceneDepth", 7);
+    lightingPass->addSampledTexture("hbaoTexture", "HBAO", 11);
     lightingPass->addColorAttachment("SceneColor");
 
     skyboxPass->addColorAttachment("SceneColor", AttachmentLoad::Load);
@@ -153,7 +220,29 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     transparentPass->setDepthAttachment(
         "SceneDepth", AttachmentLoad::Load, AttachmentStore::Store, true);
 
+    bloomPass->addSampledTexture("sceneColor", "SceneColor", 1);
+    bloomPass->addColorAttachment("BloomLowRes");
+
+    // One uber postprocess shader performs SSR, bloom, outline, tone mapping
+    // and final composition in a single fullscreen draw. Hi-Z generation stays
+    // separate because each level depends on the minimum depth of the prior one.
     postProcessPass->addSampledTexture("sceneColor", "SceneColor", 1);
+    postProcessPass->addSampledTexture("gBufferNormal", "GBufferNormal", 2);
+    postProcessPass->addSampledTexture("gBufferWorldPos", "GBufferWorldPos", 3);
+    postProcessPass->addSampledTexture("sceneDepth", "SceneDepth", 4);
+    postProcessPass->addSampledTexture("gBufferMaterial", "GBufferMaterial", 5);
+    postProcessPass->addSampledTexture("hiZHalf", "HiZHalf", 6);
+    postProcessPass->addSampledTexture("hiZQuarter", "HiZQuarter", 7);
+    postProcessPass->addSampledTexture("hiZEighth", "HiZEighth", 8);
+    postProcessPass->addSampledTexture("hiZSixteenth", "HiZSixteenth", 9);
+    // The renderer binds these two slots to the immediately preceding
+    // frame-in-flight resources rather than the current frame's attachments.
+    postProcessPass->addSampledTexture("taaHistoryColor", "SceneColor", 10);
+    postProcessPass->addSampledTexture("taaHistoryDepth", "SceneDepth", 11);
+    // Opaque albedo/normal alpha channels carry the two signed velocity
+    // components, so TAA needs no sixth MRT or extra geometry pass.
+    postProcessPass->addSampledTexture("gBufferAlbedo", "GBufferAlbedo", 12);
+    postProcessPass->addSampledTexture("bloomLowRes", "BloomLowRes", 13);
     postProcessPass->addColorAttachment("FinalColor");
 
     shadowPass->addMaterialTexture({
@@ -169,20 +258,38 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     shadowPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_shadow_frag.spv", ShaderType::Fragment));
     gBufferPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_gbuffer_vert.spv", ShaderType::Vertex));
     gBufferPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_gbuffer_frag.spv", ShaderType::Fragment));
+    hbaoPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_hbao_vert.spv", ShaderType::Vertex));
+    hbaoPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_hbao_frag.spv", ShaderType::Fragment));
+    hiZInitPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_init_vert.spv", ShaderType::Vertex));
+    hiZInitPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_init_frag.spv", ShaderType::Fragment));
+    hiZQuarterPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_reduce_vert.spv", ShaderType::Vertex));
+    hiZQuarterPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_reduce_frag.spv", ShaderType::Fragment));
+    hiZEighthPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_reduce_vert.spv", ShaderType::Vertex));
+    hiZEighthPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_reduce_frag.spv", ShaderType::Fragment));
+    hiZSixteenthPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_reduce_vert.spv", ShaderType::Vertex));
+    hiZSixteenthPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_reduce_frag.spv", ShaderType::Fragment));
     lightingPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_lighting_vert.spv", ShaderType::Vertex));
     lightingPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_lighting_frag.spv", ShaderType::Fragment));
     skyboxPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\skyvert.spv", ShaderType::Vertex));
     skyboxPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\skyfrag.spv", ShaderType::Fragment));
     transparentPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_transparent_vert.spv", ShaderType::Vertex));
     transparentPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_transparent_frag.spv", ShaderType::Fragment));
+    bloomPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_bloom_lowres_vert.spv", ShaderType::Vertex));
+    bloomPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_bloom_lowres_frag.spv", ShaderType::Fragment));
     postProcessPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_postprocess_vert.spv", ShaderType::Vertex));
     postProcessPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_postprocess_frag.spv", ShaderType::Fragment));
 
     addPass(shadowPass);
     addPass(gBufferPass);
+    addPass(hbaoPass);
+    addPass(hiZInitPass);
+    addPass(hiZQuarterPass);
+    addPass(hiZEighthPass);
+    addPass(hiZSixteenthPass);
     addPass(lightingPass);
     addPass(skyboxPass);
     addPass(transparentPass);
+    addPass(bloomPass);
     addPass(postProcessPass);
 
     if (!scene) {

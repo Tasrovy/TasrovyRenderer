@@ -3,6 +3,9 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <atomic>
+#include <cstdint>
+#include <mutex>
 
 struct GLFWwindow;
 
@@ -12,6 +15,12 @@ struct WindowInfo {
     int width;
     int height;
     std::string title;
+};
+
+struct FramebufferState {
+    int width = 0;
+    int height = 0;
+    uint64_t resizeGeneration = 0;
 };
 
 class Window {
@@ -28,11 +37,9 @@ public:
     void pollEvents();
     void waitEvents();
 
-    int getWidth() const { return _width; }
-    int getHeight() const { return _height; }
-
-    bool wasResized() const { return _framebufferResized; }
-    void resetResizedFlag() { _framebufferResized = false; }
+    int getWidth() const;
+    int getHeight() const;
+    FramebufferState getFramebufferState() const;
 
     const WindowInfo& getInfo() const { return _info; }
 
@@ -45,9 +52,10 @@ private:
 
     GLFWwindow* _window = nullptr;
     WindowInfo _info;
+    mutable std::mutex _framebufferMutex;
     int _width = 0;
     int _height = 0;
-    bool _framebufferResized = false;
+    std::atomic<uint64_t> _resizeGeneration{0};
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height);
 };

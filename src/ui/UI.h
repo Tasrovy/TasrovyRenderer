@@ -30,7 +30,7 @@ public:
     using DrawCallback = std::function<void()>;
     void setDrawCallback(DrawCallback cb) { _drawCallback = std::move(cb); }
 
-    bool beginFrame();
+    bool beginFrame(uint32_t framebufferWidth, uint32_t framebufferHeight);
     void endFrame(VkCommandBuffer cmd, VkImageView colorView, VkExtent2D extent);
     void renderDrawData(VkCommandBuffer cmd);
 

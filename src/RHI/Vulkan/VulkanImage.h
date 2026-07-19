@@ -105,6 +105,7 @@ private:
     VulkanContext* _context; // 指针，因为 Image 可能被移动
     VkImage _image = VK_NULL_HANDLE;
     VkDeviceMemory _memory = VK_NULL_HANDLE;
+    VkDeviceSize _allocationSize = 0;
     VkImageView _view = VK_NULL_HANDLE;
     VkSampler _sampler = VK_NULL_HANDLE;
 

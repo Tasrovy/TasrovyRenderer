@@ -1,10 +1,15 @@
 #include "VulkanPipeline.h"
+#include "../ResourceTracker.h"
 #include <stdexcept>
 #include <vulkan/vulkan.h>
 
 // --- VulkanPipeline implementation (无变化) ---
 VulkanPipeline::VulkanPipeline(VulkanContext& context, VkPipeline pipeline, VkPipelineLayout layout)
-    : _context(context), _pipeline(pipeline), _layout(layout) {}
+    : _context(context), _pipeline(pipeline), _layout(layout) {
+    if (_pipeline != VK_NULL_HANDLE) {
+        Tasrovy::RHI::ResourceTracker::created(Tasrovy::RHI::TrackedResourceKind::Pipeline);
+    }
+}
 
 VulkanPipeline::~VulkanPipeline() {
     VkPipeline pipeline = _pipeline;
@@ -15,6 +20,9 @@ VulkanPipeline::~VulkanPipeline() {
     _context.deferDelete([pipeline, layout](VkDevice device) {
         if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, pipeline, nullptr);
         if (layout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, layout, nullptr);
+        if (pipeline != VK_NULL_HANDLE) {
+            Tasrovy::RHI::ResourceTracker::destroyed(Tasrovy::RHI::TrackedResourceKind::Pipeline);
+        }
     });
 }
 

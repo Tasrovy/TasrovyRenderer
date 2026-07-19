@@ -8,6 +8,8 @@ add_library(TasrovyRender STATIC
         MaterialTexture.h
         Object.cpp
         Object.h
+        Primitive.cpp
+        Primitive.h
         Camera.cpp
         Camera.h
         Shader.cpp

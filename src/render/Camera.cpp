@@ -63,6 +63,8 @@ TSVec3f Camera::getRotationEuler() const { return transform_.getRotationEuler();
 TSQuatf Camera::getRotationQuat() const { return transform_.getRotationQuat(); }
 float Camera::getFOV() const { return fov_; }
 float Camera::getAspect() const { return aspect_; }
+float Camera::getNearPlane() const { return nearPlane_; }
+float Camera::getFarPlane() const { return farPlane_; }
 
 TSMat4f Camera::getProjectionMatrix() const {
     return perspective(radians(fov_), aspect_, nearPlane_, farPlane_);

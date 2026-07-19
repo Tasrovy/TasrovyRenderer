@@ -25,9 +25,16 @@ public:
     // 结束一帧的渲染并提交
     void endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, VulkanQueue& presentQueue);
     void waitIdle();
+	void onSwapchainRecreated(uint32_t imageCount);
+	bool isSwapchainRebuildRequired() const { return _swapchainRebuildRequired; }
+	void clearSwapchainRebuildRequest() { _swapchainRebuildRequired = false; }
 	uint32_t getMaxFramesInFlight() const { return _maxFramesInFlight; }
     uint32_t getCurrentFrame() const { return _currentFrame; }
 	uint32_t getImageIndex() const { return _imageIndex; }
+    std::vector<double> consumeGpuTimestampDurations();
+    void beginGpuTimestampFrame(VkCommandBuffer commandBuffer, uint32_t queryCount);
+    void writeGpuTimestamp(VkCommandBuffer commandBuffer, uint32_t queryIndex, bool begin);
+    void endGpuTimestampFrame(uint32_t queryCount);
     void draw(VulkanSwapchain& swapchain, std::unique_ptr<VulkanPipeline>& graphicsPipeline, 
         VulkanBuffer& indexBuffer, VulkanBuffer& vertexBuffer, 
         std::vector<VkDescriptorSet> descriptorSets, uint32_t size, 
@@ -46,4 +53,9 @@ private:
     std::vector<VkSemaphore> _renderFinishedSemaphores;
     std::vector<VkFence> _inFlightFences;
     std::vector<uint64_t> _frameSubmissionSerials;
+    std::vector<VkQueryPool> _timestampQueryPools;
+    std::vector<uint32_t> _timestampQueryCounts;
+    float _timestampPeriodNanoseconds = 0.0f;
+    static constexpr uint32_t MaxTimestampQueries = 256;
+    bool _swapchainRebuildRequired = false;
 };

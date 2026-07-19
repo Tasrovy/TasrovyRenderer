@@ -44,7 +44,10 @@ constexpr uint32_t CullBack = 0x00000002;
 constexpr uint32_t FrontFaceClockwise = 0;
 constexpr uint32_t FrontFaceCounterClockwise = 1;
 constexpr uint32_t CompareLess = 1;
+constexpr uint32_t CompareEqual = 2;
 constexpr uint32_t CompareLessOrEqual = 3;
+constexpr uint32_t CompareGreater = 4;
+constexpr uint32_t CompareNotEqual = 5;
 
 struct BufferDesc {
     uint64_t size = 0;
@@ -178,14 +181,19 @@ public:
 
     // --- Frame lifecycle ---
     void waitIdle();
-    void handleResize(Tasrovy::Windowing::Window& window);
-    void checkSwapchain();
+    bool recreateSwapchain(uint32_t width, uint32_t height);
+    bool isSwapchainRebuildRequired() const;
     uint32_t getCurrentFrameIndex() const;
     uint32_t getSwapchainWidth() const;
     uint32_t getSwapchainHeight() const;
     uint32_t getSwapchainColorFormat() const;
     uint32_t getDepthFormat() const;
+    size_t getDeferredDeletionCount() const;
     bool beginFrame(CommandList& commandList);
+    std::vector<double> consumeGpuTimestampDurations();
+    void beginGpuTimestampFrame(CommandList& commandList, uint32_t queryCount);
+    void writeGpuTimestamp(CommandList& commandList, uint32_t queryIndex, bool begin);
+    void endGpuTimestampFrame(uint32_t queryCount);
     void beginFrameRenderPass(CommandList& commandList);
     void endFrameRenderPass(CommandList& commandList);
     void endFrame();

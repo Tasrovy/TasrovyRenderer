@@ -69,6 +69,8 @@ std::shared_ptr<Material> Mesh::getSubmeshMaterial(size_t submeshIndex) const {
 
 size_t Mesh::getVertexCount() const { return vertices_.size(); }
 size_t Mesh::getIndexCount() const { return indices_.size(); }
+void Mesh::setSourcePath(std::string sourcePath) { sourcePath_ = std::move(sourcePath); }
+const std::string& Mesh::getSourcePath() const { return sourcePath_; }
 
 void Mesh::calculateTangents() {
     for (size_t i = 0; i < indices_.size(); i += 3) {

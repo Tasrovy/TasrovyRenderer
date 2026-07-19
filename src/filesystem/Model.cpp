@@ -64,6 +64,25 @@ std::unique_ptr<Model> Model::GenCube() {
     return model;
 }
 
+std::unique_ptr<Model> Model::GenPlane() {
+    auto model = std::make_unique<Model>();
+    const float h = 0.5f;
+    const TSVec3f normal(0.0f, 1.0f, 0.0f);
+    const TSVec3f tangent(1.0f, 0.0f, 0.0f);
+    const TSVec3f bitangent(0.0f, 0.0f, -1.0f);
+    const TSVec3f white(1.0f);
+    const TSVec2f zero(0.0f);
+
+    model->vertices = {
+        {TSVec3f(-h, 0.0f, -h), normal, tangent, white, TSVec2f(0.0f, 1.0f), zero, zero, zero, bitangent},
+        {TSVec3f(-h, 0.0f,  h), normal, tangent, white, TSVec2f(0.0f, 0.0f), zero, zero, zero, bitangent},
+        {TSVec3f( h, 0.0f,  h), normal, tangent, white, TSVec2f(1.0f, 0.0f), zero, zero, zero, bitangent},
+        {TSVec3f( h, 0.0f, -h), normal, tangent, white, TSVec2f(1.0f, 1.0f), zero, zero, zero, bitangent}
+    };
+    model->indices = {0, 1, 2, 0, 2, 3};
+    return model;
+}
+
 std::unique_ptr<Model> Model::GenSphere(uint32_t sectors, uint32_t stacks) {
     auto model = std::make_unique<Model>();
 

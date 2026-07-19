@@ -32,6 +32,9 @@ add_library(TasrovyRHI STATIC
         SceneGeometry.h
         SceneRenderer.cpp
         SceneRenderer.h
+        ResourceMonitor.cpp
+        ResourceMonitor.h
+        ResourceTracker.h
 )
 
 target_include_directories(TasrovyRHI PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -44,3 +47,7 @@ target_link_libraries(TasrovyRHI PUBLIC
             spirv-cross-core
             TasrovyLog
 )
+
+if (WIN32)
+    target_link_libraries(TasrovyRHI PRIVATE psapi)
+endif()

@@ -1,4 +1,5 @@
 #include "Light.h"
+#include <algorithm>
 namespace Tasrovy::Render {
 
 Light::~Light() = default;
@@ -66,6 +67,55 @@ void PointLight::setQuadratic(float q) { quadratic_ = q; }
 float PointLight::getConstant() const { return constant_; }
 float PointLight::getLinear() const { return linear_; }
 float PointLight::getQuadratic() const { return quadratic_; }
+
+// --- AreaLight ---
+
+std::unique_ptr<AreaLight> AreaLight::create(
+    TSVec3f position,
+    TSVec3f direction,
+    TSVec3f color,
+    float intensity,
+    float width,
+    float height,
+    bool twoSided,
+    const std::string& name) {
+    return std::unique_ptr<AreaLight>(new AreaLight(
+        name, position, direction, color, intensity, width, height, twoSided));
+}
+
+AreaLight::AreaLight(
+    const std::string& name,
+    TSVec3f position,
+    TSVec3f direction,
+    TSVec3f color,
+    float intensity,
+    float width,
+    float height,
+    bool twoSided)
+    : Light(name, direction, color, intensity)
+    , position_(position)
+    , width_(std::max(width, 0.001f))
+    , height_(std::max(height, 0.001f))
+    , twoSided_(twoSided) {
+}
+
+std::unique_ptr<Light> AreaLight::clone() const {
+    return AreaLight::create(
+        position_, direction_, color_, intensity_, width_, height_, twoSided_, name_);
+}
+
+void AreaLight::setPosition(TSVec3f position) { position_ = position; }
+TSVec3f AreaLight::getPosition() const { return position_; }
+void AreaLight::setWidth(float width) { width_ = std::max(width, 0.001f); }
+void AreaLight::setHeight(float height) { height_ = std::max(height, 0.001f); }
+void AreaLight::setSize(float width, float height) {
+    width_ = std::max(width, 0.001f);
+    height_ = std::max(height, 0.001f);
+}
+float AreaLight::getWidth() const { return width_; }
+float AreaLight::getHeight() const { return height_; }
+void AreaLight::setTwoSided(bool twoSided) { twoSided_ = twoSided; }
+bool AreaLight::isTwoSided() const { return twoSided_; }
 
 // --- SpotLight ---
 

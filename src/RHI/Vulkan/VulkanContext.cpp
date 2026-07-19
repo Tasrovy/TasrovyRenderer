@@ -6,7 +6,7 @@
 #include <fstream>
 #include <algorithm>
 #include <cmath>
-#include "VulkanSwapChain.h"
+#include "../ResourceTracker.h"
 #include <Logger.hpp>
 
 // 假设这些结构体在项目中的某个公共头文件中定义
@@ -77,6 +77,16 @@ VulkanContext::~VulkanContext() {
     if (_device != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(_device);
         flushDeferredDeletions();
+
+        const auto resourceSnapshot = Tasrovy::RHI::ResourceTracker::snapshot();
+        if (resourceSnapshot.totalLiveCount != 0 || resourceSnapshot.totalLiveBytes != 0) {
+            LOG_WARN(
+                "VulkanContext: {} tracked resources ({} bytes) still live at device shutdown",
+                resourceSnapshot.totalLiveCount,
+                resourceSnapshot.totalLiveBytes);
+        } else {
+            LOG_INFO("VulkanContext: all tracked resources released before device shutdown");
+        }
     }
 
     if (enableValidationLayers) {
@@ -431,6 +441,8 @@ VkShaderModule VulkanContext::createShaderModule(const std::vector<char>& code) 
 }
 
 void VulkanContext::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory) const {
+    buffer = VK_NULL_HANDLE;
+    bufferMemory = VK_NULL_HANDLE;
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size;
@@ -446,9 +458,17 @@ void VulkanContext::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, Vk
     allocInfo.allocationSize = memRequirements.size;
     allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
     if (vkAllocateMemory(_device, &allocInfo, nullptr, &bufferMemory) != VK_SUCCESS) {
+        vkDestroyBuffer(_device, buffer, nullptr);
+        buffer = VK_NULL_HANDLE;
         throw std::runtime_error("failed to allocate buffer memory!");
     }
-    vkBindBufferMemory(_device, buffer, bufferMemory, 0);
+    if (vkBindBufferMemory(_device, buffer, bufferMemory, 0) != VK_SUCCESS) {
+        vkFreeMemory(_device, bufferMemory, nullptr);
+        vkDestroyBuffer(_device, buffer, nullptr);
+        bufferMemory = VK_NULL_HANDLE;
+        buffer = VK_NULL_HANDLE;
+        throw std::runtime_error("failed to bind buffer memory!");
+    }
 }
 
 void VulkanContext::createImage(
@@ -460,6 +480,9 @@ void VulkanContext::createImage(
     VkImageCreateFlags flags,
     uint32_t arrayLayers
 ) const {
+
+    image = VK_NULL_HANDLE;
+    imageMemory = VK_NULL_HANDLE;
 
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -488,10 +511,18 @@ void VulkanContext::createImage(
     allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
 
     if (vkAllocateMemory(_device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
+        vkDestroyImage(_device, image, nullptr);
+        image = VK_NULL_HANDLE;
         throw std::runtime_error("failed to allocate image memory!");
     }
 
-    vkBindImageMemory(_device, image, imageMemory, 0);
+    if (vkBindImageMemory(_device, image, imageMemory, 0) != VK_SUCCESS) {
+        vkFreeMemory(_device, imageMemory, nullptr);
+        vkDestroyImage(_device, image, nullptr);
+        imageMemory = VK_NULL_HANDLE;
+        image = VK_NULL_HANDLE;
+        throw std::runtime_error("failed to bind image memory!");
+    }
 }
 
 VkImageView VulkanContext::createImageView(
@@ -649,16 +680,4 @@ VKAPI_ATTR VkBool32 VKAPI_CALL VulkanContext::debugCallback(
     void* pUserData) {
     LOG_INFO("validation layer: {}", pCallbackData->pMessage);
     return VK_FALSE;
-}
-
-void VulkanContext::CheckFormatChange(VulkanSwapchain& swapchain) {
-    if (framebufferResized) {
-        vkDeviceWaitIdle(getDevice());
-
-        swapchain.recreate();
-
-        framebufferResized = false;
-
-        LOG_INFO("Swapchain recreated.");
-    }
 }

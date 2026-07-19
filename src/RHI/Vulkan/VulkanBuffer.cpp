@@ -1,4 +1,5 @@
 #include "VulkanBuffer.h"
+#include "../ResourceTracker.h"
 #include <stdexcept>
 VulkanBuffer::VulkanBuffer(VulkanContext& context, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties){
     this->_size = size;
@@ -18,15 +19,33 @@ VulkanBuffer::VulkanBuffer(VulkanContext& context, VkDeviceSize size, VkBufferUs
     }
     VkMemoryRequirements memRequirements;
     vkGetBufferMemoryRequirements(_context->getDevice(), _buffer, &memRequirements);
+    _allocationSize = memRequirements.size;
     VkMemoryAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memRequirements.size;
     allocInfo.memoryTypeIndex = _context->findMemoryType(memRequirements.memoryTypeBits, _properties);
     if (vkAllocateMemory(_context->getDevice(), &allocInfo, nullptr, &_memory) != VK_SUCCESS) {
+        vkDestroyBuffer(_context->getDevice(), _buffer, nullptr);
+        _buffer = VK_NULL_HANDLE;
         throw std::runtime_error("failed to allocate buffer memory!");
     }
-    vkBindBufferMemory(_context->getDevice(), _buffer, _memory, 0);
-    if(needmap) vkMapMemory(_context->getDevice(), _memory, 0, size, 0, &_mappedMemory);
+    if (vkBindBufferMemory(_context->getDevice(), _buffer, _memory, 0) != VK_SUCCESS) {
+        vkFreeMemory(_context->getDevice(), _memory, nullptr);
+        vkDestroyBuffer(_context->getDevice(), _buffer, nullptr);
+        _memory = VK_NULL_HANDLE;
+        _buffer = VK_NULL_HANDLE;
+        throw std::runtime_error("failed to bind buffer memory!");
+    }
+    if (needmap && vkMapMemory(_context->getDevice(), _memory, 0, size, 0, &_mappedMemory) != VK_SUCCESS) {
+        vkFreeMemory(_context->getDevice(), _memory, nullptr);
+        vkDestroyBuffer(_context->getDevice(), _buffer, nullptr);
+        _memory = VK_NULL_HANDLE;
+        _buffer = VK_NULL_HANDLE;
+        throw std::runtime_error("failed to map buffer memory!");
+    }
+    Tasrovy::RHI::ResourceTracker::created(
+        Tasrovy::RHI::TrackedResourceKind::Buffer,
+        static_cast<uint64_t>(_allocationSize));
 }
 VulkanBuffer::~VulkanBuffer(){
     if (!_context) {
@@ -40,15 +59,22 @@ VulkanBuffer::~VulkanBuffer(){
 
     VkBuffer buffer = _buffer;
     VkDeviceMemory memory = _memory;
+    const VkDeviceSize allocationSize = _allocationSize;
     _buffer = VK_NULL_HANDLE;
     _memory = VK_NULL_HANDLE;
+    _allocationSize = 0;
 
-    _context->deferDelete([buffer, memory](VkDevice device) {
+    _context->deferDelete([buffer, memory, allocationSize](VkDevice device) {
         if (buffer != VK_NULL_HANDLE) {
             vkDestroyBuffer(device, buffer, nullptr);
         }
         if (memory != VK_NULL_HANDLE) {
             vkFreeMemory(device, memory, nullptr);
+        }
+        if (buffer != VK_NULL_HANDLE || memory != VK_NULL_HANDLE) {
+            Tasrovy::RHI::ResourceTracker::destroyed(
+                Tasrovy::RHI::TrackedResourceKind::Buffer,
+                static_cast<uint64_t>(allocationSize));
         }
     });
 }

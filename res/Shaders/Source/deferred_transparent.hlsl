@@ -8,6 +8,7 @@ cbuffer UBO : register(b0, space0)
     float4 camPosAndMetallic;
     float4 roughnessAo;
     float4 uvTransform;
+    float4 baseColorFactorAndTexture;
 };
 
 struct VSInput
@@ -76,7 +77,10 @@ VSOutput VSMain(VSInput input)
 float4 PSMain(VSOutput input) : SV_Target
 {
     float2 materialUv = ResolveMaterialUV(input.uv0);
-    float4 baseColor = baseColorTexture.Sample(baseColorSampler, materialUv);
+    float4 sampledBaseColor = baseColorTexture.Sample(baseColorSampler, materialUv);
+    float4 baseColor = baseColorFactorAndTexture.w > 0.5f
+        ? sampledBaseColor * float4(baseColorFactorAndTexture.rgb, 1.0f)
+        : float4(baseColorFactorAndTexture.rgb, 1.0f);
     float3 emissive = emissiveTexture.Sample(emissiveSampler, materialUv).rgb;
     float3 normal = normalize(input.normal);
 

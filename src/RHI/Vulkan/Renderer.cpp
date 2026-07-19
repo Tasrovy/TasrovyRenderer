@@ -1,6 +1,7 @@
 #include "Renderer.h"
 #include "VulkanContext.h"
 #include <Logger.hpp>
+#include <algorithm>
 #include <stdexcept>
 
 namespace {
@@ -62,6 +63,29 @@ Renderer::Renderer(VulkanContext& context, uint32_t maxFramesInFlight)
     _renderFinishedSemaphores.resize(_swapchainImageCount);
     _inFlightFences.resize(_maxFramesInFlight);
     _frameSubmissionSerials.resize(_maxFramesInFlight, 0);
+    _timestampQueryPools.resize(_maxFramesInFlight, VK_NULL_HANDLE);
+    _timestampQueryCounts.resize(_maxFramesInFlight, 0);
+    VkPhysicalDeviceProperties physicalDeviceProperties{};
+    vkGetPhysicalDeviceProperties(_context.getPhysicalDevice(), &physicalDeviceProperties);
+    _timestampPeriodNanoseconds = physicalDeviceProperties.limits.timestampPeriod;
+    VkQueryPoolCreateInfo timestampPoolInfo{};
+    timestampPoolInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    timestampPoolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    timestampPoolInfo.queryCount = MaxTimestampQueries;
+    for (auto& queryPool : _timestampQueryPools) {
+        if (vkCreateQueryPool(
+                _context.getDevice(), &timestampPoolInfo, nullptr, &queryPool) != VK_SUCCESS) {
+            LOG_WARN("Renderer: GPU timestamp queries are unavailable");
+            for (auto createdPool : _timestampQueryPools) {
+                if (createdPool != VK_NULL_HANDLE) {
+                    vkDestroyQueryPool(_context.getDevice(), createdPool, nullptr);
+                }
+            }
+            _timestampQueryPools.clear();
+            _timestampQueryCounts.clear();
+            break;
+        }
+    }
     VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, VK_FENCE_CREATE_SIGNALED_BIT};
     for (uint32_t i = 0; i < _maxFramesInFlight; ++i) {
@@ -76,6 +100,11 @@ Renderer::Renderer(VulkanContext& context, uint32_t maxFramesInFlight)
 }
 
 Renderer::~Renderer() {
+    for (auto queryPool : _timestampQueryPools) {
+        if (queryPool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(_context.getDevice(), queryPool, nullptr);
+        }
+    }
     for (uint32_t i = 0; i < _maxFramesInFlight; ++i) {
         vkDestroySemaphore(_context.getDevice(), _imageAvailableSemaphores[i], nullptr);
     }
@@ -105,9 +134,13 @@ VkCommandBuffer Renderer::beginFrame(VulkanSwapchain& swapchain) {
     result = swapchain.acquireNextImage(_imageAvailableSemaphores[_currentFrame], &_imageIndex);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        _swapchainRebuildRequired = true;
         return nullptr;
     } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
         throw std::runtime_error("failed to acquire swap chain image!");
+    }
+    if (result == VK_SUBOPTIMAL_KHR) {
+        _swapchainRebuildRequired = true;
     }
 
     result = vkResetFences(_context.getDevice(), 1, &_inFlightFences[_currentFrame]);
@@ -177,6 +210,7 @@ void Renderer::endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, 
     }
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+        _swapchainRebuildRequired = true;
        // ... 通知上层进行重建 ...
     } else if (result != VK_SUCCESS) {
         LOG_ERROR("Renderer: vkQueuePresentKHR failed: {} ({})", vkResultName(result), static_cast<int>(result));
@@ -184,6 +218,110 @@ void Renderer::endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, 
     }
 
     _currentFrame = (_currentFrame + 1) % _maxFramesInFlight;
+}
+
+void Renderer::onSwapchainRecreated(uint32_t imageCount) {
+    if (imageCount == 0) {
+        throw std::runtime_error("swapchain contains no images");
+    }
+    if (imageCount != _swapchainImageCount) {
+        std::vector<VkSemaphore> newSemaphores(imageCount, VK_NULL_HANDLE);
+        VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        for (auto& semaphore : newSemaphores) {
+            const VkResult result =
+                vkCreateSemaphore(_context.getDevice(), &semaphoreInfo, nullptr, &semaphore);
+            if (result != VK_SUCCESS) {
+                for (auto createdSemaphore : newSemaphores) {
+                    if (createdSemaphore != VK_NULL_HANDLE) {
+                        vkDestroySemaphore(_context.getDevice(), createdSemaphore, nullptr);
+                    }
+                }
+                throw std::runtime_error("failed to recreate swapchain render semaphore");
+            }
+        }
+        for (auto semaphore : _renderFinishedSemaphores) {
+            vkDestroySemaphore(_context.getDevice(), semaphore, nullptr);
+        }
+        _renderFinishedSemaphores = std::move(newSemaphores);
+        _swapchainImageCount = imageCount;
+    }
+    _imageIndex = 0;
+    _swapchainRebuildRequired = false;
+}
+
+std::vector<double> Renderer::consumeGpuTimestampDurations() {
+    std::vector<double> durations;
+    if (_timestampQueryPools.empty() ||
+        _currentFrame >= _timestampQueryPools.size() ||
+        _currentFrame >= _timestampQueryCounts.size()) {
+        return durations;
+    }
+
+    const uint32_t queryCount = _timestampQueryCounts[_currentFrame];
+    if (queryCount < 2 || (queryCount & 1u) != 0u) {
+        return durations;
+    }
+
+    std::vector<uint64_t> timestamps(queryCount, 0);
+    const VkResult result = vkGetQueryPoolResults(
+        _context.getDevice(),
+        _timestampQueryPools[_currentFrame],
+        0,
+        queryCount,
+        timestamps.size() * sizeof(uint64_t),
+        timestamps.data(),
+        sizeof(uint64_t),
+        VK_QUERY_RESULT_64_BIT);
+    if (result != VK_SUCCESS) {
+        return durations;
+    }
+
+    durations.reserve(queryCount / 2u);
+    constexpr double NanosecondsPerMillisecond = 1000000.0;
+    for (uint32_t query = 0; query + 1u < queryCount; query += 2u) {
+        const uint64_t elapsedTicks = timestamps[query + 1u] - timestamps[query];
+        durations.push_back(
+            static_cast<double>(elapsedTicks) *
+            static_cast<double>(_timestampPeriodNanoseconds) /
+            NanosecondsPerMillisecond);
+    }
+    return durations;
+}
+
+void Renderer::beginGpuTimestampFrame(
+    VkCommandBuffer commandBuffer,
+    uint32_t queryCount) {
+    if (_timestampQueryPools.empty() || _currentFrame >= _timestampQueryPools.size()) {
+        return;
+    }
+    const uint32_t resetCount = std::min(queryCount, MaxTimestampQueries);
+    if (resetCount > 0) {
+        vkCmdResetQueryPool(
+            commandBuffer, _timestampQueryPools[_currentFrame], 0, resetCount);
+    }
+}
+
+void Renderer::writeGpuTimestamp(
+    VkCommandBuffer commandBuffer,
+    uint32_t queryIndex,
+    bool begin) {
+    if (_timestampQueryPools.empty() ||
+        _currentFrame >= _timestampQueryPools.size() ||
+        queryIndex >= MaxTimestampQueries) {
+        return;
+    }
+    vkCmdWriteTimestamp(
+        commandBuffer,
+        begin ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        _timestampQueryPools[_currentFrame],
+        queryIndex);
+}
+
+void Renderer::endGpuTimestampFrame(uint32_t queryCount) {
+    if (_timestampQueryCounts.empty() || _currentFrame >= _timestampQueryCounts.size()) {
+        return;
+    }
+    _timestampQueryCounts[_currentFrame] = std::min(queryCount, MaxTimestampQueries);
 }
 
 void Renderer::waitIdle() {

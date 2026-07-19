@@ -4,12 +4,17 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <utility>
 #include "Dependencies.h"
 #include <Logger.hpp>
 
 VulkanSwapchain::VulkanSwapchain(VulkanContext& context) 
     : _context(context){
     init();
+    createAttachments();
+}
+
+void VulkanSwapchain::createAttachments() {
     _colorAttachment = VulkanImage::createAttachment(_context, _extent, _imageFormat,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT, _context.getMsaaSamples());
     _depthAttachment = VulkanImage::createAttachment(_context, _extent, _context.findDepthFormat(),
@@ -20,7 +25,7 @@ VulkanSwapchain::~VulkanSwapchain() {
     cleanup();
 }
 
-void VulkanSwapchain::init() {
+void VulkanSwapchain::init(VkSwapchainKHR oldSwapchain) {
     SwapChainSupportDetails details = _context.querySwapChainSupport();
 
     VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(details.formats);
@@ -56,7 +61,7 @@ void VulkanSwapchain::init() {
     createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     createInfo.presentMode = presentMode;
     createInfo.clipped = VK_TRUE;
-    createInfo.oldSwapchain = VK_NULL_HANDLE;
+    createInfo.oldSwapchain = oldSwapchain;
 
     if (vkCreateSwapchainKHR(_context.getDevice(), &createInfo, nullptr, &_swapchain) != VK_SUCCESS) {
         throw std::runtime_error("failed to create swap chain!");
@@ -84,16 +89,48 @@ void VulkanSwapchain::cleanup() {
     for (auto imageView : _imageViews) {
         vkDestroyImageView(_context.getDevice(), imageView, nullptr);
     }
-    vkDestroySwapchainKHR(_context.getDevice(), _swapchain, nullptr);
+    _imageViews.clear();
+    if (_swapchain != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(_context.getDevice(), _swapchain, nullptr);
+        _swapchain = VK_NULL_HANDLE;
+    }
+    _images.clear();
+    _imageLayouts.clear();
     _colorAttachment.reset();
 	_depthAttachment.reset();
 }
 
-void VulkanSwapchain::recreate(VkExtent2D newExtent) {
-    vkDeviceWaitIdle(_context.getDevice());
-    cleanup();
-    _extent = newExtent;
-    init();
+void VulkanSwapchain::recreate() {
+    const VkSwapchainKHR oldSwapchain = _swapchain;
+    const VkFormat oldImageFormat = _imageFormat;
+    const VkExtent2D oldExtent = _extent;
+    auto oldImages = std::move(_images);
+    auto oldImageViews = std::move(_imageViews);
+    auto oldImageLayouts = std::move(_imageLayouts);
+    auto oldColorAttachment = std::move(_colorAttachment);
+    auto oldDepthAttachment = std::move(_depthAttachment);
+
+    _swapchain = VK_NULL_HANDLE;
+    try {
+        init(oldSwapchain);
+        createAttachments();
+    } catch (...) {
+        cleanup();
+        _swapchain = oldSwapchain;
+        _imageFormat = oldImageFormat;
+        _extent = oldExtent;
+        _images = std::move(oldImages);
+        _imageViews = std::move(oldImageViews);
+        _imageLayouts = std::move(oldImageLayouts);
+        _colorAttachment = std::move(oldColorAttachment);
+        _depthAttachment = std::move(oldDepthAttachment);
+        throw;
+    }
+
+    for (const auto imageView : oldImageViews) {
+        vkDestroyImageView(_context.getDevice(), imageView, nullptr);
+    }
+    vkDestroySwapchainKHR(_context.getDevice(), oldSwapchain, nullptr);
 }
 
 VkResult VulkanSwapchain::acquireNextImage(VkSemaphore imageAvailableSemaphore, uint32_t* imageIndex) {
@@ -166,13 +203,4 @@ void VulkanSwapchain::recordLayoutTransition(VkCommandBuffer cmd, uint32_t image
 
     // 更新内部状态，记录新的布局
     _imageLayouts[imageIndex] = newLayout;
-}
-
-void VulkanSwapchain::recreate() {
-	cleanup();
-	init();
-    _colorAttachment = VulkanImage::createAttachment(_context, _extent, _imageFormat,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT, _context.getMsaaSamples());
-    _depthAttachment = VulkanImage::createAttachment(_context, _extent, _context.findDepthFormat(),
-        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, _context.getMsaaSamples());
 }

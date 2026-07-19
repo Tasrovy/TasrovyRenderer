@@ -12,6 +12,7 @@
 #include "../ui/UI.h"
 #include "../window/Window.h"
 #include <algorithm>
+#include <stdexcept>
 #include <utility>
 
 #ifdef TASROVY_API_VULKAN
@@ -75,6 +76,7 @@ std::shared_ptr<Device> Device::createForWindow(Tasrovy::Windowing::Window& wind
     dev->impl_->ownedSubmitter = std::make_unique<ImmediateSubmitter>(*dev->impl_->context, *dev->impl_->graphicsQueue);
     dev->impl_->submitter = dev->impl_->ownedSubmitter.get();
     dev->impl_->swapchain = std::make_unique<VulkanSwapchain>(*dev->impl_->context);
+    dev->impl_->renderer->onSwapchainRecreated(dev->impl_->swapchain->getImageCount());
 #endif
     dev->impl_->reflectionBridge = std::make_shared<ReflectionBridge>();
     dev->impl_->reflectionBridge->start();
@@ -438,16 +440,55 @@ void Device::waitIdle() {
 #endif
 }
 
-void Device::handleResize(Tasrovy::Windowing::Window& window) {
+bool Device::recreateSwapchain(uint32_t width, uint32_t height) {
 #ifdef TASROVY_API_VULKAN
-    impl_->context->updateFramebufferSize(window.getWidth(), window.getHeight());
-    impl_->context->framebufferResized = true;
+    if (!impl_ || !impl_->context || !impl_->renderer || !impl_->swapchain ||
+        width == 0 || height == 0) {
+        return false;
+    }
+
+    // Frame fences cover all graphics command buffers. Presentation is not
+    // associated with those fences, so wait only for the queues involved in
+    // this swapchain instead of stalling every queue with vkDeviceWaitIdle.
+    impl_->renderer->waitIdle();
+    {
+        std::scoped_lock queueLock(impl_->context->getQueueMutex());
+        const VkQueue graphicsQueue = impl_->graphicsQueue->getQueue();
+        const VkQueue presentQueue = impl_->presentQueue->getQueue();
+        VkResult result = vkQueueWaitIdle(graphicsQueue);
+        if (result != VK_SUCCESS) {
+            throw std::runtime_error("failed to idle graphics queue for swapchain recreation");
+        }
+        if (presentQueue != graphicsQueue) {
+            result = vkQueueWaitIdle(presentQueue);
+            if (result != VK_SUCCESS) {
+                throw std::runtime_error("failed to idle present queue for swapchain recreation");
+            }
+        }
+    }
+
+    impl_->context->updateFramebufferSize(
+        static_cast<int>(width), static_cast<int>(height));
+    impl_->swapchain->recreate();
+    impl_->renderer->onSwapchainRecreated(impl_->swapchain->getImageCount());
+    LOG_INFO(
+        "Swapchain recreated at {}x{} with {} images",
+        impl_->swapchain->getExtent().width,
+        impl_->swapchain->getExtent().height,
+        impl_->swapchain->getImageCount());
+    return true;
+#else
+    (void)width;
+    (void)height;
+    return false;
 #endif
 }
 
-void Device::checkSwapchain() {
+bool Device::isSwapchainRebuildRequired() const {
 #ifdef TASROVY_API_VULKAN
-    impl_->context->CheckFormatChange(*impl_->swapchain);
+    return impl_ && impl_->renderer && impl_->renderer->isSwapchainRebuildRequired();
+#else
+    return false;
 #endif
 }
 
@@ -486,6 +527,14 @@ uint32_t Device::getSwapchainColorFormat() const {
 uint32_t Device::getDepthFormat() const {
 #ifdef TASROVY_API_VULKAN
     return static_cast<uint32_t>(impl_->context->findDepthFormat());
+#else
+    return 0;
+#endif
+}
+
+size_t Device::getDeferredDeletionCount() const {
+#ifdef TASROVY_API_VULKAN
+    return impl_ && impl_->context ? impl_->context->getDeferredDeletionCount() : 0;
 #else
     return 0;
 #endif
@@ -549,7 +598,40 @@ std::unique_ptr<Tasrovy::UI::UIOverlay> Device::createUIOverlay(Tasrovy::Windowi
 }
 
 bool Device::beginUIFrame(Tasrovy::UI::UIOverlay& ui) {
-    return ui.beginFrame();
+    return ui.beginFrame(getSwapchainWidth(), getSwapchainHeight());
+}
+
+std::vector<double> Device::consumeGpuTimestampDurations() {
+#ifdef TASROVY_API_VULKAN
+    return impl_->renderer->consumeGpuTimestampDurations();
+#else
+    return {};
+#endif
+}
+
+void Device::beginGpuTimestampFrame(CommandList& commandList, uint32_t queryCount) {
+#ifdef TASROVY_API_VULKAN
+    impl_->renderer->beginGpuTimestampFrame(
+        reinterpret_cast<VkCommandBuffer>(commandList.getNativeCommandBuffer()), queryCount);
+#endif
+}
+
+void Device::writeGpuTimestamp(
+    CommandList& commandList,
+    uint32_t queryIndex,
+    bool begin) {
+#ifdef TASROVY_API_VULKAN
+    impl_->renderer->writeGpuTimestamp(
+        reinterpret_cast<VkCommandBuffer>(commandList.getNativeCommandBuffer()),
+        queryIndex,
+        begin);
+#endif
+}
+
+void Device::endGpuTimestampFrame(uint32_t queryCount) {
+#ifdef TASROVY_API_VULKAN
+    impl_->renderer->endGpuTimestampFrame(queryCount);
+#endif
 }
 
 void Device::renderUI(Tasrovy::UI::UIOverlay& ui, CommandList& commandList) {
