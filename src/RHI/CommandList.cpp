@@ -4,6 +4,7 @@
 #include "Pass.h"
 #include "Descriptor.h"
 #include "RHIConfig.h"
+#include "RenderOverlay.h"
 #include <vector>
 
 #ifdef TASROVY_API_VULKAN
@@ -19,6 +20,7 @@ struct CommandList::Impl {
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer activeCmdBuffer = VK_NULL_HANDLE;
     VkPipelineLayout boundPipelineLayout = VK_NULL_HANDLE;
+    VkPipelineBindPoint boundPipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     bool isRecording = false;
 #endif
 };
@@ -100,6 +102,38 @@ uint64_t CommandList::getNativeCommandBuffer() const {
 namespace {
 
 #ifdef TASROVY_API_VULKAN
+void transitionNativeImage(
+    VkCommandBuffer commandBuffer,
+    VkImage image,
+    VkImageLayout oldLayout,
+    VkImageLayout newLayout,
+    VkImageAspectFlags aspect,
+    VkPipelineStageFlags srcStage,
+    VkPipelineStageFlags dstStage,
+    VkAccessFlags srcAccess,
+    VkAccessFlags dstAccess) {
+    if (image == VK_NULL_HANDLE) {
+        return;
+    }
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = aspect;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = srcAccess;
+    barrier.dstAccessMask = dstAccess;
+    vkCmdPipelineBarrier(
+        commandBuffer, srcStage, dstStage, 0,
+        0, nullptr, 0, nullptr, 1, &barrier);
+}
+
 VkAttachmentLoadOp toVkLoadOp(RHIAttachmentLoad load) {
     switch (load) {
     case RHIAttachmentLoad::Clear:
@@ -120,6 +154,66 @@ VkAttachmentStoreOp toVkStoreOp(RHIAttachmentStore store) {
         return VK_ATTACHMENT_STORE_OP_DONT_CARE;
     }
     return VK_ATTACHMENT_STORE_OP_STORE;
+}
+
+VkPipelineStageFlags toVkPipelineStages(PipelineStage stages) {
+    const auto bits = static_cast<uint32_t>(stages);
+    VkPipelineStageFlags result = 0;
+    const auto add = [&](PipelineStage stage, VkPipelineStageFlagBits vkStage) {
+        if ((bits & static_cast<uint32_t>(stage)) != 0) {
+            result |= vkStage;
+        }
+    };
+    add(PipelineStage::TopOfPipe, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+    add(PipelineStage::Host, VK_PIPELINE_STAGE_HOST_BIT);
+    add(PipelineStage::DrawIndirect, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
+    add(PipelineStage::VertexShader, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    add(PipelineStage::FragmentShader, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    add(PipelineStage::ComputeShader, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    add(PipelineStage::Transfer, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    add(
+        PipelineStage::ColorAttachmentOutput,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    if ((bits & static_cast<uint32_t>(PipelineStage::DepthStencilTests)) != 0) {
+        result |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    }
+    add(PipelineStage::BottomOfPipe, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    add(PipelineStage::AllCommands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    return result != 0 ? result : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+}
+
+VkAccessFlags toVkAccessFlags(ResourceAccess accesses) {
+    const auto bits = static_cast<uint32_t>(accesses);
+    VkAccessFlags result = 0;
+    const auto add = [&](ResourceAccess access, VkAccessFlagBits vkAccess) {
+        if ((bits & static_cast<uint32_t>(access)) != 0) {
+            result |= vkAccess;
+        }
+    };
+    add(ResourceAccess::HostWrite, VK_ACCESS_HOST_WRITE_BIT);
+    add(
+        ResourceAccess::IndirectCommandRead,
+        VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+    add(ResourceAccess::ShaderRead, VK_ACCESS_SHADER_READ_BIT);
+    add(ResourceAccess::ShaderWrite, VK_ACCESS_SHADER_WRITE_BIT);
+    add(ResourceAccess::TransferRead, VK_ACCESS_TRANSFER_READ_BIT);
+    add(ResourceAccess::TransferWrite, VK_ACCESS_TRANSFER_WRITE_BIT);
+    add(
+        ResourceAccess::ColorAttachmentRead,
+        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT);
+    add(
+        ResourceAccess::ColorAttachmentWrite,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+    add(
+        ResourceAccess::DepthStencilRead,
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
+    add(
+        ResourceAccess::DepthStencilWrite,
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+    add(ResourceAccess::MemoryRead, VK_ACCESS_MEMORY_READ_BIT);
+    add(ResourceAccess::MemoryWrite, VK_ACCESS_MEMORY_WRITE_BIT);
+    return result;
 }
 #endif
 
@@ -239,13 +333,155 @@ void CommandList::endRenderPass() {
 #endif
 }
 
+void CommandList::beginSwapchainRenderPass(const SwapchainRenderTarget& target) {
+#ifdef TASROVY_API_VULKAN
+    const auto cmd = impl_->activeCmdBuffer;
+    transitionNativeImage(
+        cmd,
+        reinterpret_cast<VkImage>(target.resolveImage),
+        target.resolveImageWasPresented
+            ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            : VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        target.resolveImageWasPresented
+            ? VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT
+            : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        target.resolveImageWasPresented ? VK_ACCESS_MEMORY_READ_BIT : 0,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+    transitionNativeImage(
+        cmd,
+        reinterpret_cast<VkImage>(target.colorImage),
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        0,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+    transitionNativeImage(
+        cmd,
+        reinterpret_cast<VkImage>(target.depthImage),
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        // VulkanContext currently selects D32_SFLOAT_S8_UINT for the
+        // swapchain depth attachment, so the layout transition must cover
+        // both aspects when separate depth/stencil layouts are unavailable.
+        VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        0,
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = reinterpret_cast<VkImageView>(target.colorView);
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    colorAttachment.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+    colorAttachment.resolveImageView = reinterpret_cast<VkImageView>(target.resolveView);
+    colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkRenderingAttachmentInfo depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = reinterpret_cast<VkImageView>(target.depthView);
+    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAttachment.clearValue.depthStencil = {1.0f, 0};
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea = {{0, 0}, {target.width, target.height}};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.pDepthAttachment = target.depthView != 0 ? &depthAttachment : nullptr;
+    vkCmdBeginRendering(cmd, &renderingInfo);
+#else
+    (void)target;
+#endif
+}
+
+void CommandList::endSwapchainRenderPass(const SwapchainRenderTarget& target) {
+#ifdef TASROVY_API_VULKAN
+    vkCmdEndRendering(impl_->activeCmdBuffer);
+    transitionNativeImage(
+        impl_->activeCmdBuffer,
+        reinterpret_cast<VkImage>(target.resolveImage),
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_ACCESS_MEMORY_READ_BIT);
+#else
+    (void)target;
+#endif
+}
+
+void CommandList::renderOverlay(
+    RenderOverlay& overlay,
+    const SwapchainRenderTarget& target) {
+#ifdef TASROVY_API_VULKAN
+    transitionNativeImage(
+        impl_->activeCmdBuffer,
+        reinterpret_cast<VkImage>(target.resolveImage),
+        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_MEMORY_READ_BIT,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = reinterpret_cast<VkImageView>(target.resolveView);
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea = {{0, 0}, {target.width, target.height}};
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    vkCmdBeginRendering(impl_->activeCmdBuffer, &renderingInfo);
+    overlay.recordDrawData(
+        reinterpret_cast<uint64_t>(impl_->activeCmdBuffer));
+    vkCmdEndRendering(impl_->activeCmdBuffer);
+    transitionNativeImage(
+        impl_->activeCmdBuffer,
+        reinterpret_cast<VkImage>(target.resolveImage),
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_ACCESS_MEMORY_READ_BIT);
+#else
+    (void)overlay;
+    (void)target;
+#endif
+}
+
 // --- Pipeline ---
 
 void CommandList::bindPipeline(uint64_t nativePipeline, uint64_t nativeLayout, uint32_t bindPoint) {
 #ifdef TASROVY_API_VULKAN
     impl_->boundPipelineLayout = reinterpret_cast<VkPipelineLayout>(nativeLayout);
+    impl_->boundPipelineBindPoint =
+        bindPoint == 0
+            ? VK_PIPELINE_BIND_POINT_GRAPHICS
+            : VK_PIPELINE_BIND_POINT_COMPUTE;
     vkCmdBindPipeline(impl_->activeCmdBuffer,
-        bindPoint == 0 ? VK_PIPELINE_BIND_POINT_GRAPHICS : VK_PIPELINE_BIND_POINT_COMPUTE,
+        impl_->boundPipelineBindPoint,
         reinterpret_cast<VkPipeline>(nativePipeline));
     if (bindPoint == 0) {
         vkCmdSetFrontFace(impl_->activeCmdBuffer, VK_FRONT_FACE_CLOCKWISE);
@@ -281,7 +517,7 @@ void CommandList::setPipelineLayout(uint64_t nativeLayout) {
 void CommandList::bindDescriptorSet(uint32_t setIndex, void* descriptorSet) {
 #ifdef TASROVY_API_VULKAN
     auto ds = static_cast<VkDescriptorSet>(descriptorSet);
-    vkCmdBindDescriptorSets(impl_->activeCmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+    vkCmdBindDescriptorSets(impl_->activeCmdBuffer, impl_->boundPipelineBindPoint,
         impl_->boundPipelineLayout, setIndex, 1, &ds, 0, nullptr);
 #endif
 }
@@ -303,6 +539,39 @@ void CommandList::setScissor(int32_t x, int32_t y, uint32_t width, uint32_t heig
 #ifdef TASROVY_API_VULKAN
     VkRect2D sc{ {x, y}, {width, height} };
     vkCmdSetScissor(impl_->activeCmdBuffer, 0, 1, &sc);
+#endif
+}
+
+void CommandList::setVirtualShadowPage(const VirtualShadowPageDesc& page) {
+#ifdef TASROVY_API_VULKAN
+    if (!impl_->isRecording || page.pageSize == 0) {
+        return;
+    }
+    const uint32_t x = page.pageX * page.pageSize;
+    const uint32_t y = page.pageY * page.pageSize;
+    if (x + page.pageSize > page.atlasWidth ||
+        y + page.pageSize > page.atlasHeight) {
+        return;
+    }
+
+    VkViewport viewport{};
+    viewport.x = static_cast<float>(x);
+    viewport.y = static_cast<float>(y);
+    viewport.width = static_cast<float>(page.pageSize);
+    viewport.height = static_cast<float>(page.pageSize);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(impl_->activeCmdBuffer, 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.offset = {
+        static_cast<int32_t>(x),
+        static_cast<int32_t>(y)
+    };
+    scissor.extent = {page.pageSize, page.pageSize};
+    vkCmdSetScissor(impl_->activeCmdBuffer, 0, 1, &scissor);
+#else
+    (void)page;
 #endif
 }
 
@@ -339,6 +608,27 @@ void CommandList::drawIndexed(
 #endif
 }
 
+void CommandList::drawIndexedIndirect(
+    Buffer& indirectBuffer,
+    uint64_t offset,
+    uint32_t drawCount,
+    uint32_t stride) {
+#ifdef TASROVY_API_VULKAN
+    vkCmdDrawIndexedIndirect(
+        impl_->activeCmdBuffer,
+        reinterpret_cast<VkBuffer>(indirectBuffer.getNativeHandle()),
+        static_cast<VkDeviceSize>(offset),
+        drawCount,
+        stride);
+#endif
+}
+
+void CommandList::dispatch(uint32_t x, uint32_t y, uint32_t z) {
+#ifdef TASROVY_API_VULKAN
+    vkCmdDispatch(impl_->activeCmdBuffer, x, y, z);
+#endif
+}
+
 // --- Copy ---
 
 void CommandList::copyBuffer(Buffer& src, Buffer& dst, uint64_t size) {
@@ -352,12 +642,44 @@ void CommandList::copyBuffer(Buffer& src, Buffer& dst, uint64_t size) {
 
 // --- Barrier ---
 
-void CommandList::pipelineBarrier(uint32_t srcStage, uint32_t dstStage) {
+void CommandList::pipelineBarrier(
+    PipelineStage srcStage,
+    PipelineStage dstStage) {
 #ifdef TASROVY_API_VULKAN
     vkCmdPipelineBarrier(impl_->activeCmdBuffer,
-        static_cast<VkPipelineStageFlags>(srcStage),
-        static_cast<VkPipelineStageFlags>(dstStage),
+        toVkPipelineStages(srcStage),
+        toVkPipelineStages(dstStage),
         0, 0, nullptr, 0, nullptr, 0, nullptr);
+#endif
+}
+
+void CommandList::bufferMemoryBarrier(
+    Buffer& buffer,
+    PipelineStage srcStage,
+    PipelineStage dstStage,
+    ResourceAccess srcAccess,
+    ResourceAccess dstAccess) {
+#ifdef TASROVY_API_VULKAN
+    VkBufferMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = toVkAccessFlags(srcAccess);
+    barrier.dstAccessMask = toVkAccessFlags(dstAccess);
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = reinterpret_cast<VkBuffer>(buffer.getNativeHandle());
+    barrier.offset = 0;
+    barrier.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(
+        impl_->activeCmdBuffer,
+        toVkPipelineStages(srcStage),
+        toVkPipelineStages(dstStage),
+        0,
+        0,
+        nullptr,
+        1,
+        &barrier,
+        0,
+        nullptr);
 #endif
 }
 
@@ -379,6 +701,8 @@ void CommandList::transitionImage(
             return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         case ImageLayout::ShaderRead:
             return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        case ImageLayout::General:
+            return VK_IMAGE_LAYOUT_GENERAL;
         case ImageLayout::Present:
             return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         }
@@ -389,11 +713,21 @@ void CommandList::transitionImage(
         if (aspectMask != 0) {
             return static_cast<VkImageAspectFlags>(aspectMask);
         }
-        if (oldLayout == ImageLayout::DepthAttachment ||
+        const auto format = static_cast<VkFormat>(image.getFormat());
+        const bool isDepth =
+            format == VK_FORMAT_D32_SFLOAT ||
+            format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+            format == VK_FORMAT_D24_UNORM_S8_UINT;
+        if (isDepth ||
+            oldLayout == ImageLayout::DepthAttachment ||
             oldLayout == ImageLayout::DepthReadOnly ||
             newLayout == ImageLayout::DepthAttachment ||
             newLayout == ImageLayout::DepthReadOnly) {
-            return VK_IMAGE_ASPECT_DEPTH_BIT;
+            const bool hasStencil =
+                format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+                format == VK_FORMAT_D24_UNORM_S8_UINT;
+            return VK_IMAGE_ASPECT_DEPTH_BIT |
+                (hasStencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0u);
         }
         return VK_IMAGE_ASPECT_COLOR_BIT;
     };
@@ -433,7 +767,16 @@ void CommandList::transitionImage(
                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT};
         case ImageLayout::ShaderRead:
-            return {VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT};
+            return {
+                VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_ACCESS_SHADER_READ_BIT};
+        case ImageLayout::General:
+            return {
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
         case ImageLayout::Present:
             return {VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_ACCESS_MEMORY_READ_BIT};
         }
@@ -459,6 +802,42 @@ void CommandList::transitionImage(
         0, nullptr,
         0, nullptr,
         1, &barrier);
+#endif
+}
+
+void CommandList::resetTimestampQueryPool(
+    uint64_t nativeQueryPool,
+    uint32_t queryCount) {
+#ifdef TASROVY_API_VULKAN
+    if (nativeQueryPool != 0 && queryCount > 0) {
+        vkCmdResetQueryPool(
+            impl_->activeCmdBuffer,
+            reinterpret_cast<VkQueryPool>(nativeQueryPool),
+            0,
+            queryCount);
+    }
+#else
+    (void)nativeQueryPool;
+    (void)queryCount;
+#endif
+}
+
+void CommandList::writeTimestamp(
+    uint64_t nativeQueryPool,
+    uint32_t queryIndex,
+    bool begin) {
+#ifdef TASROVY_API_VULKAN
+    if (nativeQueryPool != 0) {
+        vkCmdWriteTimestamp(
+            impl_->activeCmdBuffer,
+            begin ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            reinterpret_cast<VkQueryPool>(nativeQueryPool),
+            queryIndex);
+    }
+#else
+    (void)nativeQueryPool;
+    (void)queryIndex;
+    (void)begin;
 #endif
 }
 

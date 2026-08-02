@@ -27,7 +27,7 @@ cbuffer UBO : register(b0, space0)
     float4 advancedLightingParams;
     float4 pcssParams;
     float4 ssaoParams;
-    float4 ssdoParams;
+    float4 postEffectParams;
     float4 ssrParams;
     matrix previousView;
     matrix previousProj;
@@ -59,6 +59,7 @@ struct PSOutput
     float4 material : SV_Target2;
     float4 worldPos : SV_Target3;
     float4 effects : SV_Target4;
+    float2 velocity : SV_Target5;
 };
 
 [[vk::combinedImageSampler]] Texture2D baseColorTexture : register(t1, space0);
@@ -106,11 +107,13 @@ VSOutput VSMain(VSInput input)
 PSOutput PSMain(VSOutput input)
 {
     float2 materialUv = ResolveMaterialUV(input.uv0);
-    float4 sampledBaseColor = baseColorTexture.Sample(baseColorSampler, materialUv);
+    // taaParams.z carries a negative mip bias only for TAAU. At native
+    // resolution it is zero, preserving the regular hardware LOD choice.
+    float4 sampledBaseColor = baseColorTexture.SampleBias(
+        baseColorSampler, materialUv, taaParams.z);
     float4 baseColor = baseColorFactorAndTexture.w > 0.5f
         ? sampledBaseColor * float4(baseColorFactorAndTexture.rgb, 1.0f)
         : float4(baseColorFactorAndTexture.rgb, 1.0f);
-    uint debugMode = (uint)round(roughnessAo.z);
 
     float metallic = saturate(camPosAndMetallic.w);
     float roughness = saturate(roughnessAo.x);
@@ -133,16 +136,11 @@ PSOutput PSMain(VSOutput input)
     }
 
     PSOutput output;
-    if (debugMode == 2) {
-        output.albedo = float4(frac(input.uv0), 0.0f, velocity.x);
-    } else if (debugMode == 3) {
-        output.albedo = float4(frac(materialUv), 0.0f, velocity.x);
-    } else {
-        output.albedo = float4(baseColor.rgb, velocity.x);
-    }
-    output.normal = float4(N * 0.5f + 0.5f, velocity.y);
+    output.albedo = float4(baseColor.rgb, 1.0f);
+    output.normal = float4(N * 0.5f + 0.5f, 1.0f);
     output.material = float4(metallic, roughness, ao, shadingModelId);
     output.worldPos = float4(input.worldPos, max(materialRimParams.x, 0.25f));
     output.effects = materialRimColorAndStrength;
+    output.velocity = velocity;
     return output;
 }

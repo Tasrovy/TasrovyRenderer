@@ -66,6 +66,9 @@ VulkanContext::VulkanContext(const char* appName,
     : _appName(appName), _surfaceCreator(std::move(surfaceCreator)),
       _fbWidth(fbWidth), _fbHeight(fbHeight)
 {
+    if (volkInitialize() != VK_SUCCESS) {
+        throw std::runtime_error("Failed to initialize volk");
+    }
     createInstance(instanceExtensions);
     setupDebugMessenger();
     _surface = _surfaceCreator(_instance);
@@ -278,6 +281,8 @@ void VulkanContext::createLogicalDevice() {
 
     VkPhysicalDeviceFeatures deviceFeatures{};
     deviceFeatures.samplerAnisotropy = VK_TRUE;
+    deviceFeatures.multiDrawIndirect = VK_TRUE;
+    deviceFeatures.drawIndirectFirstInstance = VK_TRUE;
 
     VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
     dynamicRenderingFeatures.dynamicRendering = VK_TRUE;
@@ -320,7 +325,12 @@ bool VulkanContext::isDeviceSuitable(VkPhysicalDevice device) {
     }
     VkPhysicalDeviceFeatures supportedFeatures;
     vkGetPhysicalDeviceFeatures(device, &supportedFeatures);
-    return indices.isComplete() && extensionsSupported && swapChainAdequate && supportedFeatures.samplerAnisotropy;
+    return indices.isComplete() &&
+        extensionsSupported &&
+        swapChainAdequate &&
+        supportedFeatures.samplerAnisotropy &&
+        supportedFeatures.multiDrawIndirect &&
+        supportedFeatures.drawIndirectFirstInstance;
 }
 
 QueueFamilyIndices VulkanContext::findQueueFamilies(VkPhysicalDevice device) {

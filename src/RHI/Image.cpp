@@ -1,5 +1,6 @@
 #include "Image.h"
 #include "RHIConfig.h"
+#include <algorithm>
 
 #ifdef TASROVY_API_VULKAN
     #include "../RHI/Vulkan/VulkanImage.h"
@@ -17,12 +18,34 @@ struct Image::Impl {
 
 Image::~Image() = default;
 
-std::shared_ptr<Image> Image::CreateTextureFromNative(void* ctx, void* submitter, const std::string& path, bool generateMips, uint32_t format) {
+std::shared_ptr<Image> Image::CreateTextureFromNative(
+    void* ctx,
+    void* submitter,
+    const ImageUploadDesc& upload) {
 #ifdef TASROVY_API_VULKAN
     auto* context = static_cast<VulkanContext*>(ctx);
     auto* subm = static_cast<ImmediateSubmitter*>(submitter);
-    auto vkFormat = format == 0 ? VK_FORMAT_R8G8B8A8_SRGB : static_cast<VkFormat>(format);
-    auto vkImg = VulkanImage::createTexture(*context, *subm, path, generateMips, vkFormat);
+    const auto vkFormat = upload.format == 0
+        ? VK_FORMAT_R8G8B8A8_SRGB
+        : static_cast<VkFormat>(upload.format);
+    auto vkImg = upload.cubemap
+        ? VulkanImage::createCubemap(
+            *context,
+            *subm,
+            upload.pixels.data(),
+            upload.pixels.size() / std::max(upload.arrayLayers, 1u),
+            upload.width,
+            upload.height,
+            vkFormat)
+        : VulkanImage::createTexture(
+            *context,
+            *subm,
+            upload.pixels.data(),
+            upload.pixels.size(),
+            upload.width,
+            upload.height,
+            upload.generateMipmaps,
+            vkFormat);
     auto img = std::shared_ptr<Image>(new Image());
     img->impl_ = std::make_unique<Impl>();
     img->impl_->vkImage = std::move(vkImg);
@@ -32,11 +55,16 @@ std::shared_ptr<Image> Image::CreateTextureFromNative(void* ctx, void* submitter
 #endif
 }
 
-std::shared_ptr<Image> Image::CreateCubemapFromNative(void* ctx, void* submitter, const std::string& dirPath) {
+std::shared_ptr<Image> Image::CreateSolidTextureFromNative(
+    void* ctx,
+    void* submitter,
+    const std::array<float, 4>& color,
+    uint32_t format) {
 #ifdef TASROVY_API_VULKAN
     auto* context = static_cast<VulkanContext*>(ctx);
     auto* subm = static_cast<ImmediateSubmitter*>(submitter);
-    auto vkImg = VulkanImage::createCubemapFromFile(*context, *subm, dirPath);
+    auto vkImg = VulkanImage::createSolidTexture(
+        *context, *subm, color, static_cast<VkFormat>(format));
     auto img = std::shared_ptr<Image>(new Image());
     img->impl_ = std::make_unique<Impl>();
     img->impl_->vkImage = std::move(vkImg);
@@ -46,7 +74,13 @@ std::shared_ptr<Image> Image::CreateCubemapFromNative(void* ctx, void* submitter
 #endif
 }
 
-std::shared_ptr<Image> Image::CreateAttachmentFromNative(void* ctx, uint32_t w, uint32_t h, uint32_t format, uint32_t samples) {
+std::shared_ptr<Image> Image::CreateAttachmentFromNative(
+    void* ctx,
+    uint32_t w,
+    uint32_t h,
+    uint32_t format,
+    uint32_t samples,
+    bool storage) {
 #ifdef TASROVY_API_VULKAN
     auto* context = static_cast<VulkanContext*>(ctx);
     VkExtent2D extent = { w, h };
@@ -55,9 +89,12 @@ std::shared_ptr<Image> Image::CreateAttachmentFromNative(void* ctx, uint32_t w, 
         vkFormat == VK_FORMAT_D32_SFLOAT ||
         vkFormat == VK_FORMAT_D32_SFLOAT_S8_UINT ||
         vkFormat == VK_FORMAT_D24_UNORM_S8_UINT;
-    const auto usage = isDepth
+    auto usage = isDepth
         ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
         : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (storage && !isDepth) {
+        usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    }
     auto vkImg = VulkanImage::createAttachment(*context, extent,
         vkFormat, usage,
         static_cast<VkSampleCountFlagBits>(samples));
@@ -66,6 +103,29 @@ std::shared_ptr<Image> Image::CreateAttachmentFromNative(void* ctx, uint32_t w, 
     img->impl_->vkImage = std::move(vkImg);
     return img;
 #else
+    (void)storage;
+    return nullptr;
+#endif
+}
+
+std::shared_ptr<Image> Image::CreateVirtualShadowAtlasFromNative(
+    void* ctx,
+    uint32_t atlasSize,
+    uint32_t format) {
+#ifdef TASROVY_API_VULKAN
+    auto* context = static_cast<VulkanContext*>(ctx);
+    auto vkImg = VulkanImage::createVirtualShadowAtlas(
+        *context,
+        {atlasSize, atlasSize},
+        static_cast<VkFormat>(format));
+    auto img = std::shared_ptr<Image>(new Image());
+    img->impl_ = std::make_unique<Impl>();
+    img->impl_->vkImage = std::move(vkImg);
+    return img;
+#else
+    (void)ctx;
+    (void)atlasSize;
+    (void)format;
     return nullptr;
 #endif
 }

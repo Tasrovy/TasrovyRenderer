@@ -1,0 +1,9 @@
+{
+  "name": "CornellRightWall",
+  "properties": [
+    {"name": "baseColorFactor", "type": "float4", "value": [0.14, 0.45, 0.091, 1.0]},
+    {"name": "metallic", "type": "float", "value": 0.0},
+    {"name": "roughness", "type": "float", "value": 0.85},
+    {"name": "ao", "type": "float", "value": 1.0}
+  ]
+}

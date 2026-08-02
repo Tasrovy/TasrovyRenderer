@@ -46,10 +46,10 @@ VSOutput VSMain(VSInput input)
     );
     return output;
 }
-[[vk::combinedImageSampler]] Texture2D albedoMap : register(t1);
-[[vk::combinedImageSampler]] Texture2D normalMap : register(t2);
-[[vk::combinedImageSampler]] Texture2D emissiveMap : register(t3);
-[[vk::combinedImageSampler]] Texture2D mraMap : register(t4);
+[[vk::combinedImageSampler]] Texture2D baseColorTexture : register(t1);
+[[vk::combinedImageSampler]] Texture2D normalTexture : register(t2);
+[[vk::combinedImageSampler]] Texture2D emissiveTexture : register(t3);
+[[vk::combinedImageSampler]] Texture2D metallicRoughnessAOTexture : register(t4);
 
 [[vk::combinedImageSampler]] SamplerState pbrSampler : register(s1);
 [[vk::combinedImageSampler]] SamplerState pbrSampler1 : register(s2);
@@ -137,20 +137,20 @@ float4 PSMain(VSOutput input) : SV_TARGET
 {
     // --- 1. 获取表面基础属性 ---
     float2 materialUv = ResolveMaterialUV(input.texcoord);
-    float3 sampledAlbedo = albedoMap.Sample(pbrSampler, materialUv).rgb; // sRGB -> Linear
+    float3 sampledAlbedo = baseColorTexture.Sample(pbrSampler, materialUv).rgb; // sRGB -> Linear
     float3 albedo = baseColorFactorAndTexture.w > 0.5f
         ? sampledAlbedo * baseColorFactorAndTexture.rgb
         : baseColorFactorAndTexture.rgb;
     if ((uint)round(roughnessAo.z) == 1) {
         return float4(albedo, 1.0f);
     }
-    float4 mra = mraMap.Sample(pbrSampler3, materialUv);
+    float4 mra = metallicRoughnessAOTexture.Sample(pbrSampler3, materialUv);
     float metallic = saturate(mra.r * camPosAndMetallic.w);
     float roughness = saturate((1.0f - mra.a) * roughnessAo.x);
     float ao = saturate(mra.b * roughnessAo.y);
     
     // --- 2. 获取世界空间法线 (来自法线贴图) ---
-    float3 tangentNormal = normalMap.Sample(pbrSampler1, materialUv).xyz * 2.0 - 1.0;
+    float3 tangentNormal = normalTexture.Sample(pbrSampler1, materialUv).xyz * 2.0 - 1.0;
     float3 N = normalize(mul(tangentNormal, input.TBN));
 
     // --- 3. 准备通用向量 ---
@@ -187,7 +187,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
     float3 diffuse_direct = kD_direct * albedo / PI;
 
     // 直接光照贡献
-    float3 Lo_direct = (diffuse_direct + (specular_direct * mraMap.Sample(pbrSampler3, materialUv).g)) * radiance;
+    float3 Lo_direct = (diffuse_direct + (specular_direct * metallicRoughnessAOTexture.Sample(pbrSampler3, materialUv).g)) * radiance;
 
     // =================================================================
     //  间接光照 (Indirect Lighting - IBL)
@@ -197,7 +197,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
     const float MAX_REFLECTION_LOD = 7.0;
     float3 prefilteredColor = prefilteredMap.SampleLevel(iblSampler2, R, roughness * MAX_REFLECTION_LOD).rgb;
     float2 brdf = brdfLUT.Sample(iblSampler3, float2(NdotV, roughness)).rg;
-    float3 specular_IBL = prefilteredColor * (F * brdf.x + brdf.y) * mraMap.Sample(pbrSampler3, materialUv).g;
+    float3 specular_IBL = prefilteredColor * (F * brdf.x + brdf.y) * metallicRoughnessAOTexture.Sample(pbrSampler3, materialUv).g;
 
     // b. Indirect Diffuse
     float3 irradiance = irradianceMap.Sample(iblSampler1, N).rgb;
@@ -216,7 +216,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
     float3 color = (Lo_indirect * ao) + Lo_direct;
     
     // 添加自发光
-    color += emissiveMap.Sample(pbrSampler2, materialUv).rgb;
+    color += emissiveTexture.Sample(pbrSampler2, materialUv).rgb;
     
     return float4(saturate(color), 1.0);
 }

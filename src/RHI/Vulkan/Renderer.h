@@ -5,7 +5,6 @@
 #include "VulkanBuffer.h"
 #include "VulkanQueue.h"
 #include "VulkanImage.h"
-#include "Dependencies.h"
 
 class Renderer {
 public:
@@ -19,8 +18,6 @@ public:
     // 开始一帧的渲染，如果成功，返回一个可以记录命令的 Command Buffer
     // 如果返回 nullptr，意味着交换链需要重建，应该跳过这一帧
     VkCommandBuffer beginFrame(VulkanSwapchain& swapchain);
-    void beginRenderPass(VkCommandBuffer cmd, VulkanSwapchain& swapchain);
-    void endRenderPass(VkCommandBuffer cmd, VulkanSwapchain& swapchain);
     
     // 结束一帧的渲染并提交
     void endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, VulkanQueue& presentQueue);
@@ -30,16 +27,10 @@ public:
 	void clearSwapchainRebuildRequest() { _swapchainRebuildRequired = false; }
 	uint32_t getMaxFramesInFlight() const { return _maxFramesInFlight; }
     uint32_t getCurrentFrame() const { return _currentFrame; }
-	uint32_t getImageIndex() const { return _imageIndex; }
+    uint32_t getImageIndex() const { return _imageIndex; }
+    VkQueryPool getCurrentTimestampQueryPool() const;
+    void setCurrentTimestampQueryCount(uint32_t queryCount);
     std::vector<double> consumeGpuTimestampDurations();
-    void beginGpuTimestampFrame(VkCommandBuffer commandBuffer, uint32_t queryCount);
-    void writeGpuTimestamp(VkCommandBuffer commandBuffer, uint32_t queryIndex, bool begin);
-    void endGpuTimestampFrame(uint32_t queryCount);
-    void draw(VulkanSwapchain& swapchain, std::unique_ptr<VulkanPipeline>& graphicsPipeline, 
-        VulkanBuffer& indexBuffer, VulkanBuffer& vertexBuffer, 
-        std::vector<VkDescriptorSet> descriptorSets, uint32_t size, 
-        VulkanQueue& graphicsQueue, VulkanQueue& presentQueue);
-	//void updateuniformBuffer(VulkanBuffer& uniformBuffer, const UniformBufferObject& ubo);
 private:
     VulkanContext& _context;
     uint32_t _maxFramesInFlight;

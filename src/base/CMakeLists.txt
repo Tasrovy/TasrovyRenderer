@@ -11,7 +11,4 @@ target_include_directories(TasrovyBase PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_link_libraries(TasrovyBase PUBLIC
         glm::glm
-        assimp::assimp
-        TasrovyExt
-        TasrovyLog
 )

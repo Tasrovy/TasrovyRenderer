@@ -1,5 +1,4 @@
 #include "Window.h"
-#define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <stdexcept>
 
@@ -54,20 +53,6 @@ int Window::getHeight() const {
 FramebufferState Window::getFramebufferState() const {
     std::lock_guard<std::mutex> lock(_framebufferMutex);
     return {_width, _height, _resizeGeneration.load(std::memory_order_relaxed)};
-}
-
-std::vector<const char*> Window::getRequiredVulkanExtensions() const {
-    uint32_t count = 0;
-    const char** extensions = glfwGetRequiredInstanceExtensions(&count);
-    return std::vector<const char*>(extensions, extensions + count);
-}
-
-VkSurfaceKHR Window::createVulkanSurface(VkInstance instance) const {
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    if (glfwCreateWindowSurface(instance, _window, nullptr, &surface) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create window surface!");
-    }
-    return surface;
 }
 
 void Window::updateFramebufferSize() {

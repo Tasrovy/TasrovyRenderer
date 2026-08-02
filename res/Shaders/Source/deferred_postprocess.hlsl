@@ -30,7 +30,8 @@ cbuffer UBO : register(b0, space0)
     // Postprocess: threshold, thickness, strength, softness.
     float4 lightColor;
     float4 camPosAndMetallic;
-    // z debug output enabled, w bloom radius.
+    // z debug semantic: 0 final, 1 color, 2 outline, 3 normal,
+    // 4 velocity, 5 raw depth, 6 scene linear depth, 7 Hi-Z, 8 mask.
     float4 roughnessAo;
     // x bloom enabled, y threshold, z intensity, w exposure.
     float4 uvTransform;
@@ -46,7 +47,7 @@ cbuffer UBO : register(b0, space0)
     float4 advancedLightingParams;
     float4 pcssParams;
     float4 ssaoParams;
-    float4 ssdoParams;
+    float4 postEffectParams;
     // x max distance, y step size, z thickness, w intensity.
     float4 ssrParams;
     matrix previousView;
@@ -66,36 +67,13 @@ struct VSOutput
 [[vk::combinedImageSampler]] SamplerState sceneColorSampler : register(s1, space0);
 [[vk::combinedImageSampler]] Texture2D gBufferNormal : register(t2, space0);
 [[vk::combinedImageSampler]] SamplerState gBufferNormalSampler : register(s2, space0);
-[[vk::combinedImageSampler]] Texture2D gBufferWorldPos : register(t3, space0);
-[[vk::combinedImageSampler]] SamplerState gBufferWorldPosSampler : register(s3, space0);
-[[vk::combinedImageSampler]] Texture2D sceneDepth : register(t4, space0);
-[[vk::combinedImageSampler]] SamplerState sceneDepthSampler : register(s4, space0);
-[[vk::combinedImageSampler]] Texture2D gBufferMaterial : register(t5, space0);
-[[vk::combinedImageSampler]] SamplerState gBufferMaterialSampler : register(s5, space0);
-[[vk::combinedImageSampler]] Texture2D hiZHalf : register(t6, space0);
-[[vk::combinedImageSampler]] SamplerState hiZHalfSampler : register(s6, space0);
-[[vk::combinedImageSampler]] Texture2D hiZQuarter : register(t7, space0);
-[[vk::combinedImageSampler]] SamplerState hiZQuarterSampler : register(s7, space0);
-[[vk::combinedImageSampler]] Texture2D hiZEighth : register(t8, space0);
-[[vk::combinedImageSampler]] SamplerState hiZEighthSampler : register(s8, space0);
-[[vk::combinedImageSampler]] Texture2D hiZSixteenth : register(t9, space0);
-[[vk::combinedImageSampler]] SamplerState hiZSixteenthSampler : register(s9, space0);
-[[vk::combinedImageSampler]] Texture2D taaHistoryColor : register(t10, space0);
-[[vk::combinedImageSampler]] SamplerState taaHistoryColorSampler : register(s10, space0);
-[[vk::combinedImageSampler]] Texture2D taaHistoryDepth : register(t11, space0);
-[[vk::combinedImageSampler]] SamplerState taaHistoryDepthSampler : register(s11, space0);
-[[vk::combinedImageSampler]] Texture2D gBufferAlbedo : register(t12, space0);
-[[vk::combinedImageSampler]] SamplerState gBufferAlbedoSampler : register(s12, space0);
-[[vk::combinedImageSampler]] Texture2D bloomLowRes : register(t13, space0);
-[[vk::combinedImageSampler]] SamplerState bloomLowResSampler : register(s13, space0);
+[[vk::combinedImageSampler]] Texture2D bloomLowRes : register(t3, space0);
+[[vk::combinedImageSampler]] SamplerState bloomLowResSampler : register(s3, space0);
+[[vk::combinedImageSampler]] Texture2D outlineMask : register(t4, space0);
+[[vk::combinedImageSampler]] SamplerState outlineMaskSampler : register(s4, space0);
+[[vk::combinedImageSampler]] Texture2D gBufferWorldPos : register(t5, space0);
+[[vk::combinedImageSampler]] SamplerState gBufferWorldPosSampler : register(s5, space0);
 
-#include "PostProcess/postprocess_taa.hlsli"
-#if TASROVY_POST_SSR
-#include "PostProcess/postprocess_ssr.hlsli"
-#endif
-#if TASROVY_POST_OUTLINE
-#include "PostProcess/postprocess_outline.hlsli"
-#endif
 #include "PostProcess/postprocess_tonemap.hlsli"
 
 VSOutput VSMain(uint vertexId : SV_VertexID)
@@ -115,14 +93,63 @@ float4 PSMain(VSOutput input) : SV_Target
 {
     float3 sourceColor =
         sceneColor.SampleLevel(sceneColorSampler, input.uv, 0.0f).rgb;
-    if (roughnessAo.z > 0.5f) {
+    const uint debugSemantic = (uint)round(max(roughnessAo.z, 0.0f));
+    if (debugSemantic == 2u) {
+#if TASROVY_POST_OUTLINE
+        float outline = outlineMask.SampleLevel(
+            outlineMaskSampler, input.uv, 0.0f).r;
+        return float4((1.0f - outline).xxx, 1.0f);
+#else
+        return 1.0f.xxxx;
+#endif
+    }
+    if (debugSemantic == 1u) {
         return float4(saturate(sourceColor), 1.0f);
     }
+    if (debugSemantic == 3u) {
+        const float valid = step(
+            0.001f, dot(sourceColor, sourceColor));
+        const float3 normal = normalize(
+            sourceColor * 2.0f - 1.0f);
+        return float4(
+            (normal * 0.5f + 0.5f) * valid,
+            1.0f);
+    }
+    if (debugSemantic == 4u) {
+        const float2 velocity = sourceColor.rg;
+        const float2 mapped = saturate(
+            0.5f.xx + velocity * ssaoParams.w);
+        return float4(mapped, 0.5f, 1.0f);
+    }
+    if (debugSemantic == 5u) {
+        return float4(saturate(sourceColor.r).xxx, 1.0f);
+    }
+    if (debugSemantic == 6u) {
+        if (sourceColor.r >= 0.999999f) {
+            return float4(0.0f.xxx, 1.0f);
+        }
+        const float3 worldPosition = gBufferWorldPos.SampleLevel(
+            gBufferWorldPosSampler, input.uv, 0.0f).xyz;
+        const float linearDepth = max(
+            -mul(float4(worldPosition, 1.0f), view).z,
+            0.0f);
+        const float value = 1.0f - saturate(
+            linearDepth / max(ssaoParams.z, 0.001f));
+        return float4(value.xxx, 1.0f);
+    }
+    if (debugSemantic == 7u) {
+        const float linearDepth = sourceColor.r;
+        const float value = linearDepth >= 65500.0f
+            ? 0.0f
+            : 1.0f - saturate(
+                linearDepth / max(ssaoParams.z, 0.001f));
+        return float4(value.xxx, 1.0f);
+    }
+    if (debugSemantic == 8u) {
+        return float4(saturate(sourceColor.r).xxx, 1.0f);
+    }
 
-    float3 color = ApplyTemporalAA(input.uv, sourceColor);
-#if TASROVY_POST_SSR
-    color = ApplyScreenSpaceReflection(input.uv, color);
-#endif
+    float3 color = sourceColor;
 #if TASROVY_POST_BLOOM
     if (uvTransform.x > 0.5f) {
         color += bloomLowRes.SampleLevel(
@@ -131,7 +158,9 @@ float4 PSMain(VSOutput input) : SV_Target
 #endif
     color = ApplyExposureToneMap(color, uvTransform.w);
 #if TASROVY_POST_OUTLINE
-    color = ApplyNormalOutline(input.uv, color);
+    float outline = outlineMask.SampleLevel(
+        outlineMaskSampler, input.uv, 0.0f).r;
+    color = lerp(color, lightDir.rgb, saturate(outline));
 #endif
     return float4(saturate(color), 1.0f);
 }

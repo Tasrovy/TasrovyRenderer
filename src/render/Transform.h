@@ -26,8 +26,8 @@ public:
     TSMat4f getModelMatrix() const;
 
 private:
-    TSVec3f position_;
-    TSQuatf rotation_;
+    TSVec3f position_ = TSVec3f(0.0f);
+    TSQuatf rotation_ = TSQuatf(1.0f, 0.0f, 0.0f, 0.0f);
     TSVec3f scale_ = TSVec3f(1.0f);
 };
 

@@ -5,14 +5,17 @@
 #include "Light.h"
 #include "Logger.hpp"
 #include "Material.h"
+#include "MaterialDescriptor.h"
 #include "Mesh.h"
 #include "Object.h"
 #include "Primitive.h"
 #include "Scene.h"
 #include "Skybox.h"
 #include "Texture.hpp"
+#include "RenderAssetFactory.h"
 
 #include <fstream>
+#include <cmath>
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -23,19 +26,41 @@ using namespace Tasrovy::Render;
 
 namespace {
 
+float finiteOr(float value, float fallback = 0.0f) {
+    return std::isfinite(value) ? value : fallback;
+}
+
+float jsonFloat(const json& value, float fallback) {
+    if (!value.is_number()) {
+        return fallback;
+    }
+    return finiteOr(value.get<float>(), fallback);
+}
+
+float jsonMemberFloat(const json& object, const char* name, float fallback) {
+    const auto found = object.find(name);
+    return found != object.end() ? jsonFloat(*found, fallback) : fallback;
+}
+
 json vec3ToJson(const TSVec3f& value) {
-    return json::array({value.x, value.y, value.z});
+    return json::array({
+        finiteOr(value.x), finiteOr(value.y), finiteOr(value.z)});
 }
 
 json vec4ToJson(const TSVec4f& value) {
-    return json::array({value.x, value.y, value.z, value.w});
+    return json::array({
+        finiteOr(value.x), finiteOr(value.y),
+        finiteOr(value.z), finiteOr(value.w, 1.0f)});
 }
 
 TSVec3f jsonToVec3(const json& value, const TSVec3f& fallback = TSVec3f(0.0f)) {
     if (!value.is_array() || value.size() < 3) {
         return fallback;
     }
-    return TSVec3f(value[0].get<float>(), value[1].get<float>(), value[2].get<float>());
+    return TSVec3f(
+        jsonFloat(value[0], fallback.x),
+        jsonFloat(value[1], fallback.y),
+        jsonFloat(value[2], fallback.z));
 }
 
 TSVec4f jsonToVec4(const json& value, const TSVec4f& fallback = TSVec4f(0.0f)) {
@@ -43,8 +68,8 @@ TSVec4f jsonToVec4(const json& value, const TSVec4f& fallback = TSVec4f(0.0f)) {
         return fallback;
     }
     return TSVec4f(
-        value[0].get<float>(), value[1].get<float>(),
-        value[2].get<float>(), value[3].get<float>());
+        jsonFloat(value[0], fallback.x), jsonFloat(value[1], fallback.y),
+        jsonFloat(value[2], fallback.z), jsonFloat(value[3], fallback.w));
 }
 
 json serializeMaterial(const std::shared_ptr<Material>& material) {
@@ -54,10 +79,13 @@ json serializeMaterial(const std::shared_ptr<Material>& material) {
 
     json data;
     data["surface"] = static_cast<int>(material->getSurface());
-    data["alphaCutoff"] = material->getAlphaCutoff();
+    data["alphaCutoff"] = finiteOr(material->getAlphaCutoff(), 0.5f);
     data["castShadows"] = material->castsShadows();
+    if (const auto descriptor = material->getDescriptor()) {
+        data["descriptor"] = descriptor->getSourcePath().generic_string();
+    }
     for (const auto& [name, value] : material->getFloatParams()) {
-        data["floats"][name] = value;
+        data["floats"][name] = finiteOr(value);
     }
     for (const auto& [name, value] : material->getVec3Params()) {
         data["vec3"][name] = vec3ToJson(value);
@@ -65,16 +93,9 @@ json serializeMaterial(const std::shared_ptr<Material>& material) {
     for (const auto& [name, value] : material->getVec4Params()) {
         data["vec4"][name] = vec4ToJson(value);
     }
-    for (const auto& [semantic, binding] : material->getSemanticTextureBindings()) {
-        data["semanticTextures"].push_back({
-            {"semantic", static_cast<int>(semantic)},
-            {"binding", binding.binding},
-            {"path", binding.path}
-        });
-    }
     for (const auto& [slot, binding] : material->getTextureBindings()) {
         data["namedTextures"].push_back({
-            {"slot", slot}, {"binding", binding.binding}, {"path", binding.path}
+            {"slot", slot}, {"path", binding.path}
         });
     }
     return data;
@@ -84,12 +105,18 @@ std::shared_ptr<Material> deserializeMaterial(const json& data, SceneArchive& ar
     if (data.is_null() || !data.is_object()) {
         return nullptr;
     }
-    auto material = Material::create();
+    std::shared_ptr<Material> material;
+    const auto descriptorPath = data.value("descriptor", std::string());
+    if (!descriptorPath.empty()) {
+        material = Material::create(MaterialDescriptor::load(descriptorPath));
+    } else {
+        material = Material::create();
+    }
     material->setSurface(static_cast<MaterialSurface>(data.value("surface", 0)));
-    material->setAlphaCutoff(data.value("alphaCutoff", 0.5f));
+    material->setAlphaCutoff(jsonMemberFloat(data, "alphaCutoff", 0.5f));
     material->setCastShadows(data.value("castShadows", true));
     for (const auto& [name, value] : data.value("floats", json::object()).items()) {
-        material->setFloat(name, value.get<float>());
+        material->setFloat(name, jsonFloat(value, 0.0f));
     }
     for (const auto& [name, value] : data.value("vec3", json::object()).items()) {
         material->setVec3(name, jsonToVec3(value));
@@ -97,16 +124,9 @@ std::shared_ptr<Material> deserializeMaterial(const json& data, SceneArchive& ar
     for (const auto& [name, value] : data.value("vec4", json::object()).items()) {
         material->setVec4(name, jsonToVec4(value));
     }
-    for (const auto& texture : data.value("semanticTextures", json::array())) {
-        material->setTexture(
-            static_cast<MaterialTextureSemantic>(texture.value("semantic", 0)),
-            texture.value("binding", 0u),
-            texture.value("path", std::string()));
-    }
     for (const auto& texture : data.value("namedTextures", json::array())) {
         material->setTexture(
             texture.value("slot", std::string()),
-            texture.value("binding", 0u),
             texture.value("path", std::string()));
     }
     archive.materials.push_back(material);
@@ -117,7 +137,9 @@ json serializeTransform(const Object& object) {
     const TSQuatf rotation = object.getRotationQuat();
     return {
         {"position", vec3ToJson(object.getPosition())},
-        {"rotation", json::array({rotation.x, rotation.y, rotation.z, rotation.w})},
+        {"rotation", json::array({
+            finiteOr(rotation.x), finiteOr(rotation.y),
+            finiteOr(rotation.z), finiteOr(rotation.w, 1.0f)})},
         {"scale", vec3ToJson(object.getScale())}
     };
 }
@@ -128,8 +150,8 @@ void deserializeTransform(const json& data, Object& object) {
     const auto rotation = data.value("rotation", json::array());
     if (rotation.is_array() && rotation.size() >= 4) {
         object.setRotation(TSQuatf(
-            rotation[3].get<float>(), rotation[0].get<float>(),
-            rotation[1].get<float>(), rotation[2].get<float>()));
+            jsonFloat(rotation[3], 1.0f), jsonFloat(rotation[0], 0.0f),
+            jsonFloat(rotation[1], 0.0f), jsonFloat(rotation[2], 0.0f)));
     }
 }
 
@@ -208,7 +230,8 @@ std::shared_ptr<Object> deserializeObject(
             LOG_ERROR("SceneSerializer: failed to load model '{}'", modelPath);
             return nullptr;
         }
-        auto mesh = Mesh::fromModel(*model);
+        auto mesh =
+            Tasrovy::Assets::RenderAssetFactory::meshFromModel(*model);
         mesh->setSourcePath(modelPath);
         archive.meshes.push_back(mesh);
         object = Object::create(name);
@@ -247,24 +270,24 @@ json serializeLight(const Light& light) {
         {"name", light.getName()},
         {"direction", vec3ToJson(light.getDirection())},
         {"color", vec3ToJson(light.getColor())},
-        {"intensity", light.getIntensity()}
+        {"intensity", finiteOr(light.getIntensity(), 1.0f)}
     };
     if (const auto* area = dynamic_cast<const AreaLight*>(&light)) {
         data["type"] = "area";
         data["position"] = vec3ToJson(area->getPosition());
-        data["width"] = area->getWidth();
-        data["height"] = area->getHeight();
+        data["width"] = finiteOr(area->getWidth(), 1.0f);
+        data["height"] = finiteOr(area->getHeight(), 1.0f);
         data["twoSided"] = area->isTwoSided();
     } else if (const auto* point = dynamic_cast<const PointLight*>(&light)) {
         data["type"] = "point";
         data["position"] = vec3ToJson(point->getPosition());
-        data["constant"] = point->getConstant();
-        data["linear"] = point->getLinear();
-        data["quadratic"] = point->getQuadratic();
+        data["constant"] = finiteOr(point->getConstant(), 1.0f);
+        data["linear"] = finiteOr(point->getLinear(), 0.09f);
+        data["quadratic"] = finiteOr(point->getQuadratic(), 0.032f);
     } else if (const auto* spot = dynamic_cast<const SpotLight*>(&light)) {
         data["type"] = "spot";
         data["position"] = vec3ToJson(spot->getPosition());
-        data["cutoff"] = spot->getCutoff();
+        data["cutoff"] = finiteOr(spot->getCutoff(), 12.5f);
     } else {
         data["type"] = "directional";
     }
@@ -276,23 +299,25 @@ std::unique_ptr<Light> deserializeLight(const json& data) {
     const auto name = data.value("name", std::string());
     const auto direction = jsonToVec3(data.value("direction", json::array()), TSVec3f(0.0f, -1.0f, 0.0f));
     const auto color = jsonToVec3(data.value("color", json::array()), TSVec3f(1.0f));
-    const float intensity = data.value("intensity", 1.0f);
+    const float intensity = jsonMemberFloat(data, "intensity", 1.0f);
     if (type == "area") {
         return AreaLight::create(
             jsonToVec3(data.value("position", json::array())), direction, color, intensity,
-            data.value("width", 1.0f), data.value("height", 1.0f),
+            jsonMemberFloat(data, "width", 1.0f),
+            jsonMemberFloat(data, "height", 1.0f),
             data.value("twoSided", false), name);
     }
     if (type == "point") {
         return PointLight::create(
             jsonToVec3(data.value("position", json::array())), color, intensity,
-            data.value("constant", 1.0f), data.value("linear", 0.09f),
-            data.value("quadratic", 0.032f), name);
+            jsonMemberFloat(data, "constant", 1.0f),
+            jsonMemberFloat(data, "linear", 0.09f),
+            jsonMemberFloat(data, "quadratic", 0.032f), name);
     }
     if (type == "spot") {
         return SpotLight::create(
             jsonToVec3(data.value("position", json::array())), direction, color, intensity,
-            data.value("cutoff", 12.5f), name);
+            jsonMemberFloat(data, "cutoff", 12.5f), name);
     }
     return DirectionalLight::create(direction, color, intensity, name);
 }
@@ -318,11 +343,13 @@ bool SceneSerializer::save(
             root["cameras"].push_back({
                 {"name", camera->getName()},
                 {"position", vec3ToJson(camera->getPosition())},
-                {"rotation", json::array({rotation.x, rotation.y, rotation.z, rotation.w})},
-                {"fov", camera->getFOV()},
-                {"aspect", camera->getAspect()},
-                {"near", camera->getNearPlane()},
-                {"far", camera->getFarPlane()}
+                {"rotation", json::array({
+                    finiteOr(rotation.x), finiteOr(rotation.y),
+                    finiteOr(rotation.z), finiteOr(rotation.w, 1.0f)})},
+                {"fov", finiteOr(camera->getFOV(), 45.0f)},
+                {"aspect", finiteOr(camera->getAspect(), 1.0f)},
+                {"near", finiteOr(camera->getNearPlane(), 0.1f)},
+                {"far", finiteOr(camera->getFarPlane(), 100.0f)}
             });
         }
         for (const auto& light : scene->getLights()) {
@@ -369,16 +396,16 @@ bool SceneSerializer::load(
             auto camera = Camera::create(
                 jsonToVec3(cameraData.value("position", json::array())),
                 TSVec3f(0.0f),
-                cameraData.value("fov", 45.0f),
+                jsonMemberFloat(cameraData, "fov", 45.0f),
                 cameraAspect,
-                cameraData.value("near", 0.1f),
-                cameraData.value("far", 100.0f),
+                jsonMemberFloat(cameraData, "near", 0.1f),
+                jsonMemberFloat(cameraData, "far", 100.0f),
                 cameraData.value("name", std::string()));
             const auto rotation = cameraData.value("rotation", json::array());
             if (rotation.is_array() && rotation.size() >= 4) {
                 camera->setRotation(TSQuatf(
-                    rotation[3].get<float>(), rotation[0].get<float>(),
-                    rotation[1].get<float>(), rotation[2].get<float>()));
+                    jsonFloat(rotation[3], 1.0f), jsonFloat(rotation[0], 0.0f),
+                    jsonFloat(rotation[1], 0.0f), jsonFloat(rotation[2], 0.0f)));
             }
             Camera* cameraPtr = camera.get();
             loaded.scene->addCamera(std::move(camera));

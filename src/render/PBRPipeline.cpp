@@ -1,11 +1,14 @@
 #include "PBRPipeline.h"
 
 #include "Material.h"
+#include "Mesh.h"
 #include "Object.h"
+#include "PBRMaterialBindings.h"
 #include "PipelinePass.h"
 #include "Shader.h"
 #include "Skybox.h"
 #include <functional>
+#include <cstddef>
 #include <unordered_set>
 
 namespace Tasrovy::Render {
@@ -28,40 +31,31 @@ std::shared_ptr<PipelinePass> createPass(
     pass->setDepthWrite(depthWrite);
     pass->setDepthTestMode(depthMode);
     pass->setBlendMode(blendMode);
+    pass->setVertexLayout({
+        sizeof(MeshVertex),
+        {
+            {MeshVertexLocation::Position, PipelineVertexFormat::Float3,
+                static_cast<uint32_t>(offsetof(MeshVertex, position))},
+            {MeshVertexLocation::Normal, PipelineVertexFormat::Float3,
+                static_cast<uint32_t>(offsetof(MeshVertex, normal))},
+            {MeshVertexLocation::Tangent, PipelineVertexFormat::Float3,
+                static_cast<uint32_t>(offsetof(MeshVertex, tangent))},
+            {MeshVertexLocation::Bitangent, PipelineVertexFormat::Float3,
+                static_cast<uint32_t>(offsetof(MeshVertex, bitangent))},
+            {MeshVertexLocation::UV0, PipelineVertexFormat::Float2,
+                static_cast<uint32_t>(offsetof(MeshVertex, uv0))}
+        }
+    });
+    pass->setUniformByteSize(
+        1600u,
+        PipelineShaderStageVertex | PipelineShaderStageFragment);
     return pass;
 }
 
 void addPBRMaterialTextures(const std::shared_ptr<PipelinePass>& pass) {
-    pass->addMaterialTexture({
-        MaterialTextureSemantic::BaseColor,
-        "baseColorTexture",
-        MaterialTextureColorSpace::SRGB,
-        MaterialTextureFallback::White
-    });
-    pass->addMaterialTexture({
-        MaterialTextureSemantic::Normal,
-        "normalTexture",
-        MaterialTextureColorSpace::Linear,
-        MaterialTextureFallback::FlatNormal
-    });
-    pass->addMaterialTexture({
-        MaterialTextureSemantic::MetallicRoughnessAO,
-        "metallicRoughnessAOTexture",
-        MaterialTextureColorSpace::Linear,
-        MaterialTextureFallback::MetallicRoughnessAO
-    });
-    pass->addMaterialTexture({
-        MaterialTextureSemantic::Emissive,
-        "emissiveTexture",
-        MaterialTextureColorSpace::SRGB,
-        MaterialTextureFallback::Black
-    });
-    pass->addMaterialTexture({
-        MaterialTextureSemantic::Opacity,
-        "opacityTexture",
-        MaterialTextureColorSpace::Linear,
-        MaterialTextureFallback::White
-    });
+    for (const auto& binding : getPBRMaterialTextureBindings()) {
+        pass->addMaterialTexture(binding);
+    }
 }
 
 } // namespace
@@ -77,10 +71,11 @@ PBRPipeline::PBRPipeline(const std::string& name)
 void PBRPipeline::GenPass(std::shared_ptr<Scene> scene) {
     clearPasses();
     clearTextures();
+    clearBuffers();
 
     declareTexture({
         "FinalColor", PipelineTextureFormat::Swapchain,
-        PipelineTextureExtent::RenderRelative, 1.0f, 1.0f, 0, 0, true
+        PipelineTextureExtent::DisplayRelative, 1.0f, 1.0f, 0, 0, true
     });
 
     auto skyboxPass = createPass(
@@ -91,8 +86,23 @@ void PBRPipeline::GenPass(std::shared_ptr<Scene> scene) {
         true, true, DepthTestMode::Less, BlendMode::Off);
 
     skyboxPass->setExecution(PipelinePassExecution::Skybox);
+    skyboxPass->setVertexLayout({
+        sizeof(float) * 3u,
+        {{0, PipelineVertexFormat::Float3, 0}}
+    });
+    skyboxPass->setUniformByteSize(
+        128u,
+        PipelineShaderStageVertex | PipelineShaderStageFragment);
+    skyboxPass->setParameterProvider(ParameterProviders::Skybox);
+    skyboxPass->addImportedTexture({
+        1, ImportedResourceHandles::Skybox, PipelineShaderStageFragment
+    });
     skyboxPass->addColorAttachment("FinalColor");
-    forwardPass->addColorAttachment("FinalColor", AttachmentLoad::Load);
+    forwardPass->addColorAttachment(
+        "FinalColor",
+        AttachmentLoad::Load,
+        AttachmentStore::Store,
+        "Skybox");
     addPBRMaterialTextures(forwardPass);
 
     skyboxPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\skyvert.spv", ShaderType::Vertex));

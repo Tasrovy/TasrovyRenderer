@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <array>
+#include <cstddef>
 
 // 前向声明，避免循环包含
 class ImmediateSubmitter;
@@ -18,9 +20,19 @@ public:
     static std::unique_ptr<VulkanImage> createTexture(
         VulkanContext& context,
         ImmediateSubmitter& uploader,
-        const std::string& path,
-        bool generateMipmaps = true,
+        const void* pixels,
+        size_t pixelBytes,
+        uint32_t width,
+        uint32_t height,
+        bool generateMipmaps,
         VkFormat format = VK_FORMAT_R8G8B8A8_SRGB
+    );
+
+    static std::unique_ptr<VulkanImage> createSolidTexture(
+        VulkanContext& context,
+        ImmediateSubmitter& uploader,
+        const std::array<float, 4>& color,
+        VkFormat format
     );
 
     static std::unique_ptr<VulkanImage> createImage2D(
@@ -32,10 +44,13 @@ public:
     );
 
     // 创建立方体贴图 (天空盒)
-    static std::unique_ptr<VulkanImage> createCubemapFromFile(
+    static std::unique_ptr<VulkanImage> createCubemap(
         VulkanContext& context,
         ImmediateSubmitter& uploader,
-        const std::string& path,
+        const void* pixels,
+        size_t faceBytes,
+        uint32_t width,
+        uint32_t height,
         VkFormat format = VK_FORMAT_R8G8B8A8_SRGB
     );
 
@@ -46,6 +61,12 @@ public:
         VkFormat format,
         VkImageUsageFlags usage,
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT
+    );
+
+    static std::unique_ptr<VulkanImage> createVirtualShadowAtlas(
+        VulkanContext& context,
+        VkExtent2D extent,
+        VkFormat format
     );
 
     static std::unique_ptr<VulkanImage> createCube(
@@ -99,7 +120,8 @@ public:
 private:
 
     // 内部辅助函数
-    void createSampler();
+    void createSampler(
+        VkSamplerAddressMode addressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
     void recordGenerateMipmaps(VkCommandBuffer cmd);
 
     VulkanContext* _context; // 指针，因为 Image 可能被移动

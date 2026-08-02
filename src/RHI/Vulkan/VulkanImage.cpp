@@ -2,7 +2,6 @@
 #include "ImmediateSubmitter.h"
 #include "VulkanBuffer.h"
 #include "../ResourceTracker.h"
-#include "../../filesystem/Image.hpp"
 #include <stdexcept>
 #include <cmath>
 #include <algorithm>
@@ -60,20 +59,25 @@ VulkanImage::~VulkanImage() {
 }
 // --- 静态工厂函数 ---
 
-std::unique_ptr<VulkanImage> VulkanImage::createTexture(VulkanContext& context, ImmediateSubmitter& uploader, const std::string& path, bool generateMipmaps, VkFormat format) {
-    Tasrovy::FS::Image image;
-    if (!image.LoadFromFile(path, false, 4)) {
-        throw std::runtime_error("failed to load texture image from path: " + path);
+std::unique_ptr<VulkanImage> VulkanImage::createTexture(
+    VulkanContext& context,
+    ImmediateSubmitter& uploader,
+    const void* pixels,
+    size_t pixelBytes,
+    uint32_t texWidth,
+    uint32_t texHeight,
+    bool generateMipmaps,
+    VkFormat format) {
+    if (!pixels || pixelBytes == 0 || texWidth == 0 || texHeight == 0) {
+        throw std::runtime_error("invalid texture upload data");
     }
-
-    const int texWidth = image.GetWidth();
-    const int texHeight = image.GetHeight();
-    const VkDeviceSize imageSize = static_cast<VkDeviceSize>(image.GetDataSize());
+    const VkDeviceSize imageSize =
+        static_cast<VkDeviceSize>(pixelBytes);
 
     VulkanBuffer stagingBuffer(context, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    stagingBuffer.setData(image.GetData(), imageSize, 0);
+    stagingBuffer.setData(pixels, imageSize, 0);
 
-    VkExtent2D extent = { (uint32_t)texWidth, (uint32_t)texHeight };
+    VkExtent2D extent = {texWidth, texHeight};
     uint32_t mipLevels = generateMipmaps ? static_cast<uint32_t>(floor(log2(std::max(texWidth, texHeight)))) + 1 : 1;
 
     auto textureImage = std::make_unique<VulkanImage>(
@@ -122,38 +126,73 @@ std::unique_ptr<VulkanImage> VulkanImage::createTexture(VulkanContext& context, 
     return textureImage;
 }
 
-std::unique_ptr<VulkanImage> VulkanImage::createCubemapFromFile(VulkanContext& context, ImmediateSubmitter& uploader, const std::string& path, VkFormat format) {
-    std::vector<std::string> faces = {
-        path + "\\right.png",
-        path + "\\left.png",
-        path + "\\top.png",
-        path + "\\bottom.png",
-        path + "\\front.png",
-        path + "\\back.png"
-	};
-    int texWidth = 0;
-    int texHeight = 0;
-    VkDeviceSize faceSize = 0;
-    std::vector<Tasrovy::FS::Image> faceImages;
-    faceImages.reserve(6);
-    for (const auto& face : faces) {
-        Tasrovy::FS::Image image;
-        if (!image.LoadFromFile(face, false, 4)) {
-            throw std::runtime_error("Failed to load cubemap face: " + face);
-        }
-        if (faceImages.empty()) {
-            texWidth = image.GetWidth();
-            texHeight = image.GetHeight();
-            faceSize = static_cast<VkDeviceSize>(image.GetDataSize());
-        } else if (image.GetWidth() != texWidth || image.GetHeight() != texHeight || image.GetDataSize() != faceSize) {
-            throw std::runtime_error("Cubemap faces must have matching dimensions and format: " + face);
-        }
-        faceImages.push_back(std::move(image));
-    }
+std::unique_ptr<VulkanImage> VulkanImage::createSolidTexture(
+    VulkanContext& context,
+    ImmediateSubmitter& uploader,
+    const std::array<float, 4>& color,
+    VkFormat format) {
+    auto textureImage = std::make_unique<VulkanImage>(
+        context,
+        VkExtent2D{1, 1},
+        format,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        1,
+        VK_SAMPLE_COUNT_1_BIT,
+        0,
+        1);
 
+    uploader.submit([&](VkCommandBuffer cmd) {
+        textureImage->recordTransitionLayout(
+            cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkClearColorValue clear{};
+        clear.float32[0] = color[0];
+        clear.float32[1] = color[1];
+        clear.float32[2] = color[2];
+        clear.float32[3] = color[3];
+        VkImageSubresourceRange range{};
+        range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        range.baseMipLevel = 0;
+        range.levelCount = 1;
+        range.baseArrayLayer = 0;
+        range.layerCount = 1;
+        vkCmdClearColorImage(
+            cmd,
+            textureImage->getImage(),
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            &clear,
+            1,
+            &range);
+        textureImage->recordTransitionLayout(
+            cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    });
+
+    textureImage->createImageView(
+        VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_2D);
+    textureImage->createSampler();
+    return textureImage;
+}
+
+std::unique_ptr<VulkanImage> VulkanImage::createCubemap(
+    VulkanContext& context,
+    ImmediateSubmitter& uploader,
+    const void* pixels,
+    size_t faceBytes,
+    uint32_t texWidth,
+    uint32_t texHeight,
+    VkFormat format) {
+    if (!pixels || faceBytes == 0 || texWidth == 0 || texHeight == 0) {
+        throw std::runtime_error("invalid cubemap upload data");
+    }
+    const auto* facePixels = static_cast<const uint8_t*>(pixels);
+    const VkDeviceSize faceSize =
+        static_cast<VkDeviceSize>(faceBytes);
     VulkanBuffer stagingBuffer(context, faceSize * 6, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    for (uint32_t i = 0; i < faceImages.size(); ++i) {
-        stagingBuffer.setData(faceImages[i].GetData(), faceSize, i * faceSize);
+    for (uint32_t i = 0; i < 6; ++i) {
+        stagingBuffer.setData(
+            facePixels + i * faceBytes,
+            faceBytes,
+            i * faceBytes);
     }
 
     auto cubemapImage = std::make_unique<VulkanImage>(
@@ -184,12 +223,15 @@ std::unique_ptr<VulkanImage> VulkanImage::createCubemapFromFile(VulkanContext& c
         });
 
     cubemapImage->createImageView(VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_CUBE);
-    cubemapImage->createSampler();
+    cubemapImage->createSampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
     return cubemapImage;
 }
 
 std::unique_ptr<VulkanImage> VulkanImage::createAttachment(VulkanContext& context, VkExtent2D extent, VkFormat format, VkImageUsageFlags usage, VkSampleCountFlagBits samples) {
+    // The sampled view exposes depth only. Layout barriers still cover both
+    // aspects for combined depth/stencil formats when separate layouts are
+    // unavailable.
     VkImageAspectFlags aspectFlags = (usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
         ? VK_IMAGE_ASPECT_DEPTH_BIT
         : VK_IMAGE_ASPECT_COLOR_BIT;
@@ -200,10 +242,35 @@ std::unique_ptr<VulkanImage> VulkanImage::createAttachment(VulkanContext& contex
 
     attachmentImage->createImageView(aspectFlags, VK_IMAGE_VIEW_TYPE_2D);
     if (usage & VK_IMAGE_USAGE_SAMPLED_BIT) {
-        attachmentImage->createSampler();
+        attachmentImage->createSampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
     }
     LOG_INFO("Created attachment image with format: {}", static_cast<int>(format));
     return attachmentImage;
+}
+
+std::unique_ptr<VulkanImage> VulkanImage::createVirtualShadowAtlas(
+    VulkanContext& context,
+    VkExtent2D extent,
+    VkFormat format) {
+    auto atlas = std::make_unique<VulkanImage>(
+        context,
+        extent,
+        format,
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+            VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        1,
+        VK_SAMPLE_COUNT_1_BIT,
+        0,
+        1);
+    atlas->createImageView(VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_VIEW_TYPE_2D);
+    atlas->createSampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+    LOG_INFO(
+        "Created virtual shadow atlas {}x{} format {}",
+        extent.width,
+        extent.height,
+        static_cast<int>(format));
+    return atlas;
 }
 
 std::unique_ptr<VulkanImage> VulkanImage::createCube(
@@ -229,7 +296,7 @@ std::unique_ptr<VulkanImage> VulkanImage::createCube(
 
     // 2. 为这个立方体图像创建视图和采样器
     cubeImage->createImageView(VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_CUBE);
-    cubeImage->createSampler();
+    cubeImage->createSampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
     return cubeImage;
 }
@@ -400,14 +467,14 @@ void VulkanImage::createImageView(VkImageAspectFlags aspectFlags, VkImageViewTyp
     _view = _context->createImageView(_image, _format, aspectFlags, _mipLevels, viewType);
 }
 
-void VulkanImage::createSampler() {
+void VulkanImage::createSampler(VkSamplerAddressMode addressMode) {
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = VK_FILTER_LINEAR;
     samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; // Good for cubemaps
+    samplerInfo.addressModeU = addressMode;
+    samplerInfo.addressModeV = addressMode;
+    samplerInfo.addressModeW = addressMode;
     samplerInfo.anisotropyEnable = VK_TRUE;
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(_context->getPhysicalDevice(), &properties);
@@ -450,6 +517,6 @@ std::unique_ptr<VulkanImage> VulkanImage::createImage2D(VulkanContext& context, 
         1, VK_SAMPLE_COUNT_1_BIT, 0, 1
     );
     image->createImageView(VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_2D);
-    image->createSampler();
+    image->createSampler(VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
     return image;
 }

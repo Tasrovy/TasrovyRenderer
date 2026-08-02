@@ -1,12 +1,46 @@
 #include "Material.h"
+#include "MaterialDescriptor.h"
 #include "Shader.h"
+
+#include <stdexcept>
 
 namespace Tasrovy::Render {
 
 Material::Material() = default;
 
+Material::Material(std::shared_ptr<const MaterialDescriptor> descriptor)
+    : descriptor_(std::move(descriptor)) {
+    if (!descriptor_) {
+        return;
+    }
+    floats_ = descriptor_->getFloatParams();
+    vec3s_ = descriptor_->getVec3Params();
+    vec4s_ = descriptor_->getVec4Params();
+    castShadows_ = descriptor_->castsShadows();
+    alphaCutoff_ = descriptor_->getAlphaCutoff();
+    surface_ = static_cast<MaterialSurface>(descriptor_->getSurface());
+    for (const auto& property : descriptor_->getProperties()) {
+        if (property.type != MaterialPropertyType::Texture2D) {
+            continue;
+        }
+        const auto path = descriptor_->getTexturePaths().find(property.name);
+        textures_.emplace(
+            property.name,
+            TextureBinding{
+                path == descriptor_->getTexturePaths().end()
+                    ? std::string()
+                    : path->second
+            });
+    }
+}
+
 std::shared_ptr<Material> Material::create() {
     return std::shared_ptr<Material>(new Material());
+}
+
+std::shared_ptr<Material> Material::create(
+    std::shared_ptr<const MaterialDescriptor> descriptor) {
+    return std::shared_ptr<Material>(new Material(std::move(descriptor)));
 }
 
 std::shared_ptr<Material> Material::create(std::weak_ptr<Shader> shader) {
@@ -29,7 +63,6 @@ void Material::setShader(std::weak_ptr<Shader> shader) {
     if (!shared) {
         vertexShader_.reset();
         fragmentShader_.reset();
-        reflectionPending_.store(true, std::memory_order_release);
         return;
     }
 
@@ -44,7 +77,6 @@ void Material::setShader(std::weak_ptr<Shader> shader) {
         fragmentShader_ = shader;
         break;
     }
-    reflectionPending_.store(true, std::memory_order_release);
 }
 
 std::shared_ptr<Shader> Material::getShader() const {
@@ -56,12 +88,10 @@ std::shared_ptr<Shader> Material::getShader() const {
 
 void Material::setVertexShader(std::weak_ptr<Shader> shader) {
     vertexShader_ = shader;
-    reflectionPending_.store(true, std::memory_order_release);
 }
 
 void Material::setFragmentShader(std::weak_ptr<Shader> shader) {
     fragmentShader_ = shader;
-    reflectionPending_.store(true, std::memory_order_release);
 }
 
 std::shared_ptr<Shader> Material::getVertexShader() const {
@@ -78,22 +108,29 @@ void Material::setVec4(const std::string& name, TSVec4f value) { vec4s_[name] = 
 void Material::setMat4(const std::string& name, TSMat4f value) { mat4s_[name] = value; }
 
 void Material::setTexture(const std::string& samplerName, const std::string& texturePath) {
-    textures_[samplerName] = { 0, texturePath };
+    if (descriptor_) {
+        const auto& property = descriptor_->requireProperty(samplerName);
+        if (property.type != MaterialPropertyType::Texture2D) {
+            throw std::invalid_argument(
+                "material property is not a texture2D: " + samplerName);
+        }
+    }
+    auto found = textures_.find(samplerName);
+    if (found != textures_.end()) {
+        found->second.path = texturePath;
+        return;
+    }
+    if (descriptor_) {
+        throw std::invalid_argument(
+            "texture slot is not declared by material descriptor: " + samplerName);
+    }
+    textures_[samplerName] = {texturePath};
 }
 
-void Material::setTexture(const std::string& samplerName, uint32_t binding, const std::string& texturePath) {
-    textures_[samplerName] = { binding, texturePath };
-}
-
-void Material::setTexture(MaterialTextureSemantic semantic, const std::string& texturePath) {
-    semanticTextures_[semantic] = {0, texturePath};
-}
-
-void Material::setTexture(
-    MaterialTextureSemantic semantic,
-    uint32_t binding,
-    const std::string& texturePath) {
-    semanticTextures_[semantic] = {binding, texturePath};
+void Material::clearTexture(const std::string& samplerName) {
+    if (auto found = textures_.find(samplerName); found != textures_.end()) {
+        found->second.path.clear();
+    }
 }
 
 void Material::setSurface(MaterialSurface surface) {
@@ -145,32 +182,26 @@ std::string Material::getTexture(const std::string& samplerName) const {
     return it != textures_.end() ? it->second.path : "";
 }
 
-std::string Material::getTexture(MaterialTextureSemantic semantic) const {
-    const auto* binding = getTextureBinding(semantic);
-    return binding ? binding->path : "";
-}
-
 const Material::TextureBinding* Material::getTextureBinding(
-    MaterialTextureSemantic semantic) const {
-    const auto it = semanticTextures_.find(semantic);
-    return it != semanticTextures_.end() ? &it->second : nullptr;
+    const std::string& samplerName) const {
+    const auto it = textures_.find(samplerName);
+    return it != textures_.end() ? &it->second : nullptr;
 }
 
 const Material::TextureBinding* Material::resolveTexture(
     const MaterialTextureRequirement& requirement) const {
-    if (const auto* semanticBinding = getTextureBinding(requirement.semantic)) {
-        return semanticBinding;
-    }
-
-    const auto namedBinding = textures_.find(requirement.slot);
-    return namedBinding != textures_.end() ? &namedBinding->second : nullptr;
+    return getTextureBinding(requirement.slot);
 }
 
 bool Material::hasFloat(const std::string& name) const { return floats_.count(name) > 0; }
 bool Material::hasVec3(const std::string& name) const { return vec3s_.count(name) > 0; }
-bool Material::hasTexture(const std::string& samplerName) const { return textures_.count(samplerName) > 0; }
-bool Material::hasTexture(MaterialTextureSemantic semantic) const {
-    return semanticTextures_.count(semantic) > 0;
+bool Material::hasTexture(const std::string& samplerName) const {
+    const auto found = textures_.find(samplerName);
+    return found != textures_.end() && !found->second.path.empty();
+}
+
+std::shared_ptr<const MaterialDescriptor> Material::getDescriptor() const {
+    return descriptor_;
 }
 
 const std::unordered_map<std::string, float>& Material::getFloatParams() const { return floats_; }
@@ -178,58 +209,5 @@ const std::unordered_map<std::string, TSVec3f>& Material::getVec3Params() const 
 const std::unordered_map<std::string, TSVec4f>& Material::getVec4Params() const { return vec4s_; }
 const std::unordered_map<std::string, TSMat4f>& Material::getMat4Params() const { return mat4s_; }
 const std::unordered_map<std::string, Material::TextureBinding>& Material::getTextureBindings() const { return textures_; }
-const std::unordered_map<MaterialTextureSemantic, Material::TextureBinding>&
-Material::getSemanticTextureBindings() const {
-    return semanticTextures_;
-}
-
-void Material::setReflectedUniforms(std::vector<ReflectedUniform> uniforms) {
-    std::lock_guard lock(reflectionMutex_);
-    reflectedUniforms_ = std::move(uniforms);
-}
-
-const std::vector<Material::ReflectedUniform>& Material::getReflectedUniforms() const {
-    return reflectedUniforms_;
-}
-
-const std::vector<Material::ReflectedSamplerBinding>& Material::getReflectedSamplers() const {
-    return reflectedSamplers_;
-}
-
-bool Material::isReflectionPending() const {
-    return reflectionPending_.load(std::memory_order_acquire);
-}
-
-void Material::applyReflection(const Tasrovy::RHI::ShaderReflectionData& vertData, const Tasrovy::RHI::ShaderReflectionData& fragData) {
-    std::lock_guard lock(reflectionMutex_);
-
-    // Build flat uniform list from both stages
-    std::vector<ReflectedUniform> allUniforms;
-
-    for (auto& block : vertData.uniformBlocks) {
-        for (auto& member : block.members) {
-            allUniforms.push_back({member.name, member.offset, member.size,
-                                   static_cast<uint32_t>(member.type)});
-        }
-    }
-    for (auto& block : fragData.uniformBlocks) {
-        for (auto& member : block.members) {
-            allUniforms.push_back({member.name, member.offset, member.size,
-                                   static_cast<uint32_t>(member.type)});
-        }
-    }
-    reflectedUniforms_ = std::move(allUniforms);
-
-    // Merge samplers from both stages
-    reflectedSamplers_.clear();
-    for (auto& s : vertData.samplers) {
-        reflectedSamplers_.push_back(s);
-    }
-    for (auto& s : fragData.samplers) {
-        reflectedSamplers_.push_back(s);
-    }
-
-    reflectionPending_.store(false, std::memory_order_release);
-}
 
 } // namespace Tasrovy::Render

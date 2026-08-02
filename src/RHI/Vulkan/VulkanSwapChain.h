@@ -91,6 +91,8 @@ public:
     uint32_t getImageCount() const { return static_cast<uint32_t>(_images.size()); }
     VkImageView getImageView(int index) const { return _imageViews[index]; }
 	VkImage getImage(int index) const { return _images[index]; }
+	VkImageLayout getImageLayout(uint32_t index) const { return _imageLayouts[index]; }
+	void setImageLayout(uint32_t index, VkImageLayout layout) { _imageLayouts[index] = layout; }
 	VkImageLayout getImageLayout(int index) const { return _imageLayouts[index]; }
     VkImageView getColorAttachmentView() const {
         if (_colorAttachment) {

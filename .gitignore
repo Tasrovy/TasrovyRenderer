@@ -38,4 +38,5 @@ bin/
 
 Thumbs.db
 .DS_Store
+imgui.ini
 AGENTS.md

@@ -1,7 +1,5 @@
 #pragma once
-#include <volk.h>
 #include <string>
-#include <vector>
 #include <functional>
 #include <atomic>
 #include <cstdint>
@@ -42,10 +40,6 @@ public:
     FramebufferState getFramebufferState() const;
 
     const WindowInfo& getInfo() const { return _info; }
-
-    // Vulkan integration helpers
-    std::vector<const char*> getRequiredVulkanExtensions() const;
-    VkSurfaceKHR createVulkanSurface(VkInstance instance) const;
 
 private:
     void updateFramebufferSize();

@@ -3,8 +3,6 @@
 #include <string>
 #include <memory>
 
-class VulkanImage;
-
 namespace Tasrovy::Render {
 
 class Texture : public std::enable_shared_from_this<Texture> {
@@ -25,8 +23,6 @@ public:
     void loadFromFile(const std::string& path, bool generateMips = true);
     void loadCubemap(const std::string& directoryPath);
 
-    VulkanImage* getImage() const;
-    void setImage(std::unique_ptr<VulkanImage> image);
     Type getType() const;
     bool hasMipmaps() const;
     const std::string& getFilePath() const;
@@ -34,7 +30,6 @@ public:
 private:
     Texture() = default;
 
-    std::unique_ptr<VulkanImage> image_;
     std::string filePath_;
     Type type_ = Type::Texture2D;
     bool generateMips_ = true;

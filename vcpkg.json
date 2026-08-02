@@ -5,13 +5,9 @@
     "glm",
     "glfw3",
     "volk",
-    "vulkan-memory-allocator",
     "spdlog",
-    "fmt",
     "nlohmann-json",
-    "stb",
     "assimp",
-    "taskflow",
-    "spirv-cross"
+    "taskflow"
   ]
 }

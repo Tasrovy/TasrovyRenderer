@@ -1,10 +1,10 @@
 #ifndef TASROVY_POSTPROCESS_OUTLINE
 #define TASROVY_POSTPROCESS_OUTLINE
 
-float3 ApplyNormalOutline(float2 uv, float3 color)
+float CalculateNormalOutline(float2 uv)
 {
     if (lightDir.w < 0.5f) {
-        return color;
+        return 0.0f;
     }
 
     uint width;
@@ -37,6 +37,12 @@ float3 ApplyNormalOutline(float2 uv, float3 color)
         lightColor.x,
         lightColor.x + max(lightColor.w, 0.0001f),
         normalEdge) * lightColor.z;
+    return saturate(outline);
+}
+
+float3 ApplyNormalOutline(float2 uv, float3 color)
+{
+    float outline = CalculateNormalOutline(uv);
     return lerp(color, lightDir.rgb, saturate(outline));
 }
 

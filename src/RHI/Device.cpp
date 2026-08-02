@@ -1,18 +1,15 @@
 #include "Device.h"
+#include "FrameScheduler.h"
 #include "Buffer.h"
 #include "Image.h"
 #include "Pipeline.h"
 #include "Descriptor.h"
 #include "CommandList.h"
 #include "RHIConfig.h"
-#include "ReflectionBridge.h"
-#include "ReflectionData.h"
-#include "../render/Material.h"
-#include "../render/Shader.h"
-#include "../ui/UI.h"
-#include "../window/Window.h"
 #include <algorithm>
+#include <mutex>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 #ifdef TASROVY_API_VULKAN
@@ -27,6 +24,7 @@
     #include "../RHI/Vulkan/Renderer.h"
     #include "../RHI/Vulkan/IBLMap.h"
     #include "../RHI/Vulkan/DescriptorWriter.h"
+    #include <GLFW/glfw3.h>
 #endif
 
 namespace Tasrovy::RHI {
@@ -43,7 +41,10 @@ struct Device::Impl {
     ImmediateSubmitter* submitter = nullptr;
     std::unique_ptr<IBLProcessor> ibl;
 #endif
-    std::shared_ptr<ReflectionBridge> reflectionBridge;
+    std::unique_ptr<FrameScheduler> frameScheduler;
+    std::mutex resourceScopeMutex;
+    ResourceScope nextResourceScope = 1;
+    std::unordered_map<ResourceScope, std::vector<std::shared_ptr<void>>> resourceScopes;
 };
 
 std::shared_ptr<Device> Device::create(void* nativeContext, void* nativeSubmitter) {
@@ -53,38 +54,125 @@ std::shared_ptr<Device> Device::create(void* nativeContext, void* nativeSubmitte
     dev->impl_->context = static_cast<VulkanContext*>(nativeContext);
     dev->impl_->submitter = static_cast<ImmediateSubmitter*>(nativeSubmitter);
 #endif
-    dev->impl_->reflectionBridge = std::make_shared<ReflectionBridge>();
-    dev->impl_->reflectionBridge->start();
     return dev;
 }
 
-std::shared_ptr<Device> Device::createForWindow(Tasrovy::Windowing::Window& window, uint32_t maxFramesInFlight) {
+std::shared_ptr<Device> Device::createForSurface(
+    const SurfaceDeviceCreateInfo& createInfo) {
     auto dev = std::shared_ptr<Device>(new Device());
     dev->impl_ = std::make_unique<Impl>();
 #ifdef TASROVY_API_VULKAN
+    uint32_t extensionCount = 0;
+    const char** extensionNames =
+        glfwGetRequiredInstanceExtensions(&extensionCount);
+    if (!extensionNames || extensionCount == 0) {
+        throw std::runtime_error(
+            "GLFW did not provide Vulkan instance extensions");
+    }
+    std::vector<const char*> instanceExtensions(
+        extensionNames,
+        extensionNames + extensionCount);
+    auto* nativeWindow =
+        static_cast<GLFWwindow*>(createInfo.nativeWindowHandle);
     dev->impl_->ownedContext = std::make_unique<VulkanContext>(
         "Vulkan",
-        window.getRequiredVulkanExtensions(),
-        [&window](VkInstance inst) { return window.createVulkanSurface(inst); },
-        window.getWidth(),
-        window.getHeight());
+        instanceExtensions,
+        [nativeWindow](VkInstance instance) {
+            VkSurfaceKHR surface = VK_NULL_HANDLE;
+            if (glfwCreateWindowSurface(
+                    instance,
+                    nativeWindow,
+                    nullptr,
+                    &surface) != VK_SUCCESS) {
+                throw std::runtime_error(
+                    "Failed to create GLFW Vulkan surface");
+            }
+            return surface;
+        },
+        static_cast<int>(createInfo.framebufferWidth),
+        static_cast<int>(createInfo.framebufferHeight));
     dev->impl_->context = dev->impl_->ownedContext.get();
-    dev->impl_->context->updateFramebufferSize(window.getWidth(), window.getHeight());
+    dev->impl_->context->updateFramebufferSize(
+        static_cast<int>(createInfo.framebufferWidth),
+        static_cast<int>(createInfo.framebufferHeight));
     dev->impl_->graphicsQueue = std::make_unique<VulkanQueue>(*dev->impl_->context, QueueType::Graphics);
     dev->impl_->presentQueue = std::make_unique<VulkanQueue>(*dev->impl_->context, QueueType::Present);
-    dev->impl_->renderer = std::make_unique<Renderer>(*dev->impl_->context, maxFramesInFlight);
+    dev->impl_->renderer = std::make_unique<Renderer>(
+        *dev->impl_->context,
+        createInfo.maxFramesInFlight);
     dev->impl_->ownedSubmitter = std::make_unique<ImmediateSubmitter>(*dev->impl_->context, *dev->impl_->graphicsQueue);
     dev->impl_->submitter = dev->impl_->ownedSubmitter.get();
     dev->impl_->swapchain = std::make_unique<VulkanSwapchain>(*dev->impl_->context);
     dev->impl_->renderer->onSwapchainRecreated(dev->impl_->swapchain->getImageCount());
+    dev->impl_->frameScheduler = FrameScheduler::create(
+        dev->impl_->context,
+        dev->impl_->renderer.get(),
+        dev->impl_->swapchain.get(),
+        dev->impl_->graphicsQueue.get(),
+        dev->impl_->presentQueue.get(),
+        dev->impl_->submitter);
 #endif
-    dev->impl_->reflectionBridge = std::make_shared<ReflectionBridge>();
-    dev->impl_->reflectionBridge->start();
     return dev;
 }
 
 Device::~Device() {
-    waitIdle();
+    std::unordered_map<ResourceScope, std::vector<std::shared_ptr<void>>> retired;
+    {
+        std::lock_guard lock(impl_->resourceScopeMutex);
+        retired.swap(impl_->resourceScopes);
+    }
+    retired.clear();
+#ifdef TASROVY_API_VULKAN
+    if (impl_->frameScheduler) {
+        impl_->frameScheduler->waitForInFlightFrames();
+    } else if (impl_->context) {
+        vkDeviceWaitIdle(impl_->context->getDevice());
+    }
+#endif
+}
+
+Device::ResourceScope Device::createResourceScope() {
+    std::lock_guard lock(impl_->resourceScopeMutex);
+    const ResourceScope scope = impl_->nextResourceScope++;
+    impl_->resourceScopes.try_emplace(scope);
+    return scope;
+}
+
+void Device::retainResourceUntyped(
+    ResourceScope scope,
+    std::shared_ptr<void> resource) {
+    if (!resource) {
+        return;
+    }
+    std::lock_guard lock(impl_->resourceScopeMutex);
+    impl_->resourceScopes[scope].push_back(std::move(resource));
+}
+
+void Device::resetResourceScope(ResourceScope scope) {
+    std::vector<std::shared_ptr<void>> retired;
+    {
+        std::lock_guard lock(impl_->resourceScopeMutex);
+        const auto found = impl_->resourceScopes.find(scope);
+        if (found == impl_->resourceScopes.end()) {
+            return;
+        }
+        retired.swap(found->second);
+    }
+    retired.clear();
+}
+
+void Device::destroyResourceScope(ResourceScope scope) {
+    std::vector<std::shared_ptr<void>> retired;
+    {
+        std::lock_guard lock(impl_->resourceScopeMutex);
+        const auto found = impl_->resourceScopes.find(scope);
+        if (found == impl_->resourceScopes.end()) {
+            return;
+        }
+        retired = std::move(found->second);
+        impl_->resourceScopes.erase(found);
+    }
+    retired.clear();
 }
 
 // --- Buffer creation ---
@@ -109,14 +197,27 @@ std::shared_ptr<Buffer> Device::createStagingBuffer(uint64_t size) {
     return createBuffer({ size, 0x4, true });
 }
 
-// --- Image creation ---
-
-std::shared_ptr<Image> Device::createTexture(const std::string& path, bool generateMips, uint32_t format) {
-    return Image::CreateTextureFromNative(impl_->context, impl_->submitter, path, generateMips, format);
+std::shared_ptr<CommandList> Device::createCommandList() {
+    auto commandList = CommandList::create();
+#ifdef TASROVY_API_VULKAN
+    commandList->setBackendContext(impl_->context);
+#endif
+    return commandList;
 }
 
-std::shared_ptr<Image> Device::createCubemap(const std::string& directoryPath) {
-    return Image::CreateCubemapFromNative(impl_->context, impl_->submitter, directoryPath);
+// --- Image creation ---
+
+std::shared_ptr<Image> Device::createTexture(
+    const ImageUploadDesc& upload) {
+    return Image::CreateTextureFromNative(
+        impl_->context, impl_->submitter, upload);
+}
+
+std::shared_ptr<Image> Device::createSolidTexture(
+    const std::array<float, 4>& color,
+    uint32_t format) {
+    return Image::CreateSolidTextureFromNative(
+        impl_->context, impl_->submitter, color, format);
 }
 
 std::shared_ptr<Image> Device::createAttachment(uint32_t width, uint32_t height, uint32_t format) {
@@ -141,7 +242,26 @@ std::shared_ptr<Image> Device::createRenderTexture(const RenderTextureDesc& desc
         desc.width,
         desc.height,
         resolveRenderTextureFormat(desc.format),
-        1);
+        1,
+        desc.storage);
+}
+
+std::shared_ptr<Image> Device::createVirtualShadowMap(
+    const VirtualShadowMapDesc& desc) {
+    if (desc.atlasSize == 0 ||
+        desc.pageSize == 0 ||
+        desc.atlasSize % desc.pageSize != 0) {
+        return nullptr;
+    }
+    const uint32_t pagesPerAxis = desc.atlasSize / desc.pageSize;
+    if (desc.residentPageCount == 0 ||
+        desc.residentPageCount > pagesPerAxis * pagesPerAxis) {
+        return nullptr;
+    }
+    return Image::CreateVirtualShadowAtlasFromNative(
+        impl_->context,
+        desc.atlasSize,
+        desc.format);
 }
 
 uint32_t Device::resolveRenderTextureFormat(RenderTextureFormat format) const {
@@ -155,7 +275,9 @@ uint32_t Device::resolveRenderTextureFormat(RenderTextureFormat format) const {
     case RenderTextureFormat::Depth32Float:
         return FormatDepth32Float;
     case RenderTextureFormat::Swapchain:
-        return getSwapchainColorFormat();
+        return impl_->frameScheduler
+            ? impl_->frameScheduler->getColorFormat()
+            : FormatRGBA8Unorm;
     }
     return FormatRGBA8Unorm;
 }
@@ -219,6 +341,39 @@ std::shared_ptr<Pipeline> Device::createGraphicsPipeline(const PipelineDesc& des
     raster.frontFace = static_cast<VkFrontFace>(desc.frontFace);
     builder.setRasterizationState(raster);
 
+    VkPipelineColorBlendAttachmentState blendAttachment{};
+    blendAttachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT |
+        VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT |
+        VK_COLOR_COMPONENT_A_BIT;
+    blendAttachment.blendEnable =
+        desc.blendMode == BlendOff ? VK_FALSE : VK_TRUE;
+    blendAttachment.srcColorBlendFactor =
+        desc.blendMode == BlendAlpha
+            ? VK_BLEND_FACTOR_SRC_ALPHA
+            : VK_BLEND_FACTOR_ONE;
+    blendAttachment.dstColorBlendFactor =
+        desc.blendMode == BlendAlpha
+            ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+            : (desc.blendMode == BlendAdditive
+                ? VK_BLEND_FACTOR_ONE
+                : VK_BLEND_FACTOR_ZERO);
+    blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blendAttachment.dstAlphaBlendFactor =
+        desc.blendMode == BlendAlpha
+            ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+            : (desc.blendMode == BlendAdditive
+                ? VK_BLEND_FACTOR_ONE
+                : VK_BLEND_FACTOR_ZERO);
+    blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    VkPipelineColorBlendStateCreateInfo blend{};
+    blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend.attachmentCount = 1;
+    blend.pAttachments = &blendAttachment;
+    builder.setColorBlendState(blend);
+
     if (desc.descriptorSetLayout) {
         builder.addDescriptorSetLayout(reinterpret_cast<VkDescriptorSetLayout>(desc.descriptorSetLayout->getNativeLayout()));
     }
@@ -234,6 +389,24 @@ std::shared_ptr<Pipeline> Device::createGraphicsPipeline(const PipelineDesc& des
     builder.setRenderingFormats(colorFormats, static_cast<VkFormat>(depthFormat));
 
     auto pipeline = builder.buildGraphicsPipeline();
+    return Pipeline::CreateFromNative(pipeline.release());
+#else
+    return nullptr;
+#endif
+}
+
+std::shared_ptr<Pipeline> Device::createComputePipeline(
+    const ComputePipelineDesc& desc) {
+#ifdef TASROVY_API_VULKAN
+    if (!desc.descriptorSetLayout) {
+        throw std::runtime_error("compute pipeline requires a descriptor set layout");
+    }
+    PipelineBuilder builder(*impl_->context);
+    auto pipeline = builder.buildComputePipeline(
+        desc.shaderPath,
+        reinterpret_cast<VkDescriptorSetLayout>(
+            desc.descriptorSetLayout->getNativeLayout()),
+        desc.entryPoint.c_str());
     return Pipeline::CreateFromNative(pipeline.release());
 #else
     return nullptr;
@@ -256,6 +429,8 @@ std::shared_ptr<DescriptorSetLayout> Device::createDescriptorSetLayout(
             type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         } else if (desc.bindingTypes[i] == DescriptorResourceType::StorageImage) {
             type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        } else if (desc.bindingTypes[i] == DescriptorResourceType::StorageBuffer) {
+            type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         }
         auto stageFlags = i < desc.stageFlags.size()
             ? static_cast<VkShaderStageFlags>(desc.stageFlags[i])
@@ -279,6 +454,8 @@ std::shared_ptr<DescriptorPool> Device::createDescriptorPool(
             type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         } else if (poolSize.type == DescriptorResourceType::StorageImage) {
             type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        } else if (poolSize.type == DescriptorResourceType::StorageBuffer) {
+            type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         }
         builder.addPoolSize(type, poolSize.count);
     }
@@ -315,7 +492,12 @@ void Device::updateDescriptorSet(void* descriptorSet, const std::vector<Descript
                 static_cast<VkDeviceSize>(info.offset),
                 static_cast<VkDeviceSize>(info.range)
             });
-            writer.writeBuffer(write.binding, &bufferInfos.back());
+            writer.writeBuffer(
+                write.binding,
+                &bufferInfos.back(),
+                write.type == DescriptorResourceType::StorageBuffer
+                    ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+                    : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
             continue;
         }
 
@@ -379,149 +561,14 @@ DescriptorImageInfo Device::getIBLDescriptorInfo(IBLMapType mapType, const std::
 #endif
 }
 
-// --- Upload ---
-
-void Device::uploadBuffer(Buffer& dst, const void* data, uint64_t size) {
-#ifdef TASROVY_API_VULKAN
-    auto staging = Buffer::CreateStagingFromNative(impl_->context, size);
-    staging->setData(data, size);
-    impl_->submitter->submit([&](VkCommandBuffer cmd) {
-        VkBuffer srcBuf = reinterpret_cast<VkBuffer>(staging->getNativeHandle());
-        VkBuffer dstBuf = reinterpret_cast<VkBuffer>(dst.getNativeHandle());
-        VkBufferCopy region{ 0, 0, size };
-        vkCmdCopyBuffer(cmd, srcBuf, dstBuf, 1, &region);
-    });
-#endif
-}
-
-// --- Shader Reflection ---
-
-std::shared_ptr<ReflectionBridge> Device::getReflectionBridge() {
-    return impl_->reflectionBridge;
-}
-
-void Device::requestShaderReflection(Tasrovy::Render::Material* material) {
-    if (!material || !impl_->reflectionBridge) return;
-    auto vertexShader = material->getVertexShader();
-    auto fragmentShader = material->getFragmentShader();
-    if (!vertexShader && !fragmentShader) return;
-
-    ReflectionRequest req;
-    req.material = material;
-    if (vertexShader) {
-        req.vertSpvPath = vertexShader->getPath();
-        req.vertEntryPoint = vertexShader->getEntry();
-    }
-    if (fragmentShader) {
-        req.fragSpvPath = fragmentShader->getPath();
-        req.fragEntryPoint = fragmentShader->getEntry();
-    }
-
-    impl_->reflectionBridge->submitRequest(std::move(req));
-}
-
-void Device::processReflectionResults() {
-    if (impl_->reflectionBridge) {
-        impl_->reflectionBridge->pollResults();
-    }
-}
-
 // --- Frame lifecycle ---
 
-void Device::waitIdle() {
-#ifdef TASROVY_API_VULKAN
-    if (impl_ && impl_->context) {
-        if (impl_->renderer) {
-            impl_->renderer->waitIdle();
-        } else {
-            vkDeviceWaitIdle(impl_->context->getDevice());
-        }
-    }
-#endif
+FrameScheduler& Device::getFrameScheduler() {
+    return *impl_->frameScheduler;
 }
 
-bool Device::recreateSwapchain(uint32_t width, uint32_t height) {
-#ifdef TASROVY_API_VULKAN
-    if (!impl_ || !impl_->context || !impl_->renderer || !impl_->swapchain ||
-        width == 0 || height == 0) {
-        return false;
-    }
-
-    // Frame fences cover all graphics command buffers. Presentation is not
-    // associated with those fences, so wait only for the queues involved in
-    // this swapchain instead of stalling every queue with vkDeviceWaitIdle.
-    impl_->renderer->waitIdle();
-    {
-        std::scoped_lock queueLock(impl_->context->getQueueMutex());
-        const VkQueue graphicsQueue = impl_->graphicsQueue->getQueue();
-        const VkQueue presentQueue = impl_->presentQueue->getQueue();
-        VkResult result = vkQueueWaitIdle(graphicsQueue);
-        if (result != VK_SUCCESS) {
-            throw std::runtime_error("failed to idle graphics queue for swapchain recreation");
-        }
-        if (presentQueue != graphicsQueue) {
-            result = vkQueueWaitIdle(presentQueue);
-            if (result != VK_SUCCESS) {
-                throw std::runtime_error("failed to idle present queue for swapchain recreation");
-            }
-        }
-    }
-
-    impl_->context->updateFramebufferSize(
-        static_cast<int>(width), static_cast<int>(height));
-    impl_->swapchain->recreate();
-    impl_->renderer->onSwapchainRecreated(impl_->swapchain->getImageCount());
-    LOG_INFO(
-        "Swapchain recreated at {}x{} with {} images",
-        impl_->swapchain->getExtent().width,
-        impl_->swapchain->getExtent().height,
-        impl_->swapchain->getImageCount());
-    return true;
-#else
-    (void)width;
-    (void)height;
-    return false;
-#endif
-}
-
-bool Device::isSwapchainRebuildRequired() const {
-#ifdef TASROVY_API_VULKAN
-    return impl_ && impl_->renderer && impl_->renderer->isSwapchainRebuildRequired();
-#else
-    return false;
-#endif
-}
-
-uint32_t Device::getCurrentFrameIndex() const {
-#ifdef TASROVY_API_VULKAN
-    return impl_->renderer->getCurrentFrame();
-#else
-    return 0;
-#endif
-}
-
-uint32_t Device::getSwapchainWidth() const {
-#ifdef TASROVY_API_VULKAN
-    return impl_->swapchain->getExtent().width;
-#else
-    return 0;
-#endif
-}
-
-uint32_t Device::getSwapchainHeight() const {
-#ifdef TASROVY_API_VULKAN
-    return impl_->swapchain->getExtent().height;
-#else
-    return 0;
-#endif
-}
-
-uint32_t Device::getSwapchainColorFormat() const {
-#ifdef TASROVY_API_VULKAN
-    return static_cast<uint32_t>(impl_->swapchain->getImageFormat());
-#else
-    return 0;
-#endif
+const FrameScheduler& Device::getFrameScheduler() const {
+    return *impl_->frameScheduler;
 }
 
 uint32_t Device::getDepthFormat() const {
@@ -540,47 +587,18 @@ size_t Device::getDeferredDeletionCount() const {
 #endif
 }
 
-bool Device::beginFrame(CommandList& commandList) {
-#ifdef TASROVY_API_VULKAN
-    auto cmd = impl_->renderer->beginFrame(*impl_->swapchain);
-    if (!cmd) return false;
-    commandList.useNativeCommandBuffer(reinterpret_cast<uint64_t>(cmd));
-    return true;
-#else
-    return false;
-#endif
-}
 
-void Device::beginFrameRenderPass(CommandList& commandList) {
+NativeOverlayContext Device::getNativeOverlayContext() const {
 #ifdef TASROVY_API_VULKAN
-    impl_->renderer->beginRenderPass(
-        reinterpret_cast<VkCommandBuffer>(commandList.getNativeCommandBuffer()),
-        *impl_->swapchain);
-#endif
-}
-
-void Device::endFrameRenderPass(CommandList& commandList) {
-#ifdef TASROVY_API_VULKAN
-    impl_->renderer->endRenderPass(
-        reinterpret_cast<VkCommandBuffer>(commandList.getNativeCommandBuffer()),
-        *impl_->swapchain);
-#endif
-}
-
-void Device::endFrame() {
-#ifdef TASROVY_API_VULKAN
-    impl_->renderer->endFrame(*impl_->swapchain, *impl_->graphicsQueue, *impl_->presentQueue);
-#endif
-}
-
-std::unique_ptr<Tasrovy::UI::UIOverlay> Device::createUIOverlay(Tasrovy::Windowing::Window& window) {
-#ifdef TASROVY_API_VULKAN
-    Tasrovy::UI::UIOverlay::CreateInfo info{};
-    info.window = window.getHandle();
-    info.instance = impl_->context->getInstance();
-    info.physicalDevice = impl_->context->getPhysicalDevice();
-    info.device = impl_->context->getDevice();
-    info.graphicsQueue = impl_->graphicsQueue->getQueue();
+    NativeOverlayContext info{};
+    info.instance = reinterpret_cast<uint64_t>(
+        impl_->context->getInstance());
+    info.physicalDevice = reinterpret_cast<uint64_t>(
+        impl_->context->getPhysicalDevice());
+    info.device = reinterpret_cast<uint64_t>(
+        impl_->context->getDevice());
+    info.graphicsQueue = reinterpret_cast<uint64_t>(
+        impl_->graphicsQueue->getQueue());
     info.queueFamily = impl_->context->getQueueFamilyIndices().graphicsFamily.value();
     info.minImageCount = impl_->swapchain->getImageCount();
     // ImGui rotates through one vertex/index buffer pair per ImageCount. The
@@ -589,65 +607,14 @@ std::unique_ptr<Tasrovy::UI::UIOverlay> Device::createUIOverlay(Tasrovy::Windowi
     // frame command buffer still references.
     info.imageCount = std::max(
         impl_->swapchain->getImageCount(), impl_->renderer->getMaxFramesInFlight());
-    info.msaaSamples = VK_SAMPLE_COUNT_1_BIT;
-    info.colorFormat = impl_->swapchain->getImageFormat();
-    return std::make_unique<Tasrovy::UI::UIOverlay>(info);
-#else
-    return nullptr;
-#endif
-}
-
-bool Device::beginUIFrame(Tasrovy::UI::UIOverlay& ui) {
-    return ui.beginFrame(getSwapchainWidth(), getSwapchainHeight());
-}
-
-std::vector<double> Device::consumeGpuTimestampDurations() {
-#ifdef TASROVY_API_VULKAN
-    return impl_->renderer->consumeGpuTimestampDurations();
+    info.sampleCount = static_cast<uint32_t>(VK_SAMPLE_COUNT_1_BIT);
+    info.colorFormat =
+        static_cast<uint32_t>(impl_->swapchain->getImageFormat());
+    return info;
 #else
     return {};
 #endif
 }
 
-void Device::beginGpuTimestampFrame(CommandList& commandList, uint32_t queryCount) {
-#ifdef TASROVY_API_VULKAN
-    impl_->renderer->beginGpuTimestampFrame(
-        reinterpret_cast<VkCommandBuffer>(commandList.getNativeCommandBuffer()), queryCount);
-#endif
-}
-
-void Device::writeGpuTimestamp(
-    CommandList& commandList,
-    uint32_t queryIndex,
-    bool begin) {
-#ifdef TASROVY_API_VULKAN
-    impl_->renderer->writeGpuTimestamp(
-        reinterpret_cast<VkCommandBuffer>(commandList.getNativeCommandBuffer()),
-        queryIndex,
-        begin);
-#endif
-}
-
-void Device::endGpuTimestampFrame(uint32_t queryCount) {
-#ifdef TASROVY_API_VULKAN
-    impl_->renderer->endGpuTimestampFrame(queryCount);
-#endif
-}
-
-void Device::renderUI(Tasrovy::UI::UIOverlay& ui, CommandList& commandList) {
-#ifdef TASROVY_API_VULKAN
-    auto cmd = reinterpret_cast<VkCommandBuffer>(commandList.getNativeCommandBuffer());
-    const auto imageIndex = impl_->renderer->getImageIndex();
-    impl_->swapchain->recordLayoutTransition(
-        cmd,
-        imageIndex,
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    ui.endFrame(cmd, impl_->swapchain->getImageView(imageIndex), impl_->swapchain->getExtent());
-    impl_->swapchain->recordLayoutTransition(
-        cmd,
-        imageIndex,
-        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-#endif
-}
 
 } // namespace Tasrovy::RHI

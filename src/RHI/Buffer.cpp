@@ -26,6 +26,7 @@ std::shared_ptr<Buffer> Buffer::CreateFromNative(void* nativeContext, uint64_t s
     if (usageFlags & 0x4)  vkUsage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     if (usageFlags & 0x10) vkUsage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     if (usageFlags & 0x20) vkUsage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (usageFlags & 0x40) vkUsage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 
     VkMemoryPropertyFlags vkProps = hostVisible
         ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT

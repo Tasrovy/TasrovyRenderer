@@ -288,36 +288,14 @@ std::vector<double> Renderer::consumeGpuTimestampDurations() {
     return durations;
 }
 
-void Renderer::beginGpuTimestampFrame(
-    VkCommandBuffer commandBuffer,
-    uint32_t queryCount) {
-    if (_timestampQueryPools.empty() || _currentFrame >= _timestampQueryPools.size()) {
-        return;
+VkQueryPool Renderer::getCurrentTimestampQueryPool() const {
+    if (_currentFrame >= _timestampQueryPools.size()) {
+        return VK_NULL_HANDLE;
     }
-    const uint32_t resetCount = std::min(queryCount, MaxTimestampQueries);
-    if (resetCount > 0) {
-        vkCmdResetQueryPool(
-            commandBuffer, _timestampQueryPools[_currentFrame], 0, resetCount);
-    }
+    return _timestampQueryPools[_currentFrame];
 }
 
-void Renderer::writeGpuTimestamp(
-    VkCommandBuffer commandBuffer,
-    uint32_t queryIndex,
-    bool begin) {
-    if (_timestampQueryPools.empty() ||
-        _currentFrame >= _timestampQueryPools.size() ||
-        queryIndex >= MaxTimestampQueries) {
-        return;
-    }
-    vkCmdWriteTimestamp(
-        commandBuffer,
-        begin ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        _timestampQueryPools[_currentFrame],
-        queryIndex);
-}
-
-void Renderer::endGpuTimestampFrame(uint32_t queryCount) {
+void Renderer::setCurrentTimestampQueryCount(uint32_t queryCount) {
     if (_timestampQueryCounts.empty() || _currentFrame >= _timestampQueryCounts.size()) {
         return;
     }
@@ -338,6 +316,7 @@ void Renderer::waitIdle() {
     _context.flushDeferredDeletions();
 }
 
+#if 0 // Legacy command recording; all GPU commands now belong to RHI::CommandList.
 void Renderer::beginRenderPass(VkCommandBuffer cmd, VulkanSwapchain& swapchain) {
     // ASSUMPTION: _imageIndex 已经由 vkAcquireNextImageKHR 获得
     // 注意：交换链图像通常在 acquire 后 layout 是 PRESENT_SRC_KHR（而不是 UNDEFINED），
@@ -498,3 +477,4 @@ void Renderer::draw(VulkanSwapchain& swapchain, std::unique_ptr<VulkanPipeline>&
     endRenderPass(commandBuffer, swapchain);
     endFrame(swapchain, graphicsQueue, presentQueue);
 }
+#endif

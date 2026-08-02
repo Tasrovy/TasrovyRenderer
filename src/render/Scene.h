@@ -39,6 +39,7 @@ public:
 
     // --- Remove ---
     void removeObject(Object* object);
+    size_t removeObjectsIf(std::function<bool(const Object&)> predicate);
     void removeLight(Light* light);
     void removeCamera(Camera* camera);
 

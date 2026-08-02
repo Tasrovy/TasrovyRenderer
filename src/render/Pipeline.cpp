@@ -1,5 +1,7 @@
 #include "Pipeline.h"
 #include "PipelinePass.h"
+#include "RenderGraph.h"
+#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -10,6 +12,28 @@ PipelineBase::PipelineBase(const std::string& name)
 
 void PipelineBase::setName(const std::string& name) { name_ = name; }
 const std::string& PipelineBase::getName() const { return name_; }
+
+bool PipelineBase::applyConfiguration(
+    const PipelineConfiguration& configuration) {
+    if (configuration_ == configuration) return false;
+    commitConfiguration(configuration);
+    return true;
+}
+
+uint64_t PipelineBase::getConfigurationVersion() const {
+    return configurationVersion_;
+}
+
+void PipelineBase::commitConfiguration(
+    const PipelineConfiguration& configuration) {
+    configuration_ = configuration;
+    markConfigurationDirty();
+}
+
+void PipelineBase::markConfigurationDirty() {
+    ++configurationVersion_;
+    if (configurationVersion_ == 0) configurationVersion_ = 1;
+}
 
 void PipelineBase::addPass(std::shared_ptr<PipelinePass> pass) {
     passes_.push_back(std::move(pass));
@@ -71,58 +95,58 @@ const std::vector<PipelineTextureDesc>& PipelineBase::getTextures() const {
     return textures_;
 }
 
+void PipelineBase::declareBuffer(PipelineBufferDesc desc) {
+    for (auto& buffer : buffers_) {
+        if (buffer.name == desc.name) {
+            buffer = std::move(desc);
+            return;
+        }
+    }
+    buffers_.push_back(std::move(desc));
+}
+
+void PipelineBase::clearBuffers() { buffers_.clear(); }
+
+const PipelineBufferDesc* PipelineBase::getBuffer(
+    const std::string& name) const {
+    const auto found = std::find_if(
+        buffers_.begin(), buffers_.end(),
+        [&](const PipelineBufferDesc& buffer) {
+            return buffer.name == name;
+        });
+    return found == buffers_.end() ? nullptr : &*found;
+}
+
+const std::vector<PipelineBufferDesc>& PipelineBase::getBuffers() const {
+    return buffers_;
+}
+
 std::vector<PipelinePassDependency> PipelineBase::getPassDependencies() const {
     std::vector<PipelinePassDependency> dependencies;
-    std::unordered_map<std::string, std::string> latestWriter;
-
-    for (const auto& texture : textures_) {
-        if (texture.external && !texture.name.empty()) {
-            latestWriter[texture.name] = "External";
-        }
-    }
-
-    for (const auto& pass : passes_) {
-        if (!pass) {
+    const auto graph = RenderGraph::compile(*this);
+    for (const auto& edge : graph.getEdges()) {
+        if (edge.producer >= graph.getNodes().size() ||
+            edge.consumer >= graph.getNodes().size()) {
             continue;
         }
-
-        const auto& passName = pass->getName();
-        for (const auto& resource : pass->getReadResources()) {
-            const auto writer = latestWriter.find(resource.resource);
-            if (writer != latestWriter.end()) {
-                dependencies.push_back({
-                    writer->second,
-                    passName,
-                    resource.resource
-                });
-            }
-        }
-
-        for (const auto& resource : pass->getWriteResources()) {
-            latestWriter[resource.resource] = passName;
-        }
+        dependencies.push_back({
+            graph.getNodes()[edge.producer].pass->getName(),
+            graph.getNodes()[edge.consumer].pass->getName(),
+            edge.resource
+        });
     }
-
     return dependencies;
 }
 
 std::vector<std::string> PipelineBase::validatePassDependencies() const {
     std::vector<std::string> errors;
-    std::unordered_set<std::string> available;
     std::unordered_set<std::string> textureNames;
+    std::unordered_set<std::string> externalTextures;
+    std::unordered_set<std::string> bufferNames;
+    std::unordered_set<std::string> externalBuffers;
     std::unordered_set<std::string> passNames;
+    std::unordered_map<std::string, size_t> passIndices;
     std::unordered_map<std::string, std::vector<size_t>> writersByResource;
-
-    for (size_t passIndex = 0; passIndex < passes_.size(); ++passIndex) {
-        const auto& pass = passes_[passIndex];
-        if (!pass) {
-            errors.push_back("Pipeline has a null pass at index " + std::to_string(passIndex));
-            continue;
-        }
-        for (const auto& resource : pass->getWriteResources()) {
-            writersByResource[resource.resource].push_back(passIndex);
-        }
-    }
 
     for (const auto& texture : textures_) {
         if (texture.name.empty()) {
@@ -131,39 +155,65 @@ std::vector<std::string> PipelineBase::validatePassDependencies() const {
         }
         if (!textureNames.insert(texture.name).second) {
             errors.push_back("Pipeline texture '" + texture.name + "' is declared more than once");
-        } else if (texture.external) {
-            available.insert(texture.name);
+        }
+        if (texture.external) {
+            externalTextures.insert(texture.name);
         }
     }
 
-    const auto requireDeclared = [&](const std::string& resource, const std::string& passName) {
-        if (!getTexture(resource)) {
-            errors.push_back(
-                "Pass '" + passName + "' references undeclared texture '" + resource + "'");
-            return false;
+    for (const auto& buffer : buffers_) {
+        if (buffer.name.empty() || buffer.byteSize == 0) {
+            errors.emplace_back("Pipeline buffer has an empty name or size");
+            continue;
         }
-        return true;
-    };
-
-    const auto requireAvailable = [&](
-        const std::string& resource,
-        const std::string& passName,
-        size_t passIndex) {
-        if (!available.contains(resource)) {
-            const auto futureWriter = writersByResource.find(resource);
-            if (futureWriter != writersByResource.end()) {
-                for (const auto writerIndex : futureWriter->second) {
-                    if (writerIndex > passIndex && writerIndex < passes_.size() && passes_[writerIndex]) {
-                        errors.push_back(
-                            "Pass '" + passName + "' reads texture '" + resource +
-                            "' before producer pass '" + passes_[writerIndex]->getName() + "'");
-                        return false;
-                    }
-                }
-            }
+        if (!bufferNames.insert(buffer.name).second ||
+            textureNames.contains(buffer.name)) {
             errors.push_back(
-                "Pass '" + passName + "' reads texture '" + resource +
-                "' before any producer pass");
+                "Pipeline resource '" + buffer.name +
+                "' is declared more than once");
+        }
+        if (buffer.external || buffer.hostVisible) {
+            externalBuffers.insert(buffer.name);
+        }
+    }
+
+    for (size_t passIndex = 0; passIndex < passes_.size(); ++passIndex) {
+        const auto& pass = passes_[passIndex];
+        if (!pass) {
+            errors.push_back(
+                "Pipeline has a null pass at index " +
+                std::to_string(passIndex));
+            continue;
+        }
+        const auto& passName = pass->getName();
+        if (passName.empty()) {
+            errors.push_back(
+                "Pipeline pass at index " +
+                std::to_string(passIndex) +
+                " has an empty name");
+        } else if (!passNames.insert(passName).second) {
+            errors.push_back(
+                "Pipeline pass '" + passName +
+                "' is declared more than once");
+        } else {
+            passIndices.emplace(passName, passIndex);
+        }
+        for (const auto& resource : pass->getWriteResources()) {
+            writersByResource[resource.resource].push_back(passIndex);
+        }
+    }
+
+    const auto requireDeclared = [&](
+        const PipelineResourceRef& resource,
+        const std::string& passName) {
+        const bool declared = isBufferAccess(resource.access)
+            ? getBuffer(resource.resource) != nullptr
+            : getTexture(resource.resource) != nullptr;
+        if (!declared) {
+            errors.push_back(
+                "Pass '" + passName + "' references undeclared " +
+                (isBufferAccess(resource.access) ? "buffer '" : "texture '") +
+                resource.resource + "'");
             return false;
         }
         return true;
@@ -177,13 +227,50 @@ std::vector<std::string> PipelineBase::validatePassDependencies() const {
 
         const auto& passName = pass->getName();
         std::unordered_set<std::string> materialSlots;
+        std::unordered_set<uint32_t> materialBindings;
         std::unordered_set<uint32_t> sampledBindings;
         std::unordered_set<std::string> writes;
+        const auto readResources = pass->getReadResources();
+        const auto writeResources = pass->getWriteResources();
 
-        if (passName.empty()) {
-            errors.push_back("Pipeline pass at index " + std::to_string(passIndex) + " has an empty name");
-        } else if (!passNames.insert(passName).second) {
-            errors.push_back("Pipeline pass '" + passName + "' is declared more than once");
+        // A shader may not read a current-frame texture that the same pass
+        // also modifies. Vulkan attachment Load followed by attachment writes
+        // remains legal: it is a render-target load/store operation rather
+        // than a sampled/storage feedback loop.
+        for (const auto& read : readResources) {
+            if (read.previousFrame ||
+                (read.access != PipelineResourceAccess::SampledRead &&
+                 read.access != PipelineResourceAccess::StorageRead &&
+                 read.access !=
+                    PipelineResourceAccess::BufferStorageRead)) {
+                continue;
+            }
+            const bool alsoWritten = std::any_of(
+                writeResources.begin(),
+                writeResources.end(),
+                [&](const PipelineResourceRef& write) {
+                    return write.resource == read.resource;
+                });
+            if (alsoWritten) {
+                errors.push_back(
+                    "Pass '" + passName +
+                    "' cannot read texture '" + read.resource +
+                    "' as a shader-readable input while modifying it in the "
+                    "same pass");
+            }
+        }
+
+        for (const auto& dependency : pass->getExecutionDependencies()) {
+            const auto producer = passIndices.find(dependency);
+            if (producer == passIndices.end()) {
+                errors.push_back(
+                    "Pass '" + passName +
+                    "' depends on unknown pass '" + dependency + "'");
+            } else if (producer->second == passIndex) {
+                errors.push_back(
+                    "Pass '" + passName +
+                    "' cannot depend on itself");
+            }
         }
 
         for (const auto& input : pass->getSampledTextures()) {
@@ -197,9 +284,88 @@ std::vector<std::string> PipelineBase::validatePassDependencies() const {
             }
         }
 
-        for (const auto& resource : pass->getReadResources()) {
-            if (requireDeclared(resource.resource, passName)) {
-                requireAvailable(resource.resource, passName, passIndex);
+        for (const auto& imported : pass->getImportedTextures()) {
+            if (imported.handle.empty()) {
+                errors.push_back(
+                    "Pass '" + passName +
+                    "' has an imported texture with an empty handle");
+            }
+            if (imported.binding == 0) {
+                errors.push_back(
+                    "Pass '" + passName +
+                    "' has imported texture '" + imported.handle +
+                    "' at reserved binding 0");
+            } else if (!sampledBindings.insert(imported.binding).second) {
+                errors.push_back(
+                    "Pass '" + passName + "' reuses binding " +
+                    std::to_string(imported.binding) +
+                    " for multiple sampled/imported textures");
+            }
+            if (imported.shaderStages == 0) {
+                errors.push_back(
+                    "Pass '" + passName +
+                    "' has imported texture '" + imported.handle +
+                    "' with no shader stages");
+            }
+        }
+
+        for (const auto& resource : readResources) {
+            if (!requireDeclared(resource, passName) ||
+                resource.previousFrame) {
+                continue;
+            }
+
+            if (!resource.producerPass.empty()) {
+                const auto producer = passIndices.find(resource.producerPass);
+                if (producer == passIndices.end()) {
+                    errors.push_back(
+                        "Pass '" + passName +
+                        "' reads texture '" + resource.resource +
+                        "' from unknown producer pass '" +
+                        resource.producerPass + "'");
+                    continue;
+                }
+                const auto writers = writersByResource.find(resource.resource);
+                const bool writesResource =
+                    writers != writersByResource.end() &&
+                    std::find(
+                        writers->second.begin(),
+                        writers->second.end(),
+                        producer->second) != writers->second.end();
+                if (!writesResource) {
+                    errors.push_back(
+                        "Pass '" + passName +
+                        "' names pass '" + resource.producerPass +
+                        "' as producer of texture '" + resource.resource +
+                        "', but that pass does not write it");
+                }
+                continue;
+            }
+
+            size_t producerCount = 0;
+            if (const auto writers =
+                    writersByResource.find(resource.resource);
+                writers != writersByResource.end()) {
+                for (const size_t writer : writers->second) {
+                    if (writer != passIndex) {
+                        ++producerCount;
+                    }
+                }
+            }
+            const bool external = isBufferAccess(resource.access)
+                ? externalBuffers.contains(resource.resource)
+                : externalTextures.contains(resource.resource);
+            if (producerCount == 0 && !external) {
+                errors.push_back(
+                    "Pass '" + passName +
+                    "' reads texture '" + resource.resource +
+                    "' without a current-frame producer");
+            } else if (producerCount > 1) {
+                errors.push_back(
+                    "Pass '" + passName +
+                    "' reads multi-writer texture '" +
+                    resource.resource +
+                    "' without naming a producer pass");
             }
         }
 
@@ -212,16 +378,34 @@ std::vector<std::string> PipelineBase::validatePassDependencies() const {
                     "Pass '" + passName + "' has duplicate material texture slot '" +
                     materialTexture.slot + "'");
             }
+            if (materialTexture.binding == 0) {
+                errors.push_back(
+                    "Pass '" + passName + "' has material texture slot '" +
+                    materialTexture.slot + "' at reserved binding 0");
+            } else if (!materialBindings.insert(materialTexture.binding).second) {
+                errors.push_back(
+                    "Pass '" + passName +
+                    "' has duplicate material texture binding " +
+                    std::to_string(materialTexture.binding));
+            }
+            if (sampledBindings.contains(materialTexture.binding)) {
+                errors.push_back(
+                    "Pass '" + passName +
+                    "' reuses binding " +
+                    std::to_string(materialTexture.binding) +
+                    " for sampled and material textures");
+            }
         }
 
-        for (const auto& resource : pass->getWriteResources()) {
+        for (const auto& resource : writeResources) {
             if (!writes.insert(resource.resource).second) {
                 errors.push_back(
                     "Pass '" + passName + "' writes texture '" + resource.resource +
                     "' more than once");
             }
-            if (requireDeclared(resource.resource, passName)) {
-                available.insert(resource.resource);
+            if (requireDeclared(resource, passName)) {
+                // Declaration validation is intentionally independent of
+                // addPass() order. RenderGraph resolves producer versions.
             }
         }
     }
@@ -230,7 +414,8 @@ std::vector<std::string> PipelineBase::validatePassDependencies() const {
 }
 
 std::vector<std::string> PipelineBase::validateResourceFlow() const {
-    return validatePassDependencies();
+    const auto graph = RenderGraph::compile(*this);
+    return graph.getDiagnostics();
 }
 
 } // namespace Tasrovy::Render

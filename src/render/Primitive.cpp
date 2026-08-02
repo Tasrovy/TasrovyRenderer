@@ -1,7 +1,6 @@
 #include "Primitive.h"
 
 #include "Mesh.h"
-#include "Model.hpp"
 #include <algorithm>
 #include <unordered_map>
 
@@ -10,18 +9,12 @@ namespace Tasrovy::Render {
 namespace {
 
 std::shared_ptr<Mesh> planeMesh() {
-    static const auto mesh = [] {
-        const auto model = Tasrovy::FS::Model::GenPlane();
-        return Mesh::fromModel(*model);
-    }();
+    static const auto mesh = Mesh::createPlane();
     return mesh;
 }
 
 std::shared_ptr<Mesh> cubeMesh() {
-    static const auto mesh = [] {
-        const auto model = Tasrovy::FS::Model::GenCube();
-        return Mesh::fromModel(*model);
-    }();
+    static const auto mesh = Mesh::createCube();
     return mesh;
 }
 
@@ -35,8 +28,7 @@ std::shared_ptr<Mesh> sphereMesh(uint32_t sectors, uint32_t stacks) {
             return mesh;
         }
     }
-    const auto model = Tasrovy::FS::Model::GenSphere(sectors, stacks);
-    auto mesh = Mesh::fromModel(*model);
+    auto mesh = Mesh::createSphere(sectors, stacks);
     cache[key] = mesh;
     return mesh;
 }

@@ -1,35 +1,29 @@
 #pragma once
 
+#include "TSVector.h"
+
 #include <cstdint>
 #include <string>
 
 namespace Tasrovy::Render {
-
-enum class MaterialTextureSemantic : uint8_t {
-    BaseColor,
-    Normal,
-    MetallicRoughnessAO,
-    Emissive,
-    Opacity
-};
 
 enum class MaterialTextureColorSpace : uint8_t {
     Linear,
     SRGB
 };
 
-enum class MaterialTextureFallback : uint8_t {
-    White,
-    Black,
-    FlatNormal,
-    MetallicRoughnessAO
+struct MaterialTextureDefault {
+    std::string name;
+    TSVec4f color = TSVec4f(1.0f);
+    MaterialTextureColorSpace colorSpace = MaterialTextureColorSpace::Linear;
 };
 
 struct MaterialTextureRequirement {
-    MaterialTextureSemantic semantic = MaterialTextureSemantic::BaseColor;
     std::string slot;
+    uint32_t binding = 0;
     MaterialTextureColorSpace colorSpace = MaterialTextureColorSpace::Linear;
-    MaterialTextureFallback fallback = MaterialTextureFallback::White;
+    std::string defaultTexture;
+    TSVec4f defaultColor = TSVec4f(1.0f);
 };
 
 } // namespace Tasrovy::Render

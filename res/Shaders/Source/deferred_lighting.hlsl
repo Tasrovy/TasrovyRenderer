@@ -27,8 +27,20 @@ cbuffer UBO : register(b0, space0)
     float4 advancedLightingParams;
     float4 pcssParams;
     float4 ssaoParams;
-    float4 ssdoParams;
+    float4 postEffectParams;
     float4 ssrParams;
+    matrix previousView;
+    matrix previousProj;
+    matrix previousModel;
+    float4 taaParams;
+    matrix csmLightViewProj[4];
+    float4 csmSplits;
+    // x cascade count, y transition fraction, z maximum shadow distance.
+    float4 csmParams;
+    // xy physical atlas UV offset, zw physical atlas UV scale.
+    float4 vsmPageTable[4];
+    // x atlas resolution, y page resolution, z resident page count.
+    float4 vsmParams;
 };
 
 struct VSOutput
@@ -69,6 +81,18 @@ struct VSOutput
 
 [[vk::combinedImageSampler]] Texture2D hbaoTexture : register(t11, space0);
 [[vk::combinedImageSampler]] SamplerState hbaoSampler : register(s11, space0);
+
+[[vk::combinedImageSampler]] Texture2D shadowMap1 : register(t12, space0);
+[[vk::combinedImageSampler]] SamplerState shadowSampler1 : register(s12, space0);
+
+[[vk::combinedImageSampler]] Texture2D shadowMap2 : register(t13, space0);
+[[vk::combinedImageSampler]] SamplerState shadowSampler2 : register(s13, space0);
+
+[[vk::combinedImageSampler]] Texture2D shadowMap3 : register(t14, space0);
+[[vk::combinedImageSampler]] SamplerState shadowSampler3 : register(s14, space0);
+
+[[vk::combinedImageSampler]] Texture2D virtualShadowAtlas : register(t15, space0);
+[[vk::combinedImageSampler]] SamplerState virtualShadowSampler : register(s15, space0);
 
 #define PI 3.14159265359f
 
@@ -139,16 +163,80 @@ static const float2 PoissonDisk[16] = {
     float2(0.19984126f, 0.78641367f), float2(0.14383161f, -0.14100790f)
 };
 
-static const float2 ScreenDirections[8] = {
-    float2(1.0f, 0.0f), float2(-1.0f, 0.0f),
-    float2(0.0f, 1.0f), float2(0.0f, -1.0f),
-    float2(0.7071f, 0.7071f), float2(-0.7071f, 0.7071f),
-    float2(0.7071f, -0.7071f), float2(-0.7071f, -0.7071f)
-};
-
-float CalculateShadow(float3 worldPos, float3 normal, float3 lightDirection)
+float SampleCascadeDepth(uint cascadeIndex, float2 uv)
 {
-    float4 lightClip = mul(float4(worldPos, 1.0f), lightViewProj);
+    if (csmParams.w > 1.5f) {
+        float4 page = vsmPageTable[cascadeIndex];
+        float pageTexel = rcp(max(vsmParams.y, 1.0f));
+        float2 safeUv = clamp(
+            uv, pageTexel * 0.5f, 1.0f - pageTexel * 0.5f);
+        float2 atlasUv = page.xy + safeUv * page.zw;
+        return virtualShadowAtlas.SampleLevel(
+            virtualShadowSampler, atlasUv, 0.0f).r;
+    }
+    if (cascadeIndex == 0) {
+        return shadowMap.SampleLevel(shadowSampler, uv, 0.0f).r;
+    }
+    if (cascadeIndex == 1) {
+        return shadowMap1.SampleLevel(shadowSampler1, uv, 0.0f).r;
+    }
+    if (cascadeIndex == 2) {
+        return shadowMap2.SampleLevel(shadowSampler2, uv, 0.0f).r;
+    }
+    return shadowMap3.SampleLevel(shadowSampler3, uv, 0.0f).r;
+}
+
+float4 GatherCascadeDepth(uint cascadeIndex, float2 uv)
+{
+    if (csmParams.w > 1.5f) {
+        float4 page = vsmPageTable[cascadeIndex];
+        float pageTexel = rcp(max(vsmParams.y, 1.0f));
+        float2 safeUv = clamp(uv, pageTexel, 1.0f - pageTexel);
+        float2 atlasUv = page.xy + safeUv * page.zw;
+        return virtualShadowAtlas.GatherRed(virtualShadowSampler, atlasUv);
+    }
+    if (cascadeIndex == 0) {
+        return shadowMap.GatherRed(shadowSampler, uv);
+    }
+    if (cascadeIndex == 1) {
+        return shadowMap1.GatherRed(shadowSampler1, uv);
+    }
+    if (cascadeIndex == 2) {
+        return shadowMap2.GatherRed(shadowSampler2, uv);
+    }
+    return shadowMap3.GatherRed(shadowSampler3, uv);
+}
+
+void GetCascadeDimensions(
+    uint cascadeIndex,
+    out uint shadowWidth,
+    out uint shadowHeight)
+{
+    if (csmParams.w > 1.5f) {
+        shadowWidth = (uint)round(vsmParams.y);
+        shadowHeight = shadowWidth;
+        return;
+    }
+    if (cascadeIndex == 0) {
+        shadowMap.GetDimensions(shadowWidth, shadowHeight);
+    } else if (cascadeIndex == 1) {
+        shadowMap1.GetDimensions(shadowWidth, shadowHeight);
+    } else if (cascadeIndex == 2) {
+        shadowMap2.GetDimensions(shadowWidth, shadowHeight);
+    } else {
+        shadowMap3.GetDimensions(shadowWidth, shadowHeight);
+    }
+}
+
+float CalculateCascadeShadow(
+    uint cascadeIndex,
+    float3 worldPos,
+    float3 normal,
+    float3 lightDirection)
+{
+    float4 lightClip = mul(
+        float4(worldPos, 1.0f),
+        csmLightViewProj[cascadeIndex]);
     if (lightClip.w <= 0.0f) {
         return 0.0f;
     }
@@ -163,7 +251,7 @@ float CalculateShadow(float3 worldPos, float3 normal, float3 lightDirection)
 
     uint shadowWidth;
     uint shadowHeight;
-    shadowMap.GetDimensions(shadowWidth, shadowHeight);
+    GetCascadeDimensions(cascadeIndex, shadowWidth, shadowHeight);
     float2 texelSize = rcp(float2(shadowWidth, shadowHeight));
     float bias = max(
         shadowParams.x * (1.0f - saturate(dot(normal, lightDirection))),
@@ -173,7 +261,7 @@ float CalculateShadow(float3 worldPos, float3 normal, float3 lightDirection)
     // Classify the local shadow footprint first. Most pixels are fully lit or
     // fully shadowed and can return after one hardware gather; only boundaries
     // need an expensive soft-shadow search.
-    float4 coarseDepths = shadowMap.GatherRed(shadowSampler, shadowUv);
+    float4 coarseDepths = GatherCascadeDepth(cascadeIndex, shadowUv);
     float4 coarseShadow = step(coarseDepths, receiverDepth.xxxx);
     float coarseCoverage = dot(coarseShadow, 0.25f.xxxx);
     const bool shadowEdge = coarseCoverage > 0.001f && coarseCoverage < 0.999f;
@@ -199,7 +287,7 @@ float CalculateShadow(float3 worldPos, float3 normal, float3 lightDirection)
                 shadowUv + PoissonDisk[blockerIndex] * searchRadius,
                 texelSize * 0.5f,
                 1.0f - texelSize * 0.5f);
-            float sampleDepth = shadowMap.SampleLevel(shadowSampler, sampleUv, 0.0f).r;
+            float sampleDepth = SampleCascadeDepth(cascadeIndex, sampleUv);
             if (sampleDepth < receiverDepth) {
                 blockerDepth += sampleDepth;
                 blockerCount += 1.0f;
@@ -228,7 +316,7 @@ float CalculateShadow(float3 worldPos, float3 normal, float3 lightDirection)
                 shadowUv + PoissonDisk[filterIndex] * filterRadius,
                 texelSize * 0.5f,
                 1.0f - texelSize * 0.5f);
-            float sampleDepth = shadowMap.SampleLevel(shadowSampler, sampleUv, 0.0f).r;
+            float sampleDepth = SampleCascadeDepth(cascadeIndex, sampleUv);
             shadow += receiverDepth > sampleDepth ? 1.0f : 0.0f;
         }
         return shadow / (float)filterSampleCount;
@@ -237,48 +325,47 @@ float CalculateShadow(float3 worldPos, float3 normal, float3 lightDirection)
     return coarseCoverage;
 }
 
-float3 CalculateSSDO(float2 uv, float3 worldPos, float3 normal)
+float CalculateShadow(float3 worldPos, float3 normal, float3 lightDirection)
 {
-    if (advancedLightingParams.z < 0.5f) {
-        return 0.0f.xxx;
+    const float viewDepth = -mul(float4(worldPos, 1.0f), view).z;
+    if (viewDepth <= 0.0f || viewDepth > csmSplits.w) {
+        return 0.0f;
     }
 
-    uint width;
-    uint height;
-    sceneDepth.GetDimensions(width, height);
-    float2 texelSize = rcp(float2(width, height));
-    float3 indirect = 0.0f.xxx;
-    float totalWeight = 0.0f;
-    [unroll]
-    for (int sampleIndex = 0; sampleIndex < 8; ++sampleIndex) {
-        float2 sampleUv = saturate(
-            uv + ScreenDirections[sampleIndex] * texelSize * ssdoParams.x);
-        float sampleDepth = sceneDepth.SampleLevel(sceneDepthSampler, sampleUv, 0.0f).r;
-        if (sampleDepth >= 0.99999f) {
-            continue;
-        }
-        float3 samplePosition =
-            gBufferWorldPos.SampleLevel(gBufferWorldPosSampler, sampleUv, 0.0f).xyz;
-        float3 delta = samplePosition - worldPos;
-        float distanceToSample = length(delta);
-        if (distanceToSample < 0.0001f || distanceToSample > ssdoParams.z) {
-            continue;
-        }
-        float3 direction = delta / distanceToSample;
-        float3 sampleNormal = DecodeNormal(
-            gBufferNormal.SampleLevel(gBufferNormalSampler, sampleUv, 0.0f).rgb);
-        float geometry = saturate(dot(normal, direction) - ssdoParams.w) *
-            saturate(dot(sampleNormal, -direction));
-        float rangeWeight = 1.0f - saturate(distanceToSample / ssdoParams.z);
-        float weight = geometry * rangeWeight;
-        float3 sampleAlbedo =
-            gBufferAlbedo.SampleLevel(gBufferAlbedoSampler, sampleUv, 0.0f).rgb;
-        indirect += sampleAlbedo * weight;
-        totalWeight += weight;
+    uint cascadeIndex = 0;
+    if (viewDepth > csmSplits.x) {
+        cascadeIndex = 1;
     }
-    return totalWeight > 0.0001f
-        ? indirect / totalWeight * ssdoParams.y
-        : 0.0f.xxx;
+    if (viewDepth > csmSplits.y) {
+        cascadeIndex = 2;
+    }
+    if (viewDepth > csmSplits.z) {
+        cascadeIndex = 3;
+    }
+
+    float shadow = CalculateCascadeShadow(
+        cascadeIndex, worldPos, normal, lightDirection);
+    const uint cascadeCount = clamp((uint)round(csmParams.x), 1u, 4u);
+    if (cascadeIndex + 1u >= cascadeCount) {
+        return shadow;
+    }
+
+    const float splitStart = cascadeIndex == 0
+        ? 0.0f
+        : csmSplits[cascadeIndex - 1u];
+    const float splitEnd = csmSplits[cascadeIndex];
+    const float transitionWidth = max(
+        (splitEnd - splitStart) * saturate(csmParams.y),
+        0.001f);
+    const float blend = saturate(
+        (viewDepth - (splitEnd - transitionWidth)) / transitionWidth);
+    if (blend <= 0.0f) {
+        return shadow;
+    }
+
+    const float nextShadow = CalculateCascadeShadow(
+        cascadeIndex + 1u, worldPos, normal, lightDirection);
+    return lerp(shadow, nextShadow, blend);
 }
 
 float4 PSMain(VSOutput input) : SV_Target
@@ -387,11 +474,9 @@ float4 PSMain(VSOutput input) : SV_Target
     float screenAo = advancedLightingParams.y > 0.5f
         ? hbaoTexture.SampleLevel(hbaoSampler, input.uv, 0.0f).r
         : 1.0f;
-    float3 screenIndirect = CalculateSSDO(input.uv, worldPos, normal) * albedo;
     float3 color =
         (diffuseIBL + specularIBL) * ao * screenAo * lightMeta.y +
-        direct * lerp(1.0f, screenAo, 0.35f) +
-        screenIndirect;
+        direct * lerp(1.0f, screenAo, 0.35f);
     float rim = pow(
         saturate(1.0f - NdotV),
         max(worldPositionAndRimPower.w, 0.25f)) * max(rimEffects.a, 0.0f);

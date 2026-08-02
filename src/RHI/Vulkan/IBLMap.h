@@ -1,5 +1,8 @@
 #pragma once
-#include "Dependencies.h"
+#include "ImmediateSubmitter.h"
+#include "VulkanDescriptorSetLayout.h"
+#include "VulkanImage.h"
+#include "VulkanPipeline.h"
 #include <unordered_map>
 
 struct IBTextures {

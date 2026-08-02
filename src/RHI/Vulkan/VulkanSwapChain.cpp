@@ -5,7 +5,6 @@
 #include <array>
 #include <limits>
 #include <utility>
-#include "Dependencies.h"
 #include <Logger.hpp>
 
 VulkanSwapchain::VulkanSwapchain(VulkanContext& context) 

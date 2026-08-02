@@ -7,7 +7,10 @@ public:
     DescriptorWriter(VulkanContext& context, VkDescriptorSet targetSet);
 
     // 绑定一个 Buffer
-    DescriptorWriter& writeBuffer(uint32_t binding, const VkDescriptorBufferInfo* bufferInfo);
+    DescriptorWriter& writeBuffer(
+        uint32_t binding,
+        const VkDescriptorBufferInfo* bufferInfo,
+        VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     
     // 绑定一个 Image (包含 Sampler)
     DescriptorWriter& writeImage(uint32_t binding, const VkDescriptorImageInfo* imageInfo);

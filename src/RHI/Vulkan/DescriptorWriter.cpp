@@ -4,13 +4,16 @@
 DescriptorWriter::DescriptorWriter(VulkanContext& context, VkDescriptorSet targetSet)
     : _context(context), _targetSet(targetSet) {}
 
-DescriptorWriter& DescriptorWriter::writeBuffer(uint32_t binding, const VkDescriptorBufferInfo* bufferInfo) {
+DescriptorWriter& DescriptorWriter::writeBuffer(
+    uint32_t binding,
+    const VkDescriptorBufferInfo* bufferInfo,
+    VkDescriptorType descriptorType) {
     VkWriteDescriptorSet write{};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     write.dstSet = _targetSet;
     write.dstBinding = binding;
     write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // 注意：这里可以根据需要变得更通用
-    if(bufferInfo->range == VK_WHOLE_SIZE) write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.descriptorType = descriptorType;
     write.descriptorCount = 1;
     write.pBufferInfo = bufferInfo;
 

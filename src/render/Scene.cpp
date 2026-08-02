@@ -71,6 +71,16 @@ void Scene::removeObject(Object* object) {
     }
 }
 
+size_t Scene::removeObjectsIf(std::function<bool(const Object&)> predicate) {
+    const size_t previousSize = objects_.size();
+    std::erase_if(
+        objects_,
+        [&](const std::shared_ptr<Object>& object) {
+            return object && predicate(*object);
+        });
+    return previousSize - objects_.size();
+}
+
 void Scene::removeLight(Light* light) {
     auto it = std::find_if(lights_.begin(), lights_.end(),
         [light](const std::unique_ptr<Light>& ptr) { return ptr.get() == light; });

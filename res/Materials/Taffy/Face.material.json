@@ -1,0 +1,13 @@
+{
+  "name": "TaffyFace",
+  "properties": [
+    {"name": "baseColorFactor", "type": "float4", "value": [1.0, 1.0, 1.0, 1.0]},
+    {"name": "baseColorTexture", "type": "texture2D", "value": "res/Textures/Taffy/face.png"},
+    {"name": "metallic", "type": "float", "value": 0.0},
+    {"name": "roughness", "type": "float", "value": 0.75},
+    {"name": "ao", "type": "float", "value": 1.0},
+    {"name": "rimStrength", "type": "float", "value": 0.22},
+    {"name": "rimPower", "type": "float", "value": 3.5},
+    {"name": "rimColor", "type": "float3", "value": [1.0, 0.72, 0.78]}
+  ]
+}

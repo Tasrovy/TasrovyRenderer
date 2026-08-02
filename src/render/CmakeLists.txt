@@ -5,7 +5,10 @@ add_library(TasrovyRender STATIC
         Light.h
         Material.cpp
         Material.h
+        MaterialDescriptor.cpp
+        MaterialDescriptor.h
         MaterialTexture.h
+        PBRMaterialBindings.h
         Object.cpp
         Object.h
         Primitive.cpp
@@ -27,6 +30,11 @@ add_library(TasrovyRender STATIC
         Pipeline.cpp
         Pipeline.h
         PipelineResource.h
+        RenderGraph.cpp
+        RenderGraph.h
+        FramePacket.h
+        FrameCompiler.cpp
+        FrameCompiler.h
         PipelinePass.cpp
         PipelinePass.h
         Skybox.cpp
@@ -37,10 +45,22 @@ add_library(TasrovyRender STATIC
         DeferredPipeline.h
 )
 
+find_package(nlohmann_json CONFIG REQUIRED)
+
 target_include_directories(TasrovyRender PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_link_libraries(TasrovyRender PUBLIC
-        TasrovyRHI
         TasrovyBase
-        TasrovyFileSystem
+        nlohmann_json::nlohmann_json
 )
+
+if (BUILD_TESTING)
+    add_executable(TasrovyRenderGraphOrderTest
+            tests/RenderGraphOrderTest.cpp
+    )
+    target_link_libraries(TasrovyRenderGraphOrderTest PRIVATE TasrovyRender)
+    add_test(
+            NAME TasrovyRenderGraphOrder
+            COMMAND TasrovyRenderGraphOrderTest
+    )
+endif()

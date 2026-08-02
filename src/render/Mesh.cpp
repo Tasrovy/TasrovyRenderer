@@ -1,6 +1,8 @@
 #include "Mesh.h"
 #include "Material.h"
-#include "Model.hpp"
+
+#include <algorithm>
+#include <cmath>
 
 namespace Tasrovy::Render {
 
@@ -12,37 +14,106 @@ std::shared_ptr<Mesh> Mesh::create(
     mesh->vertices_ = std::move(vertices);
     mesh->indices_ = std::move(indices);
     mesh->submeshes_ = std::move(submeshes);
-    mesh->buildVertexDescriptions();
     return mesh;
 }
 
-std::shared_ptr<Mesh> Mesh::fromModel(const Tasrovy::FS::Model& model) {
-    auto mesh = std::shared_ptr<Mesh>(new Mesh());
+std::shared_ptr<Mesh> Mesh::createPlane() {
+    const float half = 0.5f;
+    const TSVec3f normal(0.0f, 1.0f, 0.0f);
+    const TSVec3f tangent(1.0f, 0.0f, 0.0f);
+    const TSVec3f bitangent(0.0f, 0.0f, -1.0f);
+    const TSVec3f white(1.0f);
+    const TSVec2f zero(0.0f);
+    return create({
+        {TSVec3f(-half, 0.0f, -half), normal, tangent, bitangent, white, TSVec2f(0.0f, 1.0f), zero, zero, zero},
+        {TSVec3f(-half, 0.0f,  half), normal, tangent, bitangent, white, TSVec2f(0.0f, 0.0f), zero, zero, zero},
+        {TSVec3f( half, 0.0f,  half), normal, tangent, bitangent, white, TSVec2f(1.0f, 0.0f), zero, zero, zero},
+        {TSVec3f( half, 0.0f, -half), normal, tangent, bitangent, white, TSVec2f(1.0f, 1.0f), zero, zero, zero}
+    }, {0, 1, 2, 0, 2, 3});
+}
 
-    mesh->vertices_.reserve(model.GetVertices().size());
-    for (const auto& v : model.GetVertices()) {
-        MeshVertex mv;
-        mv.position = v.position;
-        mv.normal = v.normal;
-        mv.tangent = v.tangent;
-        mv.bitangent = v.bitangent;
-        mv.vertexColor = v.vertexColor;
-        mv.uv0 = v.uv0;
-        mv.uv1 = v.uv1;
-        mv.uv2 = v.uv2;
-        mv.uv3 = v.uv3;
-        mesh->vertices_.push_back(mv);
+std::shared_ptr<Mesh> Mesh::createCube() {
+    const float h = 0.5f;
+    const TSVec3f white(1.0f);
+    const TSVec2f zero(0.0f);
+    const auto vertex = [&](TSVec3f position, TSVec3f normal, TSVec3f tangent, TSVec2f uv) {
+        return MeshVertex{
+            position, normal, tangent, cross(normal, tangent), white,
+            uv, zero, zero, zero
+        };
+    };
+    std::vector<MeshVertex> vertices = {
+        vertex({-h,-h, h},{ 0, 0, 1},{ 1, 0, 0},{0,0}), vertex({ h,-h, h},{ 0, 0, 1},{ 1, 0, 0},{1,0}),
+        vertex({ h, h, h},{ 0, 0, 1},{ 1, 0, 0},{1,1}), vertex({-h, h, h},{ 0, 0, 1},{ 1, 0, 0},{0,1}),
+        vertex({ h,-h,-h},{ 0, 0,-1},{-1, 0, 0},{0,0}), vertex({-h,-h,-h},{ 0, 0,-1},{-1, 0, 0},{1,0}),
+        vertex({-h, h,-h},{ 0, 0,-1},{-1, 0, 0},{1,1}), vertex({ h, h,-h},{ 0, 0,-1},{-1, 0, 0},{0,1}),
+        vertex({ h,-h, h},{ 1, 0, 0},{ 0, 0, 1},{0,0}), vertex({ h,-h,-h},{ 1, 0, 0},{ 0, 0, 1},{1,0}),
+        vertex({ h, h,-h},{ 1, 0, 0},{ 0, 0, 1},{1,1}), vertex({ h, h, h},{ 1, 0, 0},{ 0, 0, 1},{0,1}),
+        vertex({-h,-h,-h},{-1, 0, 0},{ 0, 0,-1},{0,0}), vertex({-h,-h, h},{-1, 0, 0},{ 0, 0,-1},{1,0}),
+        vertex({-h, h, h},{-1, 0, 0},{ 0, 0,-1},{1,1}), vertex({-h, h,-h},{-1, 0, 0},{ 0, 0,-1},{0,1}),
+        vertex({-h, h, h},{ 0, 1, 0},{ 1, 0, 0},{0,0}), vertex({ h, h, h},{ 0, 1, 0},{ 1, 0, 0},{1,0}),
+        vertex({ h, h,-h},{ 0, 1, 0},{ 1, 0, 0},{1,1}), vertex({-h, h,-h},{ 0, 1, 0},{ 1, 0, 0},{0,1}),
+        vertex({-h,-h,-h},{ 0,-1, 0},{ 1, 0, 0},{0,0}), vertex({ h,-h,-h},{ 0,-1, 0},{ 1, 0, 0},{1,0}),
+        vertex({ h,-h, h},{ 0,-1, 0},{ 1, 0, 0},{1,1}), vertex({-h,-h, h},{ 0,-1, 0},{ 1, 0, 0},{0,1})
+    };
+    return create(std::move(vertices), {
+        0,1,2,2,3,0, 4,5,6,6,7,4, 8,9,10,10,11,8,
+        12,13,14,14,15,12, 16,17,18,18,19,16, 20,21,22,22,23,20
+    });
+}
+
+std::shared_ptr<Mesh> Mesh::createSphere(
+    uint32_t sectors,
+    uint32_t stacks) {
+    sectors = std::max(3u, sectors);
+    stacks = std::max(2u, stacks);
+    std::vector<MeshVertex> vertices;
+    std::vector<uint32_t> indices;
+    vertices.reserve(static_cast<size_t>(sectors) * stacks * 4u);
+    indices.reserve(static_cast<size_t>(sectors) * stacks * 6u);
+    const TSVec2f zero(0.0f);
+    const TSVec3f white(1.0f);
+    const auto point = [](float theta, float phi) {
+        return TSVec3f(
+            std::sin(phi) * std::cos(theta),
+            std::cos(phi),
+            std::sin(phi) * std::sin(theta));
+    };
+    for (uint32_t sector = 0; sector < sectors; ++sector) {
+        for (uint32_t stack = 0; stack < stacks; ++stack) {
+            const float u0 = static_cast<float>(sector) / sectors;
+            const float u1 = static_cast<float>(sector + 1u) / sectors;
+            const float v0 = static_cast<float>(stack) / stacks;
+            const float v1 = static_cast<float>(stack + 1u) / stacks;
+            const float theta0 = u0 * two_pi<float>();
+            const float theta1 = u1 * two_pi<float>();
+            const float phi0 = v0 * pi<float>();
+            const float phi1 = v1 * pi<float>();
+            const TSVec3f positions[] = {
+                point(theta0, phi0), point(theta1, phi0),
+                point(theta0, phi1), point(theta1, phi1)
+            };
+            const TSVec2f uvs[] = {{u0,v0},{u1,v0},{u0,v1},{u1,v1}};
+            const float thetas[] = {theta0, theta1, theta0, theta1};
+            const uint32_t base = static_cast<uint32_t>(vertices.size());
+            for (uint32_t index = 0; index < 4; ++index) {
+                TSVec3f tangent(
+                    -std::sin(thetas[index]), 0.0f,
+                    std::cos(thetas[index]));
+                tangent = normalize(tangent);
+                vertices.push_back({
+                    positions[index], positions[index], tangent,
+                    cross(positions[index], tangent), white,
+                    uvs[index], zero, zero, zero
+                });
+            }
+            indices.insert(indices.end(), {
+                base, base + 1u, base + 2u,
+                base + 1u, base + 3u, base + 2u
+            });
+        }
     }
-
-    mesh->indices_ = model.GetIndices();
-
-    mesh->submeshes_.reserve(model.GetSubmeshes().size());
-    for (const auto& s : model.GetSubmeshes()) {
-        mesh->submeshes_.emplace_back(s.materialName, s.indexOffset, s.indexCount);
-    }
-
-    mesh->buildVertexDescriptions();
-    return mesh;
+    return create(std::move(vertices), std::move(indices));
 }
 
 void Mesh::setVertices(std::vector<MeshVertex> vertices) { vertices_ = std::move(vertices); }
@@ -116,32 +187,30 @@ void Mesh::calculateTangents() {
     }
 }
 
-void Mesh::buildVertexDescriptions() {
-    vertexBindingDesc_ = {{
+const std::vector<VertexBindingDescription>&
+Mesh::getVertexBindingDescription() {
+    static const std::vector<VertexBindingDescription> descriptions = {{
         0,
         sizeof(MeshVertex),
-        VK_VERTEX_INPUT_RATE_VERTEX
+        VertexInputRate::PerVertex
     }};
+    return descriptions;
+}
 
-    vertexAttrDesc_ = {
-        { MeshVertexLocation::Position, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, position) },
-        { MeshVertexLocation::Normal, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal) },
-        { MeshVertexLocation::Tangent, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, tangent) },
-        { MeshVertexLocation::Bitangent, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, bitangent) },
-        { MeshVertexLocation::UV0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(MeshVertex, uv0) },
-        { MeshVertexLocation::VertexColor, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, vertexColor) },
-        { MeshVertexLocation::UV1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(MeshVertex, uv1) },
-        { MeshVertexLocation::UV2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(MeshVertex, uv2) },
-        { MeshVertexLocation::UV3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(MeshVertex, uv3) },
+const std::vector<VertexAttributeDescription>&
+Mesh::getVertexAttributeDescription() {
+    static const std::vector<VertexAttributeDescription> descriptions = {
+        { MeshVertexLocation::Position, 0, VertexElementFormat::Float3, offsetof(MeshVertex, position) },
+        { MeshVertexLocation::Normal, 0, VertexElementFormat::Float3, offsetof(MeshVertex, normal) },
+        { MeshVertexLocation::Tangent, 0, VertexElementFormat::Float3, offsetof(MeshVertex, tangent) },
+        { MeshVertexLocation::Bitangent, 0, VertexElementFormat::Float3, offsetof(MeshVertex, bitangent) },
+        { MeshVertexLocation::UV0, 0, VertexElementFormat::Float2, offsetof(MeshVertex, uv0) },
+        { MeshVertexLocation::VertexColor, 0, VertexElementFormat::Float3, offsetof(MeshVertex, vertexColor) },
+        { MeshVertexLocation::UV1, 0, VertexElementFormat::Float2, offsetof(MeshVertex, uv1) },
+        { MeshVertexLocation::UV2, 0, VertexElementFormat::Float2, offsetof(MeshVertex, uv2) },
+        { MeshVertexLocation::UV3, 0, VertexElementFormat::Float2, offsetof(MeshVertex, uv3) },
     };
-}
-
-const std::vector<VkVertexInputBindingDescription>& Mesh::getVertexBindingDescription() {
-    return vertexBindingDesc_;
-}
-
-const std::vector<VkVertexInputAttributeDescription>& Mesh::getVertexAttributeDescription() {
-    return vertexAttrDesc_;
+    return descriptions;
 }
 
 } // namespace Tasrovy::Render

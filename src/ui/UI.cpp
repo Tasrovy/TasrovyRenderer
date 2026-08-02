@@ -1,4 +1,5 @@
 #include "UI.h"
+#include <volk.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
@@ -22,6 +23,13 @@ UIOverlay::UIOverlay(const CreateInfo& info)
     , _device(info.device)
     , _colorFormat(info.colorFormat)
 {
+    const auto instance = reinterpret_cast<VkInstance>(info.instance);
+    const auto physicalDevice =
+        reinterpret_cast<VkPhysicalDevice>(info.physicalDevice);
+    const auto device = reinterpret_cast<VkDevice>(info.device);
+    const auto graphicsQueue =
+        reinterpret_cast<VkQueue>(info.graphicsQueue);
+    const auto colorFormat = static_cast<VkFormat>(info.colorFormat);
     LOG_INFO("UIOverlay: creating descriptor pool");
     VkDescriptorPoolSize pool_sizes[] = {
         { VK_DESCRIPTOR_TYPE_SAMPLER, 10 },
@@ -44,9 +52,12 @@ UIOverlay::UIOverlay(const CreateInfo& info)
     pool_info.poolSizeCount = std::size(pool_sizes);
     pool_info.pPoolSizes = pool_sizes;
 
-    if (vkCreateDescriptorPool(_device, &pool_info, nullptr, &_descriptorPool) != VK_SUCCESS) {
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(device, &pool_info, nullptr, &descriptorPool) != VK_SUCCESS) {
         throw std::runtime_error("Failed to create ImGui descriptor pool!");
     }
+    _descriptorPool =
+        reinterpret_cast<uint64_t>(descriptorPool);
     LOG_INFO("UIOverlay: descriptor pool created");
 
     // Init ImGui context
@@ -60,8 +71,8 @@ UIOverlay::UIOverlay(const CreateInfo& info)
     // Load Vulkan functions via volk
     static VkInstance s_instance = VK_NULL_HANDLE;
     static VkDevice   s_device   = VK_NULL_HANDLE;
-    s_instance = info.instance;
-    s_device   = info.device;
+    s_instance = instance;
+    s_device   = device;
 
     ImGui_ImplVulkan_LoadFunctions(VK_API_VERSION_1_3,
         [](const char* name, void*) -> PFN_vkVoidFunction {
@@ -76,7 +87,9 @@ UIOverlay::UIOverlay(const CreateInfo& info)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    // Multi-viewport creates additional GLFW windows and Vulkan swapchains.
+    // Keep it disabled until those windows are integrated with the main-thread
+    // event loop and FrameScheduler submission/synchronization path.
 
     // DPI scaling
     float mainScale = ImGui_ImplGlfw_GetContentScaleForMonitor(glfwGetPrimaryMonitor());
@@ -94,19 +107,20 @@ UIOverlay::UIOverlay(const CreateInfo& info)
     VkPipelineRenderingCreateInfoKHR renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
     renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachmentFormats = &_colorFormat;
+    renderingInfo.pColorAttachmentFormats = &colorFormat;
 
     ImGui_ImplVulkan_InitInfo init_info{};
-    init_info.Instance = info.instance;
-    init_info.PhysicalDevice = info.physicalDevice;
-    init_info.Device = info.device;
+    init_info.Instance = instance;
+    init_info.PhysicalDevice = physicalDevice;
+    init_info.Device = device;
     init_info.QueueFamily = info.queueFamily;
-    init_info.Queue = info.graphicsQueue;
-    init_info.DescriptorPool = _descriptorPool;
+    init_info.Queue = graphicsQueue;
+    init_info.DescriptorPool = descriptorPool;
     init_info.MinImageCount = info.minImageCount;
     init_info.ImageCount = info.imageCount;
     init_info.PipelineInfoMain.PipelineRenderingCreateInfo = renderingInfo;
-    init_info.PipelineInfoMain.MSAASamples = info.msaaSamples;
+    init_info.PipelineInfoMain.MSAASamples =
+        static_cast<VkSampleCountFlagBits>(info.msaaSamples);
     init_info.UseDynamicRendering = true;
     init_info.Allocator = nullptr;
     init_info.CheckVkResultFn = check_vk_result;
@@ -120,7 +134,10 @@ UIOverlay::~UIOverlay() {
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
-    vkDestroyDescriptorPool(_device, _descriptorPool, nullptr);
+    vkDestroyDescriptorPool(
+        reinterpret_cast<VkDevice>(_device),
+        reinterpret_cast<VkDescriptorPool>(_descriptorPool),
+        nullptr);
 }
 
 bool UIOverlay::beginFrame(uint32_t framebufferWidth, uint32_t framebufferHeight) {
@@ -139,41 +156,7 @@ bool UIOverlay::beginFrame(uint32_t framebufferWidth, uint32_t framebufferHeight
     return true;
 }
 
-void UIOverlay::endFrame(VkCommandBuffer cmd, VkImageView colorView, VkExtent2D extent) {
-    ImGui::Render();
-
-    ImDrawData* drawData = ImGui::GetDrawData();
-    if (drawData->DisplaySize.x <= 0.0f || drawData->DisplaySize.y <= 0.0f)
-        return;
-
-    // Dynamic rendering: render ImGui on top of existing content
-    VkRenderingAttachmentInfo colorAttachment{};
-    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = colorView;
-    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-    VkRenderingInfo renderInfo{};
-    renderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderInfo.renderArea = { {0, 0}, extent };
-    renderInfo.layerCount = 1;
-    renderInfo.colorAttachmentCount = 1;
-    renderInfo.pColorAttachments = &colorAttachment;
-
-    vkCmdBeginRendering(cmd, &renderInfo);
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
-    vkCmdEndRendering(cmd);
-
-    // Update and render secondary viewports
-    ImGuiIO& io = ImGui::GetIO();
-    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-        ImGui::UpdatePlatformWindows();
-        ImGui::RenderPlatformWindowsDefault();
-    }
-}
-
-void UIOverlay::renderDrawData(VkCommandBuffer cmd) {
+void UIOverlay::renderDrawData(uint64_t nativeCommandBuffer) {
     ImGui::Render();
 
     ImDrawData* drawData = ImGui::GetDrawData();
@@ -181,7 +164,9 @@ void UIOverlay::renderDrawData(VkCommandBuffer cmd) {
         return;
     }
 
-    ImGui_ImplVulkan_RenderDrawData(drawData, cmd);
+    ImGui_ImplVulkan_RenderDrawData(
+        drawData,
+        reinterpret_cast<VkCommandBuffer>(nativeCommandBuffer));
 
     ImGuiIO& io = ImGui::GetIO();
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {

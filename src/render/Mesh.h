@@ -2,15 +2,10 @@
 
 #include "Submesh.h"
 #include "TSVector.h"
-#include <volk.h>
 #include <vector>
 #include <memory>
 #include <cstdint>
 #include <string>
-
-namespace Tasrovy::FS {
-class Model;
-}
 
 namespace Tasrovy::Render {
 
@@ -40,6 +35,30 @@ inline constexpr uint32_t UV2 = 7;
 inline constexpr uint32_t UV3 = 8;
 }
 
+enum class VertexElementFormat {
+    Float2,
+    Float3,
+    Float4
+};
+
+enum class VertexInputRate {
+    PerVertex,
+    PerInstance
+};
+
+struct VertexBindingDescription {
+    uint32_t binding = 0;
+    uint32_t stride = 0;
+    VertexInputRate inputRate = VertexInputRate::PerVertex;
+};
+
+struct VertexAttributeDescription {
+    uint32_t location = 0;
+    uint32_t binding = 0;
+    VertexElementFormat format = VertexElementFormat::Float3;
+    uint32_t offset = 0;
+};
+
 class Mesh : public std::enable_shared_from_this<Mesh> {
 public:
     static std::shared_ptr<Mesh> create(
@@ -47,7 +66,11 @@ public:
         std::vector<uint32_t> indices,
         std::vector<Submesh> submeshes = {});
 
-    static std::shared_ptr<Mesh> fromModel(const Tasrovy::FS::Model& model);
+    static std::shared_ptr<Mesh> createPlane();
+    static std::shared_ptr<Mesh> createCube();
+    static std::shared_ptr<Mesh> createSphere(
+        uint32_t sectors = 32,
+        uint32_t stacks = 16);
 
     void setVertices(std::vector<MeshVertex> vertices);
     void setIndices(std::vector<uint32_t> indices);
@@ -67,20 +90,18 @@ public:
 
     void calculateTangents();
 
-    const std::vector<VkVertexInputBindingDescription>& getVertexBindingDescription();
-    const std::vector<VkVertexInputAttributeDescription>& getVertexAttributeDescription();
+    static const std::vector<VertexBindingDescription>&
+        getVertexBindingDescription();
+    static const std::vector<VertexAttributeDescription>&
+        getVertexAttributeDescription();
 
 private:
     Mesh() = default;
-
-    void buildVertexDescriptions();
 
     std::vector<MeshVertex> vertices_;
     std::vector<uint32_t> indices_;
     std::vector<Submesh> submeshes_;
     std::string sourcePath_;
-    std::vector<VkVertexInputBindingDescription> vertexBindingDesc_;
-    std::vector<VkVertexInputAttributeDescription> vertexAttrDesc_;
 };
 
 } // namespace Tasrovy::Render

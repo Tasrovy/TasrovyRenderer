@@ -1,7 +1,6 @@
-#include <volk.h>
-
 #include <Logger.hpp>
 #include <SceneRenderer.h>
+#include <RenderAssetFactory.h>
 #include <Window.h>
 
 #include "Camera.h"
@@ -9,11 +8,11 @@
 #include "AssetLoader.hpp"
 #include "Light.h"
 #include "Material.h"
+#include "MaterialDescriptor.h"
 #include "Mesh.h"
 #include "Object.h"
 #include "Primitive.h"
 #include "Scene.h"
-#include "SceneSerializer.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -59,36 +58,9 @@ void setWorkingDirectoryToProjectRoot()
     LOG_WARN("Could not locate the project root from '{}'", fs::current_path().string());
 }
 
-std::shared_ptr<Material> createSolidMaterial(
-    const TSVec3f& linearColor,
-    bool castsShadows = true)
+std::shared_ptr<Material> loadMaterial(const std::string& descriptorPath)
 {
-    auto material = Material::create();
-    material->setVec4(
-        "baseColorFactor",
-        TSVec4f(linearColor.x, linearColor.y, linearColor.z, 1.0f));
-    material->setFloat("metallic", 0.0f);
-    material->setFloat("roughness", 0.85f);
-    material->setFloat("ao", 1.0f);
-    material->setFloat("rimStrength", 0.0f);
-    material->setFloat("rimPower", 3.0f);
-    material->setVec3("rimColor", TSVec3f(1.0f));
-    material->setCastShadows(castsShadows);
-    return material;
-}
-
-std::shared_ptr<Material> createTaffyMaterial(const std::string& baseColorPath)
-{
-    auto material = Material::create();
-    material->setVec4("baseColorFactor", TSVec4f(1.0f));
-    material->setFloat("metallic", 0.0f);
-    material->setFloat("roughness", 0.75f);
-    material->setFloat("ao", 1.0f);
-    material->setFloat("rimStrength", 0.22f);
-    material->setFloat("rimPower", 3.5f);
-    material->setVec3("rimColor", TSVec3f(1.0f, 0.72f, 0.78f));
-    material->setTexture(MaterialTextureSemantic::BaseColor, 1, baseColorPath);
-    return material;
+    return Material::create(MaterialDescriptor::load(descriptorPath));
 }
 
 void placeModelOnFloor(
@@ -171,13 +143,18 @@ std::shared_ptr<Scene> createCornellBoxScene(
 
     // Values are linear RGB because all lighting and G-buffer calculations
     // remain in linear space. The final presentation pass performs encoding.
-    const auto floorMaterial = createSolidMaterial(TSVec3f(0.73f, 0.73f, 0.73f));
-    const auto ceilingMaterial = createSolidMaterial(TSVec3f(0.73f, 0.73f, 0.73f));
-    const auto backWallMaterial = createSolidMaterial(TSVec3f(0.73f, 0.73f, 0.73f));
-    const auto leftWallMaterial = createSolidMaterial(TSVec3f(0.63f, 0.065f, 0.05f));
-    const auto rightWallMaterial = createSolidMaterial(TSVec3f(0.14f, 0.45f, 0.091f));
-    const auto lightPanel = createSolidMaterial(TSVec3f(1.0f), false);
-    lightPanel->setFloat("emissiveIntensity", 12.0f);
+    const auto floorMaterial =
+        loadMaterial("res/Materials/Cornell/Floor.material.json");
+    const auto ceilingMaterial =
+        loadMaterial("res/Materials/Cornell/Ceiling.material.json");
+    const auto backWallMaterial =
+        loadMaterial("res/Materials/Cornell/BackWall.material.json");
+    const auto leftWallMaterial =
+        loadMaterial("res/Materials/Cornell/LeftWall.material.json");
+    const auto rightWallMaterial =
+        loadMaterial("res/Materials/Cornell/RightWall.material.json");
+    const auto lightPanel =
+        loadMaterial("res/Materials/Cornell/AreaLightPanel.material.json");
     sceneMaterials = {
         floorMaterial,
         ceilingMaterial,
@@ -206,12 +183,16 @@ std::shared_ptr<Scene> createCornellBoxScene(
     Tasrovy::FS::AssetLoader assetLoader;
     const auto taffyModel = assetLoader.LoadModel("res/Models/Taffy/Taffy.obj");
     if (taffyModel) {
-        auto taffyMesh = Mesh::fromModel(*taffyModel);
+        auto taffyMesh =
+            Tasrovy::Assets::RenderAssetFactory::meshFromModel(*taffyModel);
         taffyMesh->setSourcePath("res/Models/Taffy/Taffy.obj");
         auto taffy = Object::create("Taffy");
-        const auto bodyMaterial = createTaffyMaterial("res/Textures/Taffy/cloth.png");
-        const auto faceMaterial = createTaffyMaterial("res/Textures/Taffy/face.png");
-        const auto hairMaterial = createTaffyMaterial("res/Textures/Taffy/hair.png");
+        const auto bodyMaterial =
+            loadMaterial("res/Materials/Taffy/Body.material.json");
+        const auto faceMaterial =
+            loadMaterial("res/Materials/Taffy/Face.material.json");
+        const auto hairMaterial =
+            loadMaterial("res/Materials/Taffy/Hair.material.json");
 
         sceneMaterials.push_back(bodyMaterial);
         sceneMaterials.push_back(faceMaterial);
@@ -272,35 +253,23 @@ std::shared_ptr<Scene> createCornellBoxScene(
 
 int main()
 {
-    if (volkInitialize() != VK_SUCCESS) {
-        LOG_CRITICAL("Failed to initialize volk!");
-        return -1;
-    }
-
     Tasrovy::Log::Logger::Init();
     setWorkingDirectoryToProjectRoot();
 
     Tasrovy::Windowing::Window window(1280, 800, "TasrovyRenderer - Cornell Box");
-    constexpr const char* scenePath = "res/Scenes/CornellTaffy.scene.json";
     const float cameraAspect =
         static_cast<float>(window.getWidth()) / static_cast<float>(window.getHeight());
 
-    // Scene objects intentionally use weak references to render resources.
-    // The archive owns every resource restored from disk for the scene lifetime.
-    Tasrovy::Core::SceneArchive sceneArchive;
-    if (!Tasrovy::Core::SceneSerializer::load(scenePath, cameraAspect, sceneArchive)) {
-        LOG_INFO("No usable saved scene found; creating the default Cornell scene");
-        sceneArchive.scene = createCornellBoxScene(
-            cameraAspect,
-            sceneArchive.materials,
-            sceneArchive.meshes);
-        Tasrovy::Core::SceneSerializer::save(scenePath, sceneArchive.scene);
-    }
-    auto scene = sceneArchive.scene;
+    // Scene objects intentionally keep weak references to render resources.
+    // These containers own the code-defined resources for the application lifetime.
+    std::vector<std::shared_ptr<Material>> sceneMaterials;
+    std::vector<std::shared_ptr<Mesh>> sceneMeshes;
+    auto scene = createCornellBoxScene(
+        cameraAspect, sceneMaterials, sceneMeshes);
     auto pipeline = DeferredPipeline::create();
     pipeline->GenPass(scene);
 
-    Tasrovy::RHI::SceneRenderer renderer(window, 4);
+    Tasrovy::Renderer::SceneRenderer renderer(window, 4);
     renderer.setScene(scene);
     renderer.setPipeline(pipeline);
     renderer.start();
@@ -311,7 +280,6 @@ int main()
     }
 
     renderer.stop();
-    Tasrovy::Core::SceneSerializer::save(scenePath, scene);
     LOG_INFO("Application exiting");
     return 0;
 }

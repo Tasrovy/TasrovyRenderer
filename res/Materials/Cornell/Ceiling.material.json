@@ -1,0 +1,9 @@
+{
+  "name": "CornellCeiling",
+  "properties": [
+    {"name": "baseColorFactor", "type": "float4", "value": [0.73, 0.73, 0.73, 1.0]},
+    {"name": "metallic", "type": "float", "value": 0.0},
+    {"name": "roughness", "type": "float", "value": 0.85},
+    {"name": "ao", "type": "float", "value": 1.0}
+  ]
+}
