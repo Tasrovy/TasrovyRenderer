@@ -14,6 +14,7 @@
 #include "Texture.hpp"
 #include "RenderAssetFactory.h"
 
+#include <algorithm>
 #include <fstream>
 #include <cmath>
 #include <nlohmann/json.hpp>
@@ -47,6 +48,10 @@ json vec3ToJson(const TSVec3f& value) {
         finiteOr(value.x), finiteOr(value.y), finiteOr(value.z)});
 }
 
+json vec2ToJson(const TSVec2f& value) {
+    return json::array({finiteOr(value.x), finiteOr(value.y)});
+}
+
 json vec4ToJson(const TSVec4f& value) {
     return json::array({
         finiteOr(value.x), finiteOr(value.y),
@@ -61,6 +66,15 @@ TSVec3f jsonToVec3(const json& value, const TSVec3f& fallback = TSVec3f(0.0f)) {
         jsonFloat(value[0], fallback.x),
         jsonFloat(value[1], fallback.y),
         jsonFloat(value[2], fallback.z));
+}
+
+TSVec2f jsonToVec2(const json& value, const TSVec2f& fallback) {
+    if (!value.is_array() || value.size() < 2) {
+        return fallback;
+    }
+    return TSVec2f(
+        jsonFloat(value[0], fallback.x),
+        jsonFloat(value[1], fallback.y));
 }
 
 TSVec4f jsonToVec4(const json& value, const TSVec4f& fallback = TSVec4f(0.0f)) {
@@ -95,7 +109,11 @@ json serializeMaterial(const std::shared_ptr<Material>& material) {
     }
     for (const auto& [slot, binding] : material->getTextureBindings()) {
         data["namedTextures"].push_back({
-            {"slot", slot}, {"path", binding.path}
+            {"slot", slot},
+            {"path", binding.path},
+            {"uvMode", static_cast<uint32_t>(binding.uvSampling.mode)},
+            {"uvScale", vec2ToJson(binding.uvSampling.scale)},
+            {"uvOffset", vec2ToJson(binding.uvSampling.offset)}
         });
     }
     return data;
@@ -125,9 +143,20 @@ std::shared_ptr<Material> deserializeMaterial(const json& data, SceneArchive& ar
         material->setVec4(name, jsonToVec4(value));
     }
     for (const auto& texture : data.value("namedTextures", json::array())) {
+        const auto slot = texture.value("slot", std::string());
         material->setTexture(
-            texture.value("slot", std::string()),
+            slot,
             texture.value("path", std::string()));
+        const auto rawMode = std::min(
+            texture.value("uvMode", 0u),
+            static_cast<uint32_t>(MaterialTextureUvMode::SwapXYFlipX));
+        material->setTextureUvSampling(slot, {
+            static_cast<MaterialTextureUvMode>(rawMode),
+            jsonToVec2(
+                texture.value("uvScale", json::array()), TSVec2f(1.0f)),
+            jsonToVec2(
+                texture.value("uvOffset", json::array()), TSVec2f(0.0f))
+        });
     }
     archive.materials.push_back(material);
     return material;

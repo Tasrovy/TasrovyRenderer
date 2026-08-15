@@ -28,6 +28,7 @@ public:
 
     bool beginFrame(CommandList& commandList);
     void submitFrame();
+    void abortFrame();
     void waitForInFlightFrames();
     void executeImmediate(
         CommandList& commandList,

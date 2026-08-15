@@ -11,6 +11,28 @@ namespace {
 
 using nlohmann::json;
 
+TSVec2f parseVec2(
+    const json& value,
+    const TSVec2f& fallback) {
+    if (!value.is_array() || value.size() != 2) {
+        return fallback;
+    }
+    return TSVec2f(value.at(0).get<float>(), value.at(1).get<float>());
+}
+
+MaterialTextureUvMode parseTextureUvMode(const std::string& mode) {
+    if (mode == "identity" || mode == "uv0") {
+        return MaterialTextureUvMode::Identity;
+    }
+    if (mode == "flipY") return MaterialTextureUvMode::FlipY;
+    if (mode == "flipX") return MaterialTextureUvMode::FlipX;
+    if (mode == "flipXY") return MaterialTextureUvMode::FlipXY;
+    if (mode == "swapXY") return MaterialTextureUvMode::SwapXY;
+    if (mode == "swapXYFlipY") return MaterialTextureUvMode::SwapXYFlipY;
+    if (mode == "swapXYFlipX") return MaterialTextureUvMode::SwapXYFlipX;
+    throw std::runtime_error("unsupported texture UV mode: " + mode);
+}
+
 TSVec3f parseVec3(const json& value) {
     if (!value.is_array() || value.size() != 3) {
         throw std::runtime_error("material vec3 parameter requires 3 components");
@@ -99,11 +121,22 @@ std::shared_ptr<MaterialDescriptor> MaterialDescriptor::load(
             descriptor->vec4s_[name] = parseVec4(value);
             break;
         case MaterialPropertyType::Texture2D:
-            if (!value.is_string()) {
-                throw std::runtime_error(
-                    "material texture2D value must be a path string");
+            if (value.is_string()) {
+                descriptor->texturePaths_[name] = value.get<std::string>();
+                descriptor->textureSampling_[name] = {};
+                break;
             }
-            descriptor->texturePaths_[name] = value.get<std::string>();
+            if (!value.is_object()) {
+                throw std::runtime_error(
+                    "material texture2D value must be a path string or object");
+            }
+            descriptor->texturePaths_[name] =
+                value.value("path", std::string());
+            descriptor->textureSampling_[name] = {
+                parseTextureUvMode(value.value("uvMode", std::string("identity"))),
+                parseVec2(value.value("scale", json::array()), TSVec2f(1.0f)),
+                parseVec2(value.value("offset", json::array()), TSVec2f(0.0f))
+            };
             break;
         }
     }
@@ -129,6 +162,10 @@ const std::unordered_map<std::string, float>& MaterialDescriptor::getFloatParams
 const std::unordered_map<std::string, TSVec3f>& MaterialDescriptor::getVec3Params() const { return vec3s_; }
 const std::unordered_map<std::string, TSVec4f>& MaterialDescriptor::getVec4Params() const { return vec4s_; }
 const std::unordered_map<std::string, std::string>& MaterialDescriptor::getTexturePaths() const { return texturePaths_; }
+const std::unordered_map<std::string, MaterialTextureUvSampling>&
+MaterialDescriptor::getTextureSampling() const {
+    return textureSampling_;
+}
 bool MaterialDescriptor::castsShadows() const { return castShadows_; }
 float MaterialDescriptor::getAlphaCutoff() const { return alphaCutoff_; }
 uint32_t MaterialDescriptor::getSurface() const { return surface_; }

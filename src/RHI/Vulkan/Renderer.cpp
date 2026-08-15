@@ -2,6 +2,7 @@
 #include "VulkanContext.h"
 #include <Logger.hpp>
 #include <algorithm>
+#include <mutex>
 #include <stdexcept>
 
 namespace {
@@ -164,6 +165,8 @@ VkCommandBuffer Renderer::beginFrame(VulkanSwapchain& swapchain) {
         throw std::runtime_error("failed to begin draw command buffer!");
     }
 
+    _frameOpen = true;
+
     return commandBuffer;
 }
 
@@ -202,6 +205,7 @@ void Renderer::endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, 
         throw std::runtime_error("failed to submit draw command buffer!");
     }
     _frameSubmissionSerials[_currentFrame] = _context.advanceDeletionFrame();
+    _frameOpen = false;
 
     {
         std::scoped_lock queueLock(_context.getQueueMutex());
@@ -217,6 +221,38 @@ void Renderer::endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, 
         throw std::runtime_error("failed to present swap chain image!");
     }
 
+    _currentFrame = (_currentFrame + 1) % _maxFramesInFlight;
+}
+
+void Renderer::abortFrame(VulkanQueue& graphicsQueue) {
+    if (!_frameOpen) return;
+
+    // beginFrame reset the fence and consumed the acquire semaphore. Submit
+    // an empty batch so the fence cannot remain permanently unsignaled after
+    // a recording exception, then force swapchain recreation before reuse.
+    VkPipelineStageFlags waitStage =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = &_imageAvailableSemaphores[_currentFrame];
+    submitInfo.pWaitDstStageMask = &waitStage;
+
+    VkResult result = VK_SUCCESS;
+    {
+        std::scoped_lock queueLock(_context.getQueueMutex());
+        result = vkQueueSubmit(
+            graphicsQueue.getQueue(), 1, &submitInfo,
+            _inFlightFences[_currentFrame]);
+    }
+    if (result != VK_SUCCESS) {
+        LOG_ERROR(
+            "Renderer: failed to recover aborted frame: {} ({})",
+            vkResultName(result), static_cast<int>(result));
+    }
+
+    _frameOpen = false;
+    _swapchainRebuildRequired = true;
     _currentFrame = (_currentFrame + 1) % _maxFramesInFlight;
 }
 

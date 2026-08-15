@@ -1,5 +1,6 @@
 #pragma once
 
+#include "MaterialTexture.h"
 #include "TSVector.h"
 
 #include <cstddef>
@@ -37,6 +38,8 @@ public:
     const std::unordered_map<std::string, TSVec3f>& getVec3Params() const;
     const std::unordered_map<std::string, TSVec4f>& getVec4Params() const;
     const std::unordered_map<std::string, std::string>& getTexturePaths() const;
+    const std::unordered_map<std::string, MaterialTextureUvSampling>&
+        getTextureSampling() const;
     bool castsShadows() const;
     float getAlphaCutoff() const;
     uint32_t getSurface() const;
@@ -50,6 +53,7 @@ private:
     std::unordered_map<std::string, TSVec3f> vec3s_;
     std::unordered_map<std::string, TSVec4f> vec4s_;
     std::unordered_map<std::string, std::string> texturePaths_;
+    std::unordered_map<std::string, MaterialTextureUvSampling> textureSampling_;
     bool castShadows_ = true;
     float alphaCutoff_ = 0.5f;
     uint32_t surface_ = 0;

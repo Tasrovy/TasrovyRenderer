@@ -81,6 +81,7 @@ inline constexpr const char* TemporalAA = "builtin.temporal_aa";
 inline constexpr const char* TemporalUpscale = "builtin.temporal_upscale";
 inline constexpr const char* OutlineTemporal = "builtin.outline_temporal";
 inline constexpr const char* BloomPrefilter = "builtin.bloom_prefilter";
+inline constexpr const char* SSAO = "builtin.ssao";
 inline constexpr const char* DepthOfField = "builtin.depth_of_field";
 inline constexpr const char* MotionBlur = "builtin.motion_blur";
 inline constexpr const char* FinalComposite = "builtin.final_composite";

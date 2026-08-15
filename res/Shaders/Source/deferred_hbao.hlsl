@@ -1,31 +1,5 @@
-struct GpuLightData
+cbuffer SsaoPassConstants : register(b0, space0)
 {
-    float4 positionAndType;
-    float4 directionAndRange;
-    float4 colorAndIntensity;
-    float4 parameters;
-};
-
-cbuffer UBO : register(b0, space0)
-{
-    matrix model;
-    matrix view;
-    matrix proj;
-    float4 lightDir;
-    float4 lightColor;
-    float4 camPosAndMetallic;
-    float4 roughnessAo;
-    float4 uvTransform;
-    float4 baseColorFactorAndTexture;
-    float4 materialEmission;
-    float4 materialRimColorAndStrength;
-    float4 materialRimParams;
-    float4 lightMeta;
-    GpuLightData lights[8];
-    matrix lightViewProj;
-    float4 shadowParams;
-    float4 advancedLightingParams;
-    float4 pcssParams;
     // x screen radius, y intensity, z world radius, w normal bias.
     float4 ssaoParams;
 };

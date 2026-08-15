@@ -1,33 +1,7 @@
-struct GpuLightData
+cbuffer BloomPassConstants : register(b0, space0)
 {
-    float4 positionAndType;
-    float4 directionAndRange;
-    float4 colorAndIntensity;
-    float4 parameters;
-};
-
-cbuffer UBO : register(b0, space0)
-{
-    matrix model;
-    matrix view;
-    matrix proj;
-    float4 lightDir;
-    float4 lightColor;
-    float4 camPosAndMetallic;
-    float4 roughnessAo;
-    // y threshold.
-    float4 uvTransform;
-    float4 baseColorFactorAndTexture;
-    float4 materialEmission;
-    float4 materialRimColorAndStrength;
-    float4 materialRimParams;
-    float4 lightMeta;
-    GpuLightData lights[8];
-    matrix lightViewProj;
-    float4 shadowParams;
-    float4 advancedLightingParams;
-    // w is one for the first bright-prefilter level.
-    float4 pcssParams;
+    // x first prefilter level, y threshold, z intensity, w radius.
+    float4 bloomParams;
 };
 
 struct VSOutput
@@ -61,7 +35,7 @@ float3 SampleSource(float2 uv)
 float3 SoftThreshold(float3 color)
 {
     const float brightness = max(color.r, max(color.g, color.b));
-    const float threshold = max(uvTransform.y, 0.0f);
+    const float threshold = max(bloomParams.y, 0.0f);
     const float knee = max(threshold * 0.5f, 0.0001f);
     float soft = clamp(
         brightness - threshold + knee,
@@ -98,7 +72,7 @@ float4 PSMain(VSOutput input) : SV_Target
     color += SampleSource(input.uv + float2(0.0f,  2.0f * texel.y)) * 0.0375f;
     color += SampleSource(input.uv + float2(0.0f, -2.0f * texel.y)) * 0.0375f;
 
-    if (pcssParams.w > 0.5f) {
+    if (bloomParams.x > 0.5f) {
         color = SoftThreshold(color);
     }
     return float4(color, 1.0f);

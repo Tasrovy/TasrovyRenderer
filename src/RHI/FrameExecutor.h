@@ -49,6 +49,10 @@ struct FrameExecutionBindings {
     std::unordered_map<uint64_t,
         std::unordered_map<uint32_t, FrameTextureBindingOverride>>
         textureOverrides;
+    std::shared_ptr<Buffer> viewUniform;
+    std::shared_ptr<Buffer> objectData;
+    std::shared_ptr<Buffer> materialData;
+    std::shared_ptr<Buffer> sceneLights;
 };
 
 struct FrameExecuteContext {

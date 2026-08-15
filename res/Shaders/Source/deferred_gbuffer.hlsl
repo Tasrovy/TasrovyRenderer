@@ -1,39 +1,4 @@
-struct GpuLightData
-{
-    float4 positionAndType;
-    float4 directionAndRange;
-    float4 colorAndIntensity;
-    float4 parameters;
-};
-
-cbuffer UBO : register(b0, space0)
-{
-    matrix model;
-    matrix view;
-    matrix proj;
-    float4 lightDir;
-    float4 lightColor;
-    float4 camPosAndMetallic;
-    float4 roughnessAo;
-    float4 uvTransform;
-    float4 baseColorFactorAndTexture;
-    float4 materialEmission;
-    float4 materialRimColorAndStrength;
-    float4 materialRimParams;
-    float4 lightMeta;
-    GpuLightData lights[8];
-    matrix lightViewProj;
-    float4 shadowParams;
-    float4 advancedLightingParams;
-    float4 pcssParams;
-    float4 ssaoParams;
-    float4 postEffectParams;
-    float4 ssrParams;
-    matrix previousView;
-    matrix previousProj;
-    matrix previousModel;
-    float4 taaParams;
-};
+#include "gpu_scene.hlsli"
 
 struct VSInput
 {
@@ -50,6 +15,7 @@ struct VSOutput
     float2 uv0 : TEXCOORD1;
     float4 currentClip : TEXCOORD2;
     float4 previousClip : TEXCOORD3;
+    nointerpolation uint objectIndex : TEXCOORD4;
 };
 
 struct PSOutput
@@ -65,60 +31,47 @@ struct PSOutput
 [[vk::combinedImageSampler]] Texture2D baseColorTexture : register(t1, space0);
 [[vk::combinedImageSampler]] SamplerState baseColorSampler : register(s1, space0);
 
-float2 ResolveMaterialUV(float2 uv)
-{
-    uint mode = (uint)round(roughnessAo.w);
-    float2 orientedUv = uv;
-    if (mode == 1) {
-        orientedUv = float2(uv.x, 1.0f - uv.y);
-    }
-    else if (mode == 2) {
-        orientedUv = float2(1.0f - uv.x, uv.y);
-    }
-    else if (mode == 3) {
-        orientedUv = float2(1.0f - uv.x, 1.0f - uv.y);
-    }
-    else if (mode == 4) {
-        orientedUv = float2(uv.y, uv.x);
-    }
-    else if (mode == 5) {
-        orientedUv = float2(uv.y, 1.0f - uv.x);
-    }
-    else if (mode == 6) {
-        orientedUv = float2(1.0f - uv.y, uv.x);
-    }
-    return frac(orientedUv * uvTransform.xy + uvTransform.zw);
-}
-VSOutput VSMain(VSInput input)
+VSOutput VSMain(VSInput input, uint objectIndex : SV_InstanceID)
 {
     VSOutput output;
-    output.worldPos = mul(float4(input.position, 1.0f), model).xyz;
-    output.position = mul(mul(float4(output.worldPos, 1.0f), view), proj);
+    GpuObjectData object = gpuObjects[objectIndex];
+    matrix projection = (object.flags & 1u) != 0u
+        ? gpuProjection : gpuUnflippedProjection;
+    matrix previousProjection = (object.flags & 1u) != 0u
+        ? gpuPreviousProjection : gpuPreviousUnflippedProjection;
+    output.worldPos = mul(float4(input.position, 1.0f), object.model).xyz;
+    output.position = mul(mul(float4(output.worldPos, 1.0f), gpuView), projection);
     float3 previousWorldPos =
-        mul(float4(input.position, 1.0f), previousModel).xyz;
+        mul(float4(input.position, 1.0f), object.previousModel).xyz;
     output.currentClip = output.position;
     output.previousClip =
-        mul(mul(float4(previousWorldPos, 1.0f), previousView), previousProj);
-    output.normal = normalize(mul(float4(input.normal, 0.0f), model).xyz);
+        mul(mul(float4(previousWorldPos, 1.0f), gpuPreviousView), previousProjection);
+    output.normal = normalize(mul(float4(input.normal, 0.0f), object.model).xyz);
     output.uv0 = input.uv0;
+    output.objectIndex = objectIndex;
     return output;
 }
 
 PSOutput PSMain(VSOutput input)
 {
-    float2 materialUv = ResolveMaterialUV(input.uv0);
+    GpuObjectData object = gpuObjects[input.objectIndex];
+    GpuMaterialData material = gpuMaterials[object.materialIndex];
+    float2 materialUv = ApplyTextureUV(
+        input.uv0,
+        material.baseColorUvTransform,
+        material.textureUvModes.x);
     // taaParams.z carries a negative mip bias only for TAAU. At native
     // resolution it is zero, preserving the regular hardware LOD choice.
     float4 sampledBaseColor = baseColorTexture.SampleBias(
-        baseColorSampler, materialUv, taaParams.z);
-    float4 baseColor = baseColorFactorAndTexture.w > 0.5f
-        ? sampledBaseColor * float4(baseColorFactorAndTexture.rgb, 1.0f)
-        : float4(baseColorFactorAndTexture.rgb, 1.0f);
+        baseColorSampler, materialUv, gpuJitterAndMipBias.z);
+    float4 baseColor = material.baseColorFactorAndTexture.w > 0.5f
+        ? sampledBaseColor * float4(material.baseColorFactorAndTexture.rgb, 1.0f)
+        : float4(material.baseColorFactorAndTexture.rgb, 1.0f);
 
-    float metallic = saturate(camPosAndMetallic.w);
-    float roughness = saturate(roughnessAo.x);
-    float ao = saturate(roughnessAo.y);
-    float emissiveIntensity = max(materialEmission.x, 0.0f);
+    float metallic = saturate(material.surface.x);
+    float roughness = saturate(material.surface.y);
+    float ao = saturate(material.surface.z);
+    float emissiveIntensity = max(material.emission.x, 0.0f);
     // GBuffer material alpha stores the 8-bit shading-model ID normalized.
     float shadingModelId = emissiveIntensity > 0.0f ? (1.0f / 255.0f) : 0.0f;
     if (emissiveIntensity > 0.0f) {
@@ -139,8 +92,8 @@ PSOutput PSMain(VSOutput input)
     output.albedo = float4(baseColor.rgb, 1.0f);
     output.normal = float4(N * 0.5f + 0.5f, 1.0f);
     output.material = float4(metallic, roughness, ao, shadingModelId);
-    output.worldPos = float4(input.worldPos, max(materialRimParams.x, 0.25f));
-    output.effects = materialRimColorAndStrength;
+    output.worldPos = float4(input.worldPos, max(material.rimParams.x, 0.25f));
+    output.effects = material.rimColorAndStrength;
     output.velocity = velocity;
     return output;
 }

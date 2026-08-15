@@ -9,14 +9,18 @@ RenderThread::~RenderThread() {
 }
 
 void RenderThread::start(EntryPoint entryPoint) {
+    if (thread_.joinable()) {
+        return;
+    }
     bool expected = false;
     if (!running_.compare_exchange_strong(
             expected, true, std::memory_order_acq_rel)) {
         return;
     }
     thread_ = std::thread(
-        [entryPoint = std::move(entryPoint)]() mutable {
+        [this, entryPoint = std::move(entryPoint)]() mutable {
             entryPoint();
+            running_.store(false, std::memory_order_release);
         });
 }
 

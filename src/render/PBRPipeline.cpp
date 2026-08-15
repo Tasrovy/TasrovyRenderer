@@ -84,6 +84,7 @@ void PBRPipeline::GenPass(std::shared_ptr<Scene> scene) {
     auto forwardPass = createPass(
         "Forward", PipelinePassType::Generic, CullMode::Back,
         true, true, DepthTestMode::Less, BlendMode::Off);
+    forwardPass->setUniformByteSize(0u, 0u);
 
     skyboxPass->setExecution(PipelinePassExecution::Skybox);
     skyboxPass->setVertexLayout({

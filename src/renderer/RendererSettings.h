@@ -28,7 +28,6 @@ enum class DebugTextureSemantic : int {
 // module rather than RHI: an RHI executes work, but does not decide which
 // lighting, shadowing, temporal, or post-processing features are enabled.
 struct RendererSettings {
-    bool gpuDrivenGBufferEnabled = false;
     int selectedPipelineIndex = 1;
 
     std::string debugOutputResource;
@@ -36,12 +35,6 @@ struct RendererSettings {
         DebugTextureSemantic::FinalOutput;
     float debugVelocityScale = 32.0f;
     float debugDepthRange = 50.0f;
-
-    int bodyUvMode = 1;
-    int hairUvMode = 1;
-    int faceUvMode = 1;
-    float uvOffset[2] = {0.0f, 0.0f};
-    float uvScale[2] = {1.0f, 1.0f};
 
     float shadowSlopeBias = 0.003f;
     float shadowMinimumBias = 0.0005f;

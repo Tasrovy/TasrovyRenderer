@@ -1,3 +1,5 @@
+#include "gpu_scene.hlsli"
+
 cbuffer UBO : register(b0,space0)
 {
     matrix model;
@@ -26,24 +28,28 @@ struct VSOutput
     float2 texcoord : TEXCOORD0;
     float3x3 TBN : TEXCOORD1;
     float3 worldPos : TEXCOORD2;
+    nointerpolation uint objectIndex : TEXCOORD5;
 };
 
-VSOutput VSMain(VSInput input)
+VSOutput VSMain(VSInput input, uint objectIndex : SV_InstanceID)
 {
     VSOutput output;
+    GpuObjectData object = gpuObjects[objectIndex];
     
     // 计算世界空间位置
-    output.worldPos = mul(float4(input.position, 1.0f), model).xyz;
-    float4 viewPos = mul(float4(output.worldPos, 1.0f), view);
-    output.position = mul(viewPos, proj);
+    output.worldPos = mul(float4(input.position, 1.0f), object.model).xyz;
+    float4 viewPos = mul(float4(output.worldPos, 1.0f), gpuView);
+    output.position = mul(viewPos, (object.flags & 1u) != 0u
+        ? gpuProjection : gpuUnflippedProjection);
     
     
     output.texcoord = input.texcoord;
     output.TBN = float3x3(
-        normalize(mul(float4(input.tangent, 0.0), model).xyz),
-        normalize(mul(float4(input.bitangent, 0.0), model).xyz),
-        normalize(mul(float4(input.normal, 0.0), model).xyz)
+        normalize(mul(float4(input.tangent, 0.0), object.model).xyz),
+        normalize(mul(float4(input.bitangent, 0.0), object.model).xyz),
+        normalize(mul(float4(input.normal, 0.0), object.model).xyz)
     );
+    output.objectIndex = objectIndex;
     return output;
 }
 [[vk::combinedImageSampler]] Texture2D baseColorTexture : register(t1);
@@ -62,30 +68,6 @@ VSOutput VSMain(VSInput input)
 [[vk::combinedImageSampler]] SamplerState iblSampler1      : register(s5); 
 [[vk::combinedImageSampler]] SamplerState iblSampler2     : register(s6); 
 [[vk::combinedImageSampler]] SamplerState iblSampler3      : register(s7); 
-float2 ResolveMaterialUV(float2 uv)
-{
-    uint mode = (uint)round(roughnessAo.w);
-    float2 orientedUv = uv;
-    if (mode == 1) {
-        orientedUv = float2(uv.x, 1.0f - uv.y);
-    }
-    else if (mode == 2) {
-        orientedUv = float2(1.0f - uv.x, uv.y);
-    }
-    else if (mode == 3) {
-        orientedUv = float2(1.0f - uv.x, 1.0f - uv.y);
-    }
-    else if (mode == 4) {
-        orientedUv = float2(uv.y, uv.x);
-    }
-    else if (mode == 5) {
-        orientedUv = float2(uv.y, 1.0f - uv.x);
-    }
-    else if (mode == 6) {
-        orientedUv = float2(1.0f - uv.y, uv.x);
-    }
-    return frac(orientedUv * uvTransform.xy + uvTransform.zw);
-}
 // --- PBR 辅助函数 (Cook-Torrance BRDF) ---
 #define PI 3.14159265359
 
@@ -136,25 +118,36 @@ float3 fresnelSchlick(float cosTheta, float3 F0)
 float4 PSMain(VSOutput input) : SV_TARGET
 {
     // --- 1. 获取表面基础属性 ---
-    float2 materialUv = ResolveMaterialUV(input.texcoord);
-    float3 sampledAlbedo = baseColorTexture.Sample(pbrSampler, materialUv).rgb; // sRGB -> Linear
-    float3 albedo = baseColorFactorAndTexture.w > 0.5f
-        ? sampledAlbedo * baseColorFactorAndTexture.rgb
-        : baseColorFactorAndTexture.rgb;
-    if ((uint)round(roughnessAo.z) == 1) {
-        return float4(albedo, 1.0f);
-    }
-    float4 mra = metallicRoughnessAOTexture.Sample(pbrSampler3, materialUv);
-    float metallic = saturate(mra.r * camPosAndMetallic.w);
-    float roughness = saturate((1.0f - mra.a) * roughnessAo.x);
-    float ao = saturate(mra.b * roughnessAo.y);
+    GpuObjectData object = gpuObjects[input.objectIndex];
+    GpuMaterialData material = gpuMaterials[object.materialIndex];
+    GpuSceneLightData sceneLighting = gpuSceneLights[0];
+    float2 baseColorUv = ApplyTextureUV(
+        input.texcoord, material.baseColorUvTransform,
+        material.textureUvModes.x);
+    float2 normalUv = ApplyTextureUV(
+        input.texcoord, material.normalUvTransform,
+        material.textureUvModes.y);
+    float2 emissiveUv = ApplyTextureUV(
+        input.texcoord, material.emissiveUvTransform,
+        material.textureUvModes.z);
+    float2 mraUv = ApplyTextureUV(
+        input.texcoord, material.mraUvTransform,
+        material.textureUvModes.w);
+    float3 sampledAlbedo = baseColorTexture.Sample(pbrSampler, baseColorUv).rgb; // sRGB -> Linear
+    float3 albedo = material.baseColorFactorAndTexture.w > 0.5f
+        ? sampledAlbedo * material.baseColorFactorAndTexture.rgb
+        : material.baseColorFactorAndTexture.rgb;
+    float4 mra = metallicRoughnessAOTexture.Sample(pbrSampler3, mraUv);
+    float metallic = saturate(mra.r * material.surface.x);
+    float roughness = saturate((1.0f - mra.a) * material.surface.y);
+    float ao = saturate(mra.b * material.surface.z);
     
     // --- 2. 获取世界空间法线 (来自法线贴图) ---
-    float3 tangentNormal = normalTexture.Sample(pbrSampler1, materialUv).xyz * 2.0 - 1.0;
+    float3 tangentNormal = normalTexture.Sample(pbrSampler1, normalUv).xyz * 2.0 - 1.0;
     float3 N = normalize(mul(tangentNormal, input.TBN));
 
     // --- 3. 准备通用向量 ---
-    float3 V = normalize(camPosAndMetallic.xyz - input.worldPos); // 观察方向
+    float3 V = normalize(gpuCameraPositionAndNear.xyz - input.worldPos); // 观察方向
     float3 R = reflect(-V, N);                     // 反射方向
     float NdotV = max(dot(N, V), 0.0);
 
@@ -164,12 +157,13 @@ float4 PSMain(VSOutput input) : SV_TARGET
     // =================================================================
     //  直接光照 (Direct Lighting) - 假设只有一个定向光
     // =================================================================
-    float3 L = normalize(-lightDir);
+    float3 L = normalize(-sceneLighting.primaryDirection.xyz);
     float3 H = normalize(V + L);
     float NdotL = max(dot(N, L), 0.0);
     
     // 计算直接光的辐射度 (Radiance)
-    float3 radiance = lightColor * lightIntensity * NdotL;
+    float3 radiance = sceneLighting.primaryColor.rgb *
+        sceneLighting.primaryColor.a * NdotL;
     
     // Cook-Torrance BRDF for direct light
     float D = DistributionGGX(N, H, roughness);
@@ -187,7 +181,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
     float3 diffuse_direct = kD_direct * albedo / PI;
 
     // 直接光照贡献
-    float3 Lo_direct = (diffuse_direct + (specular_direct * metallicRoughnessAOTexture.Sample(pbrSampler3, materialUv).g)) * radiance;
+    float3 Lo_direct = (diffuse_direct + (specular_direct * metallicRoughnessAOTexture.Sample(pbrSampler3, mraUv).g)) * radiance;
 
     // =================================================================
     //  间接光照 (Indirect Lighting - IBL)
@@ -197,7 +191,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
     const float MAX_REFLECTION_LOD = 7.0;
     float3 prefilteredColor = prefilteredMap.SampleLevel(iblSampler2, R, roughness * MAX_REFLECTION_LOD).rgb;
     float2 brdf = brdfLUT.Sample(iblSampler3, float2(NdotV, roughness)).rg;
-    float3 specular_IBL = prefilteredColor * (F * brdf.x + brdf.y) * metallicRoughnessAOTexture.Sample(pbrSampler3, materialUv).g;
+    float3 specular_IBL = prefilteredColor * (F * brdf.x + brdf.y) * metallicRoughnessAOTexture.Sample(pbrSampler3, mraUv).g;
 
     // b. Indirect Diffuse
     float3 irradiance = irradianceMap.Sample(iblSampler1, N).rgb;
@@ -216,7 +210,7 @@ float4 PSMain(VSOutput input) : SV_TARGET
     float3 color = (Lo_indirect * ao) + Lo_direct;
     
     // 添加自发光
-    color += emissiveTexture.Sample(pbrSampler2, materialUv).rgb;
+    color += emissiveTexture.Sample(pbrSampler2, emissiveUv).rgb;
     
     return float4(saturate(color), 1.0);
 }

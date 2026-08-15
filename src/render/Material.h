@@ -24,6 +24,7 @@ class Material : public std::enable_shared_from_this<Material> {
 public:
     struct TextureBinding {
         std::string path;
+        MaterialTextureUvSampling uvSampling;
     };
 
     static std::shared_ptr<Material> create();
@@ -47,6 +48,9 @@ public:
     void setVec4(const std::string& name, TSVec4f value);
     void setMat4(const std::string& name, TSMat4f value);
     void setTexture(const std::string& samplerName, const std::string& texturePath);
+    void setTextureUvSampling(
+        const std::string& samplerName,
+        MaterialTextureUvSampling sampling);
     void clearTexture(const std::string& samplerName);
     void setSurface(MaterialSurface surface);
     MaterialSurface getSurface() const;

@@ -1,14 +1,6 @@
-cbuffer UBO : register(b0, space0)
+cbuffer BloomPassConstants : register(b0, space0)
 {
-    matrix model;
-    matrix view;
-    matrix proj;
-    float4 lightDir;
-    float4 lightColor;
-    float4 camPosAndMetallic;
-    float4 roughnessAo;
-    // x enabled, y threshold, z intensity, w exposure.
-    float4 uvTransform;
+    float4 bloomParams;
 };
 
 struct VSOutput
@@ -37,7 +29,7 @@ float3 ExtractBloom(float3 color)
 {
     const float brightness = max(color.r, max(color.g, color.b));
     const float contribution =
-        saturate((brightness - uvTransform.y) / max(brightness, 0.0001f));
+        saturate((brightness - bloomParams.y) / max(brightness, 0.0001f));
     return color * contribution;
 }
 
@@ -53,7 +45,7 @@ float4 PSMain(VSOutput input) : SV_Target0
     uint height;
     sceneColor.GetDimensions(width, height);
     const float2 texelSize = rcp(float2(width, height));
-    const float2 offset = texelSize * max(roughnessAo.w, 0.25f) * 4.0f;
+    const float2 offset = texelSize * max(bloomParams.w, 0.25f) * 4.0f;
     float3 bloom = 0.0f.xxx;
     bloom += SampleBloomAt(input.uv) * 0.20f;
     bloom += SampleBloomAt(input.uv + float2( offset.x, 0.0f)) * 0.12f;

@@ -296,6 +296,8 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
             CullMode::Back, true, true, DepthTestMode::Less, BlendMode::Off);
         shadowPasses[cascade]->setParameterProvider(
             ParameterProviders::Shadow);
+        shadowPasses[cascade]->setUniformByteSize(
+            192u, PipelineShaderStageVertex);
         shadowPasses[cascade]->setViewIndex(cascade);
         virtualShadowPasses[cascade] = createDeferredPass(
             ("VirtualShadowPage" + std::to_string(cascade)).c_str(),
@@ -303,6 +305,8 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
             CullMode::Back, true, true, DepthTestMode::Less, BlendMode::Off);
         virtualShadowPasses[cascade]->setParameterProvider(
             ParameterProviders::Shadow);
+        virtualShadowPasses[cascade]->setUniformByteSize(
+            192u, PipelineShaderStageVertex);
         virtualShadowPasses[cascade]->setViewIndex(cascade);
         virtualShadowPasses[cascade]->setVirtualShadowPage({
             cascade & 1u,
@@ -315,6 +319,7 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     auto gBufferPass = createDeferredPass(
         "GBuffer", PipelinePassType::Geometry, PipelinePassExecution::Mesh,
         CullMode::Back, true, true, DepthTestMode::Less, BlendMode::Off);
+    gBufferPass->setUniformByteSize(0u, 0u);
     auto lightingPass = createDeferredPass(
         "Lighting", PipelinePassType::Lighting, PipelinePassExecution::Fullscreen,
         // Fullscreen triangles must not depend on model winding.
@@ -337,6 +342,7 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     auto transparentPass = createDeferredPass(
         "Transparent", PipelinePassType::Transparent, PipelinePassExecution::Mesh,
         CullMode::Back, true, false, DepthTestMode::Less, BlendMode::Alpha);
+    transparentPass->setUniformByteSize(0u, 0u);
     auto bloomDownHalfPass = createDeferredPass(
         "BloomDownHalf", PipelinePassType::PostProcess, PipelinePassExecution::Fullscreen,
         CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
@@ -383,6 +389,11 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
         CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
 
     lightingPass->setParameterProvider(ParameterProviders::Lighting);
+    lightingPass->setUniformByteSize(
+        480u, PipelineShaderStageFragment);
+    hbaoPass->setParameterProvider(ParameterProviders::SSAO);
+    hbaoPass->setUniformByteSize(
+        16u, PipelineShaderStageFragment);
     lightingPass->addImportedTexture({
         8, ImportedResourceHandles::IblIrradiance,
         PipelineShaderStageFragment
@@ -397,12 +408,24 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     });
     bloomDownHalfPass->setParameterProvider(
         ParameterProviders::BloomPrefilter);
+    for (const auto& bloomPass : {
+             bloomDownHalfPass, bloomDownQuarterPass,
+             bloomDownEighthPass, bloomDownSixteenthPass,
+             bloomUpEighthPass, bloomUpQuarterPass, bloomUpHalfPass}) {
+        bloomPass->setParameterProvider(ParameterProviders::BloomPrefilter);
+        bloomPass->setUniformByteSize(
+            16u, PipelineShaderStageFragment);
+    }
     depthOfFieldPass->setParameterProvider(
         ParameterProviders::DepthOfField);
     temporalAaPass->setParameterProvider(
         ParameterProviders::TemporalAA);
+    temporalAaPass->setUniformByteSize(
+        16u, PipelineShaderStageFragment);
     temporalUpscalePass->setParameterProvider(
         ParameterProviders::TemporalUpscale);
+    temporalUpscalePass->setUniformByteSize(
+        16u, PipelineShaderStageFragment);
     motionBlurPass->setParameterProvider(
         ParameterProviders::MotionBlur);
     outlineTemporalPass->setParameterProvider(

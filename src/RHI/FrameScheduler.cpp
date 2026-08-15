@@ -68,6 +68,12 @@ void FrameScheduler::submitFrame() {
 #endif
 }
 
+void FrameScheduler::abortFrame() {
+#ifdef TASROVY_API_VULKAN
+    impl_->renderer->abortFrame(*impl_->graphicsQueue);
+#endif
+}
+
 void FrameScheduler::waitForInFlightFrames() {
 #ifdef TASROVY_API_VULKAN
     impl_->renderer->waitIdle();

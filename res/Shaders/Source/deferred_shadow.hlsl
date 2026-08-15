@@ -1,8 +1,10 @@
-cbuffer UBO : register(b0, space0)
+#include "gpu_scene.hlsli"
+
+cbuffer ShadowPassConstants : register(b0, space0)
 {
-    matrix model;
-    matrix view;
-    matrix proj;
+    matrix unusedModel;
+    matrix shadowView;
+    matrix shadowProjection;
 };
 
 struct VSInput
@@ -15,10 +17,12 @@ struct VSOutput
     float4 position : SV_POSITION;
 };
 
-VSOutput VSMain(VSInput input)
+VSOutput VSMain(VSInput input, uint objectIndex : SV_InstanceID)
 {
     VSOutput output;
-    output.position = mul(mul(mul(float4(input.position, 1.0f), model), view), proj);
+    output.position = mul(mul(mul(
+        float4(input.position, 1.0f), gpuObjects[objectIndex].model),
+        shadowView), shadowProjection);
     return output;
 }
 

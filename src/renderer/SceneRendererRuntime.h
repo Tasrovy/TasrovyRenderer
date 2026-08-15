@@ -2,6 +2,7 @@
 
 #include "RenderScene.h"
 #include "RenderThread.h"
+#include "RHIThread.h"
 #include "SceneRendererComponents.h"
 
 #include <cstdint>
@@ -48,6 +49,7 @@ public:
 private:
     RenderScene renderScene_;
     RenderThread renderThread_;
+    RHIThread rhiThread_;
     SceneRendererComponents components_;
     std::unique_ptr<SceneRendererExecution> execution_;
 };

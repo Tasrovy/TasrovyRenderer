@@ -4,7 +4,6 @@
 #include "SceneRendererComponents.h"
 #include "ViewSystem.h"
 #include "../RHI/Buffer.h"
-#include "../RHI/CompiledRenderPipeline.h"
 #include "../render/Camera.h"
 #include "../render/FrameCompiler.h"
 #include "../render/FramePacket.h"
@@ -24,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 namespace Tasrovy::Renderer {
 namespace {
@@ -33,23 +33,7 @@ using namespace Tasrovy::Render;
 using namespace Tasrovy::RHI;
 using UniformBufferObject = FrameUniformBuffer;
 using SkyUniformBufferObject = SkyFrameUniformBuffer;
-using PassResources = CompiledPassResources;
-
-struct MaterialPbrValues {
-    float metallic = 0.0f;
-    float roughness = 1.0f;
-    float ao = 1.0f;
-};
-
-MaterialPbrValues resolveMaterialPbr(
-    const std::shared_ptr<Material>& material) {
-    if (!material) return {};
-    return {
-        std::clamp(material->getFloat("metallic", 0.0f), 0.0f, 1.0f),
-        std::clamp(material->getFloat("roughness", 1.0f), 0.04f, 1.0f),
-        std::clamp(material->getFloat("ao", 1.0f), 0.0f, 1.0f)
-    };
-}
+using PassResources = FramePassPacket;
 
 template <typename T>
 void storePacketBytes(
@@ -67,23 +51,6 @@ bool passUsesSkyboxDraw(const FramePassPacket& pass) {
     return pass.getExecution() == PipelinePassExecution::Skybox;
 }
 
-int selectMaterialUvMode(
-    const std::string& materialName,
-    int bodyMode,
-    int hairMode,
-    int faceMode) {
-    auto lowerName = materialName;
-    std::transform(
-        lowerName.begin(), lowerName.end(), lowerName.begin(),
-        [](unsigned char value) {
-            return static_cast<char>(std::tolower(value));
-        });
-    if (lowerName.find("hair") != std::string::npos) return hairMode;
-    if (lowerName.find("face") != std::string::npos ||
-        lowerName.find("eye") != std::string::npos) return faceMode;
-    return bodyMode;
-}
-
 std::unordered_map<std::string, FrameParameterProvider>& providers() {
     static std::unordered_map<std::string, FrameParameterProvider> value;
     return value;
@@ -99,9 +66,46 @@ void ensureBuiltinProviders() {
     std::call_once(once, [] {
         const auto noOp = [](FrameParameterProviderContext&) {};
         providers().emplace(ParameterProviders::Standard, noOp);
-        providers().emplace(ParameterProviders::Shadow, noOp);
-        providers().emplace(ParameterProviders::Lighting, noOp);
+        providers().emplace(
+            ParameterProviders::Shadow,
+            [](FrameParameterProviderContext& context) {
+                ShadowPassConstants constants{
+                    context.uniform.model,
+                    context.uniform.view,
+                    context.uniform.proj};
+                storePacketBytes(context.output, constants);
+                context.outputOverridden = true;
+            });
+        providers().emplace(
+            ParameterProviders::Lighting,
+            [](FrameParameterProviderContext& context) {
+                const auto& source = context.uniform;
+                LightingPassConstants constants{};
+                constants.lightViewProjection = source.lightViewProj;
+                constants.shadowParameters = source.shadowParams;
+                constants.featureFlags = source.advancedLightingParams;
+                constants.pcssParameters = source.pcssParams;
+                constants.cascadeViewProjections = source.csmLightViewProj;
+                constants.cascadeSplits = source.csmSplits;
+                constants.cascadeParameters = source.csmParams;
+                constants.virtualShadowPages = source.vsmPageTable;
+                constants.virtualShadowParameters = source.vsmParams;
+                storePacketBytes(context.output, constants);
+                context.outputOverridden = true;
+            });
         providers().emplace(ParameterProviders::Skybox, noOp);
+        providers().emplace(
+            ParameterProviders::SSAO,
+            [](FrameParameterProviderContext& context) {
+                SsaoPassConstants constants;
+                constants.parameters = TSVec4f(
+                    context.settings.ssaoRadiusPixels,
+                    context.settings.ssaoIntensity,
+                    context.settings.ssaoWorldRadius,
+                    context.settings.ssaoBias);
+                storePacketBytes(context.output, constants);
+                context.outputOverridden = true;
+            });
         providers().emplace(
             ParameterProviders::FinalComposite,
             [](FrameParameterProviderContext& context) {
@@ -152,13 +156,16 @@ void ensureBuiltinProviders() {
                 context.settings.temporalAAMode == requiredMode &&
                 context.viewState.temporalHistoryValid &&
                 context.settings.debugOutputResource.empty();
-            context.uniform.taaParams = TSVec4f(
+            TemporalPassConstants constants;
+            constants.parameters = TSVec4f(
                 history ? 1.0f : 0.0f,
                 context.settings.taaHistoryWeight,
                 static_cast<float>(context.internalWidth) /
                     static_cast<float>(std::max(context.displayWidth, 1u)),
                 static_cast<float>(context.internalHeight) /
                     static_cast<float>(std::max(context.displayHeight, 1u)));
+            storePacketBytes(context.output, constants);
+            context.outputOverridden = true;
         };
         providers().emplace(
             ParameterProviders::TemporalAA,
@@ -193,7 +200,14 @@ void ensureBuiltinProviders() {
         providers().emplace(
             ParameterProviders::BloomPrefilter,
             [](FrameParameterProviderContext& context) {
-                context.uniform.pcssParams.w = 1.0f;
+                BloomPassConstants constants;
+                constants.parameters = TSVec4f(
+                    context.pass.getName() == "BloomDownHalf" ? 1.0f : 0.0f,
+                    context.settings.bloomThreshold,
+                    context.settings.bloomIntensity,
+                    context.settings.bloomRadius);
+                storePacketBytes(context.output, constants);
+                context.outputOverridden = true;
             });
     });
 }
@@ -234,8 +248,7 @@ void FrameRuntimeParameterCompiler::populate(
     Scene& scene,
     Camera& camera,
     const ViewFrameData& viewFrame,
-    const std::vector<CompiledPassResources*>& scheduledPasses,
-    uint32_t frameIdx,
+    const std::vector<FramePassPacket*>& scheduledPasses,
     uint32_t displayWidth,
     uint32_t displayHeight,
     std::unordered_map<const Object*, TSMat4f>& currentModelMatrices) {
@@ -301,130 +314,25 @@ void FrameRuntimeParameterCompiler::populate(
         }
     };
 
-    auto& gpuGBuffer = state.gpuDrivenGBuffer.resources();
-    if (state.settings.gpuDrivenGBufferEnabled &&
-        gpuGBuffer.ready &&
-        frameIdx < gpuGBuffer.frameBuffers.size()) {
-        GpuDrivenFrameData frameData{};
-        frameData.view = transpose(viewMat);
-        frameData.proj = transpose(projMat);
-        frameData.previousView = transpose(
-            state.viewState.temporalHistoryValid ? state.viewState.previousView : viewMat);
-        frameData.previousProj = transpose(
-            state.viewState.temporalHistoryValid
-                ? state.viewState.previousFlippedProjection
-                : projMat);
-        frameData.uvTransform = TSVec4f(
-            state.settings.uvScale[0], state.settings.uvScale[1],
-            state.settings.uvOffset[0], state.settings.uvOffset[1]);
-        frameData.taaParams = TSVec4f(
-            0.0f, 0.0f, temporalMipBias, 0.0f);
-        frameData.drawCount =
-            static_cast<uint32_t>(gpuGBuffer.draws.size());
-        gpuGBuffer.frameBuffers[frameIdx]->setData(
-            &frameData, sizeof(frameData));
-
-        std::vector<GpuDrivenDrawData> gpuDrawData;
-        gpuDrawData.resize(gpuGBuffer.draws.size());
-        for (size_t index = 0; index < gpuGBuffer.draws.size(); ++index) {
-            const auto& source = gpuGBuffer.draws[index];
-            auto& destination = gpuDrawData[index];
-            if (!source.object) {
-                continue;
-            }
-            const auto material = source.material
-                ? source.material
-                : source.object->getMaterial();
-            const auto pbr = resolveMaterialPbr(material);
-            const TSMat4f currentModel = source.object->getModelMatrix();
-            currentModelMatrices[source.object] = currentModel;
-            const auto previousModel = state.viewState.previousModelMatrices.find(source.object);
-            const TSMat4f previous = state.viewState.temporalHistoryValid &&
-                previousModel != state.viewState.previousModelMatrices.end()
-                ? previousModel->second
-                : currentModel;
-            destination.model = transpose(currentModel);
-            destination.previousModel = transpose(previous);
-            const TSVec4f baseColor = material
-                ? material->getVec4("baseColorFactor", TSVec4f(1.0f))
-                : TSVec4f(1.0f);
-            destination.baseColorFactorAndTexture = TSVec4f(
-                baseColor.x, baseColor.y, baseColor.z,
-                material && material->hasTexture("baseColorTexture")
-                    ? 1.0f
-                    : 0.0f);
-            destination.materialParams = TSVec4f(
-                pbr.metallic,
-                pbr.roughness,
-                pbr.ao,
-                static_cast<float>(selectMaterialUvMode(
-                    source.materialName,
-                    state.settings.bodyUvMode,
-                    state.settings.hairUvMode,
-                    state.settings.faceUvMode)));
-            destination.materialEmission = TSVec4f(
-                material
-                    ? material->getFloat("emissiveIntensity", 0.0f)
-                    : 0.0f,
-                0.0f, 0.0f, 0.0f);
-            const TSVec3f rimColor = material
-                ? material->getVec3("rimColor", TSVec3f(1.0f))
-                : TSVec3f(1.0f);
-            destination.rimColorAndStrength = TSVec4f(
-                rimColor,
-                material ? material->getFloat("rimStrength", 0.0f) : 0.0f);
-            destination.rimParams = TSVec4f(
-                material ? material->getFloat("rimPower", 3.0f) : 3.0f,
-                0.0f, 0.0f, 0.0f);
-
-            const TSVec4f localCenter(
-                source.localBoundsCenter.x,
-                source.localBoundsCenter.y,
-                source.localBoundsCenter.z,
-                1.0f);
-            const auto worldCenter = currentModel * localCenter;
-            const TSVec3f objectScale = source.object->getScale();
-            const float maximumScale = std::max({
-                std::abs(objectScale.x),
-                std::abs(objectScale.y),
-                std::abs(objectScale.z)
-            });
-            destination.worldBounds = TSVec4f(
-                worldCenter.x,
-                worldCenter.y,
-                worldCenter.z,
-                source.localBoundsRadius * maximumScale);
-            destination.indexCount = source.indexCount;
-            destination.firstIndex = source.firstIndex;
-            destination.vertexOffset = source.vertexOffset;
-            destination.firstInstance = static_cast<uint32_t>(index);
-        }
-        gpuGBuffer.drawBuffers[frameIdx]->setData(
-            gpuDrawData.data(),
-            gpuDrawData.size() * sizeof(GpuDrivenDrawData));
-
-    }
-
     for (PassResources* scheduledPass : scheduledPasses) {
         auto& pass = *scheduledPass;
-        if (!pass.framePass ||
-            pass.framePass->parameters.uniformByteSize == 0) {
+        if (pass.parameters.uniformByteSize == 0) {
             continue;
         }
 
-        if (passUsesSkyboxDraw(*pass.framePass)) {
+        if (passUsesSkyboxDraw(pass)) {
             TSMat4f skyView = TSMat4f(TSMat3f(viewMat));
             SkyUniformBufferObject skyUbo{};
             skyUbo.view = transpose(skyView);
             skyUbo.proj = transpose(projMat);
             storePacketBytes(
-                pass.framePass->parameters.uniformData,
+                pass.parameters.uniformData,
                 skyUbo);
             UniformBufferObject providerUniform{};
             FrameParameterProviderContext context{
-                *pass.framePass,
+                pass,
                 providerUniform,
-                pass.framePass->parameters.uniformData,
+                pass.parameters.uniformData,
                 state.settings,
                 state.viewState,
                 viewFrame,
@@ -437,10 +345,10 @@ void FrameRuntimeParameterCompiler::populate(
             if (!applyProvider(context)) {
                 throw std::invalid_argument(
                     "Frame parameter provider '" +
-                    pass.framePass->parameterProvider +
+                    pass.parameterProvider +
                     "' is not registered");
             }
-        } else if (passUsesFullscreenDraw(*pass.framePass)) {
+        } else if (passUsesFullscreenDraw(pass)) {
             UniformBufferObject ubo{};
             ubo.model = transpose(TSMat4f(1.0f));
             ubo.view = transpose(viewMat);
@@ -454,7 +362,7 @@ void FrameRuntimeParameterCompiler::populate(
                 0.0f,
                 state.settings.bloomRadius);
             const bool isPostProcessingPass =
-                pass.framePass->getType() == PipelinePassType::PostProcess;
+                pass.getType() == PipelinePassType::PostProcess;
             ubo.uvTransform = isPostProcessingPass
                 ? TSVec4f(
                     state.settings.bloomEnabled ? 1.0f : 0.0f,
@@ -462,8 +370,7 @@ void FrameRuntimeParameterCompiler::populate(
                     state.settings.bloomIntensity,
                     state.settings.exposure)
                 : TSVec4f(
-                    state.settings.uvScale[0], state.settings.uvScale[1],
-                    state.settings.uvOffset[0], state.settings.uvOffset[1]);
+                    1.0f, 1.0f, 0.0f, 0.0f);
             populateExtendedMaterialAndLights(ubo, nullptr);
             ubo.previousView = transpose(
                 state.viewState.temporalHistoryValid ? state.viewState.previousView : viewMat);
@@ -478,11 +385,33 @@ void FrameRuntimeParameterCompiler::populate(
                 static_cast<float>(state.internalRenderHeight) /
                     static_cast<float>(std::max(displayHeight, 1u)));
             invokeProvider(
-                *pass.framePass,
+                pass,
                 ubo,
-                pass.framePass->parameters.uniformData);
-        } else if (pass.framePass->getExecution() == PipelinePassExecution::Mesh) {
-            // Mesh pass descriptors contain per-draw model/material state and are updated when each submesh is drawn.
+                pass.parameters.uniformData);
+        } else if (pass.getExecution() == PipelinePassExecution::Mesh) {
+            // Object and material state live in GPUScene SSBOs. The mesh pass
+            // now uploads one pass-constant block per frame, shared by every
+            // draw descriptor set in the pass.
+            UniformBufferObject ubo{};
+            const bool shadowPass =
+                pass.getType() == PipelinePassType::Shadow;
+            const size_t cascade = shadowPass
+                ? std::min<size_t>(pass.viewIndex, 3u) : 0u;
+            ubo.model = transpose(TSMat4f(1.0f));
+            ubo.view = transpose(shadowPass
+                ? shadowCascades.views[cascade] : viewMat);
+            ubo.proj = transpose(shadowPass
+                ? shadowCascades.projections[cascade] : projMat);
+            ubo.previousView = transpose(state.viewState.temporalHistoryValid
+                ? state.viewState.previousView : viewMat);
+            ubo.previousProj = transpose(state.viewState.temporalHistoryValid
+                ? state.viewState.previousFlippedProjection : projMat);
+            ubo.previousModel = transpose(TSMat4f(1.0f));
+            ubo.taaParams = TSVec4f(0.0f, 0.0f, temporalMipBias, 0.0f);
+            populateExtendedMaterialAndLights(ubo, nullptr);
+            invokeProvider(
+                pass, ubo,
+                pass.parameters.uniformData);
         } else {
             UniformBufferObject ubo{};
             ubo.model = transpose(TSMat4f(1.0f));
@@ -498,139 +427,18 @@ void FrameRuntimeParameterCompiler::populate(
                     : projMat);
             populateExtendedMaterialAndLights(ubo, nullptr);
             invokeProvider(
-                *pass.framePass,
+                pass,
                 ubo,
-                pass.framePass->parameters.uniformData);
+                pass.parameters.uniformData);
         }
     }
 
-    const auto updateMeshDrawDescriptors =
-        [&](PassResources& pass,
-            const Object& object,
-            const std::shared_ptr<Material>& submeshMaterial,
-            uint32_t submeshIndex,
-            const std::string& submeshMaterialName,
-            uint32_t descriptorSlot) -> bool {
-            if (!pass.framePass ||
-                descriptorSlot >= pass.framePass->draws.size()) {
-                LOG_WARN(
-                    "SceneRenderer: pass '{}' descriptor slot {} out of {}",
-                    pass.framePass ? pass.framePass->getName() : std::string("<null>"),
-                    descriptorSlot,
-                    pass.framePass
-                        ? pass.framePass->draws.size()
-                        : 0u);
-                return false;
-            }
-
-            const auto material = submeshMaterial ? submeshMaterial : object.getMaterial();
-            const auto pbr = resolveMaterialPbr(material);
-
-            UniformBufferObject ubo{};
-            const TSMat4f currentModel = object.getModelMatrix();
-            if (pass.framePass->getType() == PipelinePassType::Geometry) {
-                currentModelMatrices[&object] = currentModel;
-            }
-            ubo.model = transpose(currentModel);
-            const bool isShadowPass =
-                pass.framePass->getType() == PipelinePassType::Shadow;
-            const size_t cascadeIndex = isShadowPass
-                ? std::min<size_t>(pass.framePass->viewIndex, 3u)
-                : 0;
-            ubo.view = transpose(
-                isShadowPass
-                    ? shadowCascades.views[cascadeIndex]
-                    : viewMat);
-            ubo.proj = transpose(
-                isShadowPass
-                    ? shadowCascades.projections[cascadeIndex]
-                    : (object.getFlipProjectionY() ? projMat : unflippedProjMat));
-            ubo.lightDir = TSVec4f(normalize(lightDir), 0.0f);
-            ubo.lightColor = TSVec4f(lightColor, lightIntensity);
-            ubo.camPosAndMetallic = TSVec4f(cam->getPosition(), pbr.metallic);
-            const int uvMode = selectMaterialUvMode(
-                submeshMaterialName,
-                state.settings.bodyUvMode,
-                state.settings.hairUvMode,
-                state.settings.faceUvMode);
-            ubo.roughnessAo = TSVec4f(
-                pbr.roughness,
-                pbr.ao,
-                0.0f,
-                static_cast<float>(uvMode));
-            ubo.uvTransform = TSVec4f(
-                state.settings.uvScale[0], state.settings.uvScale[1],
-                state.settings.uvOffset[0], state.settings.uvOffset[1]);
-            populateExtendedMaterialAndLights(ubo, material);
-            ubo.previousView = transpose(
-                state.viewState.temporalHistoryValid ? state.viewState.previousView : viewMat);
-            const TSMat4f& previousObjectProjection = object.getFlipProjectionY()
-                ? state.viewState.previousFlippedProjection
-                : state.viewState.previousUnflippedProjection;
-            ubo.previousProj = transpose(
-                state.viewState.temporalHistoryValid
-                    ? previousObjectProjection
-                    : (object.getFlipProjectionY() ? projMat : unflippedProjMat));
-            const auto previousModel = state.viewState.previousModelMatrices.find(&object);
-            ubo.previousModel = transpose(
-                state.viewState.temporalHistoryValid && previousModel != state.viewState.previousModelMatrices.end()
-                    ? previousModel->second
-                    : currentModel);
-            // Low-resolution rasterization increases texture derivatives and
-            // would otherwise select blurrier mips before TAAU can accumulate
-            // their detail. The GBuffer shader reads the bias from z.
-            ubo.taaParams = TSVec4f(0.0f, 0.0f, temporalMipBias, 0.0f);
-            invokeProvider(
-                *pass.framePass,
-                ubo,
-                pass.framePass->draws[descriptorSlot].uniformData);
-            if (!state.loggedSubmeshMaterialBindings) {
-                LOG_INFO(
-                    "SceneRenderer: pass '{}' submesh {} '{}' baseColor '{}'",
-                    pass.framePass ? pass.framePass->getName() : std::string("<null>"),
-                    submeshIndex,
-                    submeshMaterialName,
-                    material ? material->getTexture("baseColorTexture") : std::string("<null>"));
-            }
-            return true;
-        };
-
-    // Runtime parameter generation only fills FramePacket data. Concrete
-    // descriptors, pipelines, barriers and commands are consumed by the RHI
-    // executor below.
+    // Temporal history is still committed by ViewSystem, but gathering it is
+    // independent from draw-packet construction now.
     const auto& sources = state.frameOrchestrator.sourceRegistry();
-    for (PassResources* scheduledPass : scheduledPasses) {
-        auto& pass = *scheduledPass;
-        if (!pass.framePass ||
-            pass.framePass->getExecution() != PipelinePassExecution::Mesh) {
-            continue;
-        }
-        for (uint32_t drawIndex = 0;
-             drawIndex < static_cast<uint32_t>(pass.framePass->draws.size());
-             ++drawIndex) {
-            const auto& drawPacket = pass.framePass->draws[drawIndex];
-            const auto foundObject = sources.objects.find(drawPacket.objectId);
-            const auto object = foundObject == sources.objects.end()
-                ? nullptr
-                : foundObject->second.lock();
-            if (!object) {
-                continue;
-            }
-            const auto foundMaterial =
-                sources.materials.find(drawPacket.materialId);
-            const auto material = foundMaterial == sources.materials.end()
-                ? object->getMaterial()
-                : foundMaterial->second;
-            std::string materialName = "<mesh>";
-            if (const auto mesh = object->getMesh();
-                mesh && drawPacket.submeshIndex < mesh->getSubmeshes().size()) {
-                materialName =
-                    mesh->getSubmeshes()[drawPacket.submeshIndex]
-                        .getMaterialName();
-            }
-            (void)updateMeshDrawDescriptors(
-                pass, *object, material, drawPacket.submeshIndex,
-                materialName, drawIndex);
+    for (const auto& [_, weakObject] : sources.objects) {
+        if (const auto object = weakObject.lock()) {
+            currentModelMatrices[object.get()] = object->getModelMatrix();
         }
     }
 

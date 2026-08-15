@@ -7,17 +7,18 @@
 #include <string>
 
 namespace Tasrovy::RHI {
-class CompiledPassResources;
 class Device;
 }
 
 namespace Tasrovy::Render {
 struct FrameSourceRegistry;
+struct FramePassPacket;
 }
 
 namespace Tasrovy::Renderer {
 
 class SceneGPUResources;
+class GPUScene;
 struct RendererSettings;
 struct ViewState;
 
@@ -37,10 +38,12 @@ public:
     static Tasrovy::RHI::FrameExecutionBindings resolve(
         Tasrovy::RHI::Device& device,
         SceneGPUResources& sceneResources,
+        GPUScene& gpuScene,
         const Tasrovy::Render::FrameSourceRegistry& sources,
-        const std::vector<Tasrovy::RHI::CompiledPassResources*>& passes,
+        const std::vector<Tasrovy::Render::FramePassPacket*>& passes,
         const RendererSettings& settings,
-        const ViewState& viewState);
+        const ViewState& viewState,
+        uint32_t frameIndex);
 };
 
 } // namespace Tasrovy::Renderer

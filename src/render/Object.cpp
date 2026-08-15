@@ -2,8 +2,22 @@
 #include "Material.h"
 #include "Mesh.h"
 #include <algorithm>
+#include <atomic>
 
 namespace Tasrovy::Render {
+namespace {
+
+std::atomic<uint64_t> nextRenderObjectId{1};
+
+uint64_t allocateRenderObjectId() {
+    return nextRenderObjectId.fetch_add(1, std::memory_order_relaxed);
+}
+
+} // namespace
+
+Object::Object()
+    : renderId_(allocateRenderObjectId()) {
+}
 
 std::shared_ptr<Object> Object::create() {
     return std::shared_ptr<Object>(new Object());
@@ -14,13 +28,14 @@ std::shared_ptr<Object> Object::create(const std::string& name) {
 }
 
 Object::Object(const std::string& name)
-    : name_(name) {
+    : name_(name), renderId_(allocateRenderObjectId()) {
 }
 
 Object::~Object() = default;
 
 std::shared_ptr<Object> Object::clone() const {
     auto object = Object::create(name_);
+    object->renderId_ = renderId_;
     object->transform_ = transform_;
     object->meshKeepAlive_ = getMesh();
     object->mesh_ = object->meshKeepAlive_;
@@ -80,6 +95,7 @@ void Object::clearSubmeshMaterials() {
 
 void Object::setName(const std::string& name) { name_ = name; }
 const std::string& Object::getName() const { return name_; }
+uint64_t Object::getRenderId() const { return renderId_; }
 
 void Object::setActive(bool active) { active_ = active; }
 bool Object::isActive() const { return active_; }

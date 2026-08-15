@@ -86,6 +86,39 @@ struct SkyFrameUniformBuffer {
     TSMat4f proj;
 };
 
+struct ShadowPassConstants {
+    TSMat4f unusedModel;
+    TSMat4f view;
+    TSMat4f projection;
+};
+
+struct TemporalPassConstants {
+    // x history valid, y history weight, zw internal/display scale.
+    TSVec4f parameters = TSVec4f(0.0f);
+};
+
+struct BloomPassConstants {
+    // x first prefilter level, y threshold, z intensity, w radius.
+    TSVec4f parameters = TSVec4f(0.0f);
+};
+
+struct SsaoPassConstants {
+    // x screen radius, y intensity, z world radius, w normal bias.
+    TSVec4f parameters = TSVec4f(0.0f);
+};
+
+struct LightingPassConstants {
+    TSMat4f lightViewProjection;
+    TSVec4f shadowParameters;
+    TSVec4f featureFlags;
+    TSVec4f pcssParameters;
+    std::array<TSMat4f, ShadowCascadeCount> cascadeViewProjections;
+    TSVec4f cascadeSplits;
+    TSVec4f cascadeParameters;
+    std::array<TSVec4f, ShadowCascadeCount> virtualShadowPages;
+    TSVec4f virtualShadowParameters;
+};
+
 class FrameParameterBuilder {
 public:
     static FrameLightingParameters buildLighting(const Render::Scene& scene);
@@ -108,5 +141,6 @@ public:
 static_assert(offsetof(FrameUniformBuffer, uvTransform) == 256);
 static_assert(offsetof(FrameUniformBuffer, baseColorFactorAndTexture) == 272);
 static_assert(sizeof(FrameUniformBuffer) == 1600);
+static_assert(sizeof(LightingPassConstants) == 480);
 
 } // namespace Tasrovy::Renderer

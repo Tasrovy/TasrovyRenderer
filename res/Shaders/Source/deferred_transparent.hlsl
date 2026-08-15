@@ -1,15 +1,4 @@
-cbuffer UBO : register(b0, space0)
-{
-    matrix model;
-    matrix view;
-    matrix proj;
-    float4 lightDir;
-    float4 lightColor;
-    float4 camPosAndMetallic;
-    float4 roughnessAo;
-    float4 uvTransform;
-    float4 baseColorFactorAndTexture;
-};
+#include "gpu_scene.hlsli"
 
 struct VSInput
 {
@@ -26,6 +15,7 @@ struct VSOutput
     float3 normal : NORMAL;
     float3 color : COLOR;
     float2 uv0 : TEXCOORD0;
+    nointerpolation uint objectIndex : TEXCOORD1;
 };
 
 [[vk::combinedImageSampler]] Texture2D baseColorTexture : register(t1, space0);
@@ -40,53 +30,45 @@ struct VSOutput
 [[vk::combinedImageSampler]] Texture2D metallicRoughnessAOTexture : register(t4, space0);
 [[vk::combinedImageSampler]] SamplerState metallicRoughnessAOSampler : register(s4, space0);
 
-float2 ResolveMaterialUV(float2 uv)
-{
-    uint mode = (uint)round(roughnessAo.w);
-    float2 orientedUv = uv;
-    if (mode == 1) {
-        orientedUv = float2(uv.x, 1.0f - uv.y);
-    }
-    else if (mode == 2) {
-        orientedUv = float2(1.0f - uv.x, uv.y);
-    }
-    else if (mode == 3) {
-        orientedUv = float2(1.0f - uv.x, 1.0f - uv.y);
-    }
-    else if (mode == 4) {
-        orientedUv = float2(uv.y, uv.x);
-    }
-    else if (mode == 5) {
-        orientedUv = float2(uv.y, 1.0f - uv.x);
-    }
-    else if (mode == 6) {
-        orientedUv = float2(1.0f - uv.y, uv.x);
-    }
-    return frac(orientedUv * uvTransform.xy + uvTransform.zw);
-}
-VSOutput VSMain(VSInput input)
+VSOutput VSMain(VSInput input, uint objectIndex : SV_InstanceID)
 {
     VSOutput output;
-    output.position = mul(mul(mul(float4(input.position, 1.0f), model), view), proj);
-    output.normal = normalize(mul(float4(input.normal, 0.0f), model).xyz);
+    GpuObjectData object = gpuObjects[objectIndex];
+    matrix projection = (object.flags & 1u) != 0u
+        ? gpuProjection : gpuUnflippedProjection;
+    output.position = mul(mul(mul(
+        float4(input.position, 1.0f), object.model), gpuView), projection);
+    output.normal = normalize(mul(float4(input.normal, 0.0f), object.model).xyz);
     output.color = float3(1.0f, 1.0f, 1.0f);
     output.uv0 = input.uv0;
+    output.objectIndex = objectIndex;
     return output;
 }
 
 float4 PSMain(VSOutput input) : SV_Target
 {
-    float2 materialUv = ResolveMaterialUV(input.uv0);
-    float4 sampledBaseColor = baseColorTexture.Sample(baseColorSampler, materialUv);
-    float4 baseColor = baseColorFactorAndTexture.w > 0.5f
-        ? sampledBaseColor * float4(baseColorFactorAndTexture.rgb, 1.0f)
-        : float4(baseColorFactorAndTexture.rgb, 1.0f);
-    float3 emissive = emissiveTexture.Sample(emissiveSampler, materialUv).rgb;
+    GpuObjectData object = gpuObjects[input.objectIndex];
+    GpuMaterialData material = gpuMaterials[object.materialIndex];
+    GpuSceneLightData sceneLighting = gpuSceneLights[0];
+    float2 baseColorUv = ApplyTextureUV(
+        input.uv0,
+        material.baseColorUvTransform,
+        material.textureUvModes.x);
+    float2 emissiveUv = ApplyTextureUV(
+        input.uv0,
+        material.emissiveUvTransform,
+        material.textureUvModes.z);
+    float4 sampledBaseColor = baseColorTexture.Sample(baseColorSampler, baseColorUv);
+    float4 baseColor = material.baseColorFactorAndTexture.w > 0.5f
+        ? sampledBaseColor * float4(material.baseColorFactorAndTexture.rgb, 1.0f)
+        : float4(material.baseColorFactorAndTexture.rgb, 1.0f);
+    float3 emissive = emissiveTexture.Sample(emissiveSampler, emissiveUv).rgb;
     float3 normal = normalize(input.normal);
 
-    float3 L = normalize(-lightDir.xyz);
+    float3 L = normalize(-sceneLighting.primaryDirection.xyz);
     float NdotL = saturate(dot(normal, L));
-    float3 lit = baseColor.rgb * (0.08f + NdotL * lightColor.rgb * lightColor.a) + emissive;
+    float3 lit = baseColor.rgb * (0.08f + NdotL *
+        sceneLighting.primaryColor.rgb * sceneLighting.primaryColor.a) + emissive;
 
     return float4(saturate(lit), baseColor.a);
 }

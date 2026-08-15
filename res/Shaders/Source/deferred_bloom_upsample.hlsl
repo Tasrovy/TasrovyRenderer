@@ -1,13 +1,7 @@
-cbuffer UBO : register(b0, space0)
+cbuffer BloomPassConstants : register(b0, space0)
 {
-    matrix model;
-    matrix view;
-    matrix proj;
-    float4 lightDir;
-    float4 lightColor;
-    float4 camPosAndMetallic;
     // w controls the upsample filter radius.
-    float4 roughnessAo;
+    float4 bloomParams;
 };
 
 struct VSOutput
@@ -46,7 +40,7 @@ float4 PSMain(VSOutput input) : SV_Target
     uint height;
     lowerBloom.GetDimensions(width, height);
     const float2 texel =
-        rcp(float2(width, height)) * max(roughnessAo.w, 0.25f);
+        rcp(float2(width, height)) * max(bloomParams.w, 0.25f);
 
     // Separable 3x3 tent kernel, equivalent to a compact Gaussian
     // reconstruction filter with normalized [1 2 1] weights.

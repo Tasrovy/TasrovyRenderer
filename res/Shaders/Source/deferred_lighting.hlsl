@@ -1,27 +1,7 @@
-struct GpuLightData
-{
-    float4 positionAndType;
-    float4 directionAndRange;
-    float4 colorAndIntensity;
-    float4 parameters;
-};
+#include "gpu_scene.hlsli"
 
-cbuffer UBO : register(b0, space0)
+cbuffer LightingPassConstants : register(b0, space0)
 {
-    matrix model;
-    matrix view;
-    matrix proj;
-    float4 lightDir;
-    float4 lightColor;
-    float4 camPosAndMetallic;
-    float4 roughnessAo;
-    float4 uvTransform;
-    float4 baseColorFactorAndTexture;
-    float4 materialEmission;
-    float4 materialRimColorAndStrength;
-    float4 materialRimParams;
-    float4 lightMeta;
-    GpuLightData lights[8];
     matrix lightViewProj;
     float4 shadowParams;
     float4 advancedLightingParams;
@@ -327,7 +307,7 @@ float CalculateCascadeShadow(
 
 float CalculateShadow(float3 worldPos, float3 normal, float3 lightDirection)
 {
-    const float viewDepth = -mul(float4(worldPos, 1.0f), view).z;
+    const float viewDepth = -mul(float4(worldPos, 1.0f), gpuView).z;
     if (viewDepth <= 0.0f || viewDepth > csmSplits.w) {
         return 0.0f;
     }
@@ -382,7 +362,7 @@ float4 PSMain(VSOutput input) : SV_Target
     float3 worldPos = worldPositionAndRimPower.xyz;
     float4 rimEffects = gBufferEffects.Sample(gBufferEffectsSampler, input.uv);
 
-    uint debugMode = (uint)round(roughnessAo.z);
+    uint debugMode = 0u;
     if (debugMode > 0) {
         return float4(albedo, 1.0f);
     }
@@ -396,16 +376,17 @@ float4 PSMain(VSOutput input) : SV_Target
         return float4(albedo, 1.0f);
     }
 
-    float3 V = normalize(camPosAndMetallic.xyz - worldPos);
+    GpuSceneLightData sceneLighting = gpuSceneLights[0];
+    float3 V = normalize(gpuCameraPositionAndNear.xyz - worldPos);
     float3 R = reflect(-V, normal);
 
     float NdotV = max(dot(normal, V), 0.0f);
 
     float3 F0 = lerp(0.04f.xxx, albedo, metallic);
     float3 direct = 0.0f.xxx;
-    uint lightCount = min((uint)round(lightMeta.x), 8u);
+    uint lightCount = min((uint)round(sceneLighting.meta.x), 8u);
     for (uint lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
-        GpuLightData light = lights[lightIndex];
+        GpuSceneLight light = sceneLighting.lights[lightIndex];
         uint lightType = (uint)round(light.positionAndType.w);
         float3 L = 0.0f.xxx;
         float attenuation = 1.0f;
@@ -475,7 +456,7 @@ float4 PSMain(VSOutput input) : SV_Target
         ? hbaoTexture.SampleLevel(hbaoSampler, input.uv, 0.0f).r
         : 1.0f;
     float3 color =
-        (diffuseIBL + specularIBL) * ao * screenAo * lightMeta.y +
+        (diffuseIBL + specularIBL) * ao * screenAo * sceneLighting.meta.y +
         direct * lerp(1.0f, screenAo, 0.35f);
     float rim = pow(
         saturate(1.0f - NdotV),

@@ -267,26 +267,28 @@ void VulkanFrameExecutor::compileExecution(
             const uint32_t uniformByteSize =
                 passPlan.pipeline.descriptorSets.uniformByteSize;
             if (uniformByteSize > 0) {
-                compiled.uniformBuffers.resize(setCount);
+                compiled.uniformBuffers.resize(
+                    std::max(config.framesInFlight, 1u));
+                for (auto& uniformBuffer : compiled.uniformBuffers) {
+                    uniformBuffer = device.retainResource(
+                        config.sceneScope,
+                        device.createUniformBuffer(uniformByteSize));
+                }
             }
             for (uint32_t set = 0; set < setCount; ++set) {
                 compiled.descriptorSets[set] = device.allocateDescriptorSet(
                     *compiled.descriptorPool,
                     *compiled.descriptorSetLayout);
                 std::vector<DescriptorWriteDesc> writes;
+                const uint32_t frame =
+                    set / compiled.descriptorSetsPerFrame;
                 if (uniformByteSize > 0) {
-                    compiled.uniformBuffers[set] = device.retainResource(
-                        config.sceneScope,
-                        device.createUniformBuffer(
-                            uniformByteSize));
                     writes.push_back({
                         0,
                         DescriptorResourceType::UniformBuffer,
-                        compiled.uniformBuffers[set]
+                        compiled.uniformBuffers[frame]
                     });
                 }
-                const uint32_t frame =
-                    set / compiled.descriptorSetsPerFrame;
                 if (compiled.framePass) {
                 for (const auto& packetWrite :
                      compiled.framePass->descriptorWrites) {
@@ -536,12 +538,28 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
             write.binding = packetWrite.binding;
             switch (packetWrite.source) {
             case Tasrovy::Render::FrameDescriptorSource::UniformData:
-                if (descriptorIndex >= compiled.uniformBuffers.size()) {
+                if (frameIndex >= compiled.uniformBuffers.size()) {
                     throw std::invalid_argument(
                         "Uniform descriptor has no compiled buffer");
                 }
                 write.type = DescriptorResourceType::UniformBuffer;
-                write.buffer = compiled.uniformBuffers[descriptorIndex];
+                write.buffer = compiled.uniformBuffers[frameIndex];
+                break;
+            case Tasrovy::Render::FrameDescriptorSource::ViewUniform:
+                write.type = DescriptorResourceType::UniformBuffer;
+                write.buffer = bindings.viewUniform;
+                break;
+            case Tasrovy::Render::FrameDescriptorSource::ObjectData:
+                write.type = DescriptorResourceType::StorageBuffer;
+                write.buffer = bindings.objectData;
+                break;
+            case Tasrovy::Render::FrameDescriptorSource::MaterialData:
+                write.type = DescriptorResourceType::StorageBuffer;
+                write.buffer = bindings.materialData;
+                break;
+            case Tasrovy::Render::FrameDescriptorSource::SceneLights:
+                write.type = DescriptorResourceType::StorageBuffer;
+                write.buffer = bindings.sceneLights;
                 break;
             case Tasrovy::Render::FrameDescriptorSource::RenderTexture: {
                 std::string resourceName = packetWrite.resourceName;
@@ -620,6 +638,12 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
                         "Frame descriptor references an unresolved buffer");
                 }
                 break;
+            }
+            if ((write.type == DescriptorResourceType::UniformBuffer ||
+                 write.type == DescriptorResourceType::StorageBuffer) &&
+                !write.buffer) {
+                throw std::invalid_argument(
+                    "Frame descriptor references an unresolved GPUScene buffer");
             }
             writes.push_back(std::move(write));
         }
@@ -771,13 +795,15 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
                 const uint32_t descriptorIndex =
                     frameIndex * compiled->descriptorSetsPerFrame +
                     command.drawIndex;
-                if (!draw.uniformData.empty() &&
-                    descriptorIndex < compiled->uniformBuffers.size()) {
-                    compiled->uniformBuffers[descriptorIndex]->setData(
-                        draw.uniformData.data(), draw.uniformData.size());
+                if (!packetPass.parameters.uniformData.empty() &&
+                    frameIndex < compiled->uniformBuffers.size()) {
+                    compiled->uniformBuffers[frameIndex]->setData(
+                        packetPass.parameters.uniformData.data(),
+                        packetPass.parameters.uniformData.size());
                 }
                 descriptorWrites(
-                    *compiled, packetPass, descriptorIndex, draw.materialId);
+                    *compiled, packetPass, descriptorIndex,
+                    draw.materialIndex);
                 commandList.bindVertexBuffer(*mesh->second.vertexBuffer);
                 commandList.bindIndexBuffer(*mesh->second.indexBuffer);
                 commandList.setFrontFace(

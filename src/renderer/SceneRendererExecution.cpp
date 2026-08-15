@@ -59,6 +59,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <limits>
 #include <string>
 #include <stdexcept>
@@ -74,7 +75,7 @@ using namespace Tasrovy::RHI;
 
 namespace {
 
-using PassResources = CompiledPassResources;
+using PassResources = FramePassPacket;
 inline constexpr const char* OutlineOnlyDebugOutput = "__OutlineOnly";
 
 std::string formatBytes(uint64_t bytes) {
@@ -323,6 +324,15 @@ bool drawMaterialDebug(Material& material) {
     }
 
     if (ImGui::TreeNode("Textures")) {
+        static constexpr const char* textureUvModes[] = {
+            "Identity",
+            "Flip Y",
+            "Flip X",
+            "Flip X/Y",
+            "Swap X/Y",
+            "Swap + Flip Y",
+            "Swap + Flip X"
+        };
         static std::unordered_map<
             const Material*,
             std::unordered_map<std::string, std::array<char, 512>>>
@@ -377,6 +387,25 @@ bool drawMaterialDebug(Material& material) {
                         ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
                         "File not found");
                 }
+                auto uvSampling = binding.uvSampling;
+                int uvMode = static_cast<int>(uvSampling.mode);
+                bool samplingChanged = ImGui::Combo(
+                    "UV Orientation",
+                    &uvMode,
+                    textureUvModes,
+                    IM_ARRAYSIZE(textureUvModes));
+                samplingChanged |= ImGui::DragFloat2(
+                    "UV Scale", &uvSampling.scale.x,
+                    0.01f, -10.0f, 10.0f, "%.3f");
+                samplingChanged |= ImGui::DragFloat2(
+                    "UV Offset", &uvSampling.offset.x,
+                    0.01f, -10.0f, 10.0f, "%.3f");
+                if (samplingChanged) {
+                    uvSampling.mode =
+                        static_cast<MaterialTextureUvMode>(uvMode);
+                    material.setTextureUvSampling(slot, uvSampling);
+                }
+                ImGui::Separator();
                 ImGui::PopID();
             };
 
@@ -499,17 +528,29 @@ bool drawObjectDebug(const std::shared_ptr<Object>& object) {
 
 } // namespace
 
+struct SceneRendererExecution::PendingRHIFrame {
+    struct Result {
+        bool submitted = false;
+        std::vector<std::pair<std::string, double>> completedTimings;
+    };
+
+    std::future<void> completion;
+    std::shared_ptr<Result> result;
+};
+
 SceneRendererExecution::SceneRendererExecution(
     Tasrovy::Windowing::Window& window,
     uint32_t maxFramesInFlight,
     SceneRendererComponents& components,
     RenderScene& renderScene,
-    RenderThread& renderThread)
+    RenderThread& renderThread,
+    RHIThread& rhiThread)
     : window_(window),
       maxFramesInFlight_(maxFramesInFlight),
       renderState_(&components),
       renderScene_(renderScene),
-      renderThread_(renderThread) {
+      renderThread_(renderThread),
+      rhiThread_(rhiThread) {
     if (renderState_->ui) {
         renderState_->ui->setDrawCallback([this]() {
             drawSceneDebugUI();
@@ -523,7 +564,29 @@ SceneRendererExecution::SceneRendererExecution(
     LOG_INFO("SceneRenderer: RHI initialized");
 }
 
-SceneRendererExecution::~SceneRendererExecution() = default;
+SceneRendererExecution::~SceneRendererExecution() {
+    try {
+        waitForPendingRHIFrame();
+    } catch (const std::exception& error) {
+        LOG_ERROR("SceneRenderer: RHI worker shutdown failed: {}", error.what());
+    }
+}
+
+bool SceneRendererExecution::waitForPendingRHIFrame() {
+    if (!pendingRHIFrame_) return true;
+    auto pending = std::move(pendingRHIFrame_);
+    pending->completion.get();
+    if (!pending->result) return true;
+
+    renderState_->gpuPassTimings =
+        std::move(pending->result->completedTimings);
+    if (!pending->result->submitted) {
+        renderState_->viewState.invalidate(
+            "RHI frame was not submitted", true);
+        renderState_->frameOrchestrator.resetTemporalHistory();
+    }
+    return pending->result->submitted;
+}
 
 void SceneRendererExecution::drawSceneDebugUI() {
     auto& state = *renderState_;
@@ -648,31 +711,6 @@ void SceneRendererExecution::drawSceneDebugUI() {
             "SceneRenderer: switched pipeline to '{}'",
             lockedScene.pipeline()->getName());
     }
-    if (state.settings.selectedPipelineIndex == 1) {
-        const char* gBufferSubmissionModes[] = {
-            "CPU Driven",
-            "GPU Driven"
-        };
-        int submissionMode = state.settings.gpuDrivenGBufferEnabled ? 1 : 0;
-        if (ImGui::Combo(
-                "GBuffer Submission",
-                &submissionMode,
-                gBufferSubmissionModes,
-                2)) {
-            state.settings.gpuDrivenGBufferEnabled = submissionMode == 1;
-            state.viewState.temporalHistoryValid = false;
-        }
-        ImGui::TextDisabled(
-            state.gpuDrivenGBuffer.resources().ready
-                ? "GPU path: compute frustum culling + indirect draws"
-                : "GPU path unavailable for the current scene");
-        if (state.gpuDrivenGBuffer.resources().ready) {
-            ImGui::Text(
-                "GPU draws: %zu  material groups: %zu",
-                state.gpuDrivenGBuffer.resources().draws.size(),
-                state.gpuDrivenGBuffer.resources().groups.size());
-        }
-    }
     ImGui::Text("Passes: %zu", state.rhi.frameExecutor.compiledPipeline().size());
     ImGui::SameLine();
     ImGui::TextDisabled(
@@ -742,54 +780,6 @@ void SceneRendererExecution::drawSceneDebugUI() {
         ImGui::Text(
             "Skybox variants: %zu",
             state.sceneResources.skyboxVariants().size());
-    }
-
-    if (ImGui::CollapsingHeader("UV Settings")) {
-        const char* uvModes[] = {
-            "UV0",
-            "Flip Y",
-            "Flip X",
-            "Flip X/Y",
-            "Swap X/Y",
-            "Swap + Flip Y",
-            "Swap + Flip X"
-        };
-        const bool uvModesMatch =
-            state.settings.bodyUvMode == state.settings.hairUvMode &&
-            state.settings.bodyUvMode == state.settings.faceUvMode;
-        const char* modelUvPreview = uvModesMatch
-            ? uvModes[state.settings.bodyUvMode]
-            : "Mixed";
-        if (ImGui::BeginCombo("Model UV", modelUvPreview)) {
-            for (int mode = 0; mode < IM_ARRAYSIZE(uvModes); ++mode) {
-                const bool selected = uvModesMatch && state.settings.bodyUvMode == mode;
-                if (ImGui::Selectable(uvModes[mode], selected)) {
-                    state.settings.bodyUvMode = mode;
-                    state.settings.hairUvMode = mode;
-                    state.settings.faceUvMode = mode;
-                }
-                if (selected) {
-                    ImGui::SetItemDefaultFocus();
-                }
-            }
-            ImGui::EndCombo();
-        }
-        ImGui::DragFloat2("UV Offset", state.settings.uvOffset, 0.01f, -10.0f, 10.0f, "%.3f");
-        ImGui::DragFloat2("UV Scale", state.settings.uvScale, 0.01f, -10.0f, 10.0f, "%.3f");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Reset UV Transform")) {
-            state.settings.uvOffset[0] = 0.0f;
-            state.settings.uvOffset[1] = 0.0f;
-            state.settings.uvScale[0] = 1.0f;
-            state.settings.uvScale[1] = 1.0f;
-        }
-        ImGui::TextDisabled("Repeat: frac(UV * Scale + Offset)");
-        if (ImGui::TreeNode("Per-Material UV Overrides")) {
-            ImGui::Combo("Body UV", &state.settings.bodyUvMode, uvModes, IM_ARRAYSIZE(uvModes));
-            ImGui::Combo("Hair UV", &state.settings.hairUvMode, uvModes, IM_ARRAYSIZE(uvModes));
-            ImGui::Combo("Face UV", &state.settings.faceUvMode, uvModes, IM_ARRAYSIZE(uvModes));
-            ImGui::TreePop();
-        }
     }
 
     if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1296,16 +1286,25 @@ void SceneRendererExecution::drawSceneDebugUI() {
 }
 
 void SceneRendererExecution::run() {
-    renderLoop();
+    try {
+        renderLoop();
+        waitForPendingRHIFrame();
+    } catch (const std::exception& error) {
+        LOG_ERROR("SceneRenderer: render/RHI pipeline stopped: {}", error.what());
+    }
 }
 
 void SceneRendererExecution::renderLoop() {
     uint64_t appliedResizeGeneration = 0;
     while (renderThread_.running()) {
+        // Every shared RHI object below is single-owner while a frame job is
+        // active. Resolve that job before inspecting scheduler or pipeline
+        // state. Frame construction later overlaps the main/game thread.
+        waitForPendingRHIFrame();
+        if (!renderThread_.running()) break;
         const auto submitted = renderScene_.snapshot();
-        const auto scene = submitted.scene;
 
-        if (!scene) {
+        if (!submitted.scene) {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             continue;
         }
@@ -1319,9 +1318,21 @@ void SceneRendererExecution::renderLoop() {
             renderState_->compiledPipeline &&
             renderState_->compiledPipeline->getConfigurationVersion() !=
                 renderState_->compiledPipelineConfigurationVersion;
-        if (submitted.dirty || configurationOutdated) {
-            processScene(scene);
+        if (submitted.dirty) {
+            activeScene_ = submitted.scene->clone();
+            rebuildRenderGraph(activeScene_);
             renderScene_.acknowledge(submitted.version);
+        } else if (configurationOutdated) {
+            if (!activeScene_) {
+                activeScene_ = submitted.scene->clone();
+            }
+            rebuildRenderGraph(activeScene_);
+        }
+
+        const auto scene = activeScene_;
+        if (!scene) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
         }
 
         const auto framebuffer = window_.getFramebufferState();
@@ -1338,9 +1349,13 @@ void SceneRendererExecution::renderLoop() {
         auto& frameScheduler = renderState_->rhi.device->getFrameScheduler();
         bool swapchainRecreated = false;
         if (windowSizeChanged || frameScheduler.isSwapchainRebuildRequired()) {
-            if (!frameScheduler.recreateSwapchain(
+            bool recreated = false;
+            rhiThread_.invoke([&] {
+                recreated = frameScheduler.recreateSwapchain(
                     static_cast<uint32_t>(framebuffer.width),
-                    static_cast<uint32_t>(framebuffer.height))) {
+                    static_cast<uint32_t>(framebuffer.height));
+            });
+            if (!recreated) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
             }
@@ -1368,13 +1383,13 @@ void SceneRendererExecution::renderLoop() {
             renderState_->internalRenderHeight = desiredInternalExtent.second;
             renderState_->internalExtentDirty = false;
             renderState_->viewState.temporalHistoryValid = false;
-            processScene(scene);
+            rebuildRenderGraph(scene);
         } else if (swapchainRecreated) {
             const auto pipeline = renderScene_.snapshot().pipeline;
             if (pipeline) {
                 rebuildDisplayResources(*pipeline);
             } else {
-                processScene(scene);
+                rebuildRenderGraph(scene);
             }
         }
 
@@ -1382,14 +1397,79 @@ void SceneRendererExecution::renderLoop() {
     }
 }
 
-void SceneRendererExecution::processScene(const std::shared_ptr<Scene>& scene) {
+void SceneRendererExecution::applySceneUpdates(
+    const std::shared_ptr<Scene>& scene) {
+    if (!scene) return;
     auto& state = *renderState_;
     auto& device = *state.rhi.device;
     auto& frameScheduler = device.getFrameScheduler();
-    if (!scene) {
-        return;
+
+    std::vector<std::shared_ptr<Object>> objects;
+    std::unordered_set<const Object*> visited;
+    for (const auto& object : scene->getObjects()) {
+        collectSceneObjects(object, objects, visited);
+    }
+    state.sceneResources.rebuildMeshes(
+        device, frameScheduler, *state.rhi.commandList,
+        state.rhi.sceneResourceScope, objects);
+
+    const auto& sources = state.frameOrchestrator.sourceRegistry();
+    for (const auto& pass : state.frameOrchestrator.framePacket().passes) {
+        for (const auto& requirement : pass.materialTextures) {
+            state.sceneResources.ensureDefaultTexture(
+                device, state.rhi.sceneResourceScope, requirement);
+        }
+        for (const auto objectId : pass.objectIds) {
+            const auto foundObject = sources.objects.find(objectId);
+            const auto object = foundObject == sources.objects.end()
+                ? nullptr : foundObject->second.lock();
+            if (!object) continue;
+            state.sceneResources.ensureMaterialTextures(
+                device, state.rhi.sceneResourceScope,
+                object->getMaterial(), pass.materialTextures);
+            if (const auto mesh = object->getMesh()) {
+                for (const auto& submesh : mesh->getSubmeshes()) {
+                    state.sceneResources.ensureMaterialTextures(
+                        device, state.rhi.sceneResourceScope,
+                        submesh.getMaterial(), pass.materialTextures);
+                }
+            }
+        }
     }
 
+    std::string preferredSkyboxPath;
+    for (const auto& object : objects) {
+        const auto skybox = std::dynamic_pointer_cast<Skybox>(object);
+        if (skybox && skybox->getCubemap()) {
+            preferredSkyboxPath = skybox->getCubemap()->getFilePath();
+            break;
+        }
+    }
+    state.environmentLightingEnabled = false;
+    state.sceneResources.prepareSkyboxVariants(
+        device, state.rhi.persistentResourceScope, preferredSkyboxPath);
+    if (state.sceneResources.skyCubemap()) {
+        state.sceneResources.rebuildSkyboxGeometry(
+            device, frameScheduler, *state.rhi.commandList,
+            state.rhi.sceneResourceScope, true);
+        LOG_INFO(
+            "SceneRenderer: active skybox '{}' loaded, indices {}",
+            state.sceneResources.activeSkyboxName(),
+            state.sceneResources.skyboxIndexCount());
+    }
+}
+
+void SceneRendererExecution::rebuildRenderGraph(
+    const std::shared_ptr<Scene>& scene) {
+    if (!scene) return;
+    if (!rhiThread_.isCurrentThread()) {
+        waitForPendingRHIFrame();
+        rhiThread_.invoke([this, scene] { rebuildRenderGraph(scene); });
+        return;
+    }
+    auto& state = *renderState_;
+    auto& device = *state.rhi.device;
+    auto& frameScheduler = device.getFrameScheduler();
     auto pipeline = renderScene_.snapshot().pipeline;
 
     if (!pipeline) {
@@ -1401,9 +1481,6 @@ void SceneRendererExecution::processScene(const std::shared_ptr<Scene>& scene) {
         RendererFeaturePolicy::configuration(state.settings));
 
     state.frameOrchestrator.rebuild(scene, *pipeline, 0);
-    state.compiledPipeline = pipeline;
-    state.compiledPipelineConfigurationVersion =
-        pipeline->getConfigurationVersion();
     if (!state.settings.debugOutputResource.empty() &&
         state.settings.debugOutputResource != OutlineOnlyDebugOutput) {
         const bool debugResourceStillExists = std::any_of(
@@ -1438,6 +1515,7 @@ void SceneRendererExecution::processScene(const std::shared_ptr<Scene>& scene) {
 
     state.rhi.frameExecutor.reset();
     state.sceneResources.resetScene();
+    state.gpuScene.reset();
     state.rhi.frameExecutor.compiledPipeline().reset();
     state.loggedSubmeshMaterialBindings = false;
     state.viewState.invalidate("Render graph rebuilt", true);
@@ -1447,9 +1525,7 @@ void SceneRendererExecution::processScene(const std::shared_ptr<Scene>& scene) {
         timingNames.clear();
     }
     state.gpuPassTimings.clear();
-    state.animatedTaffy = nullptr;
-    state.taffyYawOffset = 0.0f;
-    state.lastTaffyAnimationTime = {};
+    state.resetSceneTransientState();
     device.resetResourceScope(state.rhi.displayResourceScope);
     device.resetResourceScope(state.rhi.sceneResourceScope);
 
@@ -1458,6 +1534,8 @@ void SceneRendererExecution::processScene(const std::shared_ptr<Scene>& scene) {
     if (!renderGraph.isValid() ||
         !framePacket.valid() ||
         !executionPlan.valid()) {
+        state.compiledPipeline.reset();
+        state.compiledPipelineConfigurationVersion = 0;
         LOG_ERROR(
             "SceneRenderer: rejected invalid Render Graph '{}'; no GPU work will be compiled or executed",
             pipeline->getName());
@@ -1467,87 +1545,11 @@ void SceneRendererExecution::processScene(const std::shared_ptr<Scene>& scene) {
         return;
     }
 
-    std::vector<std::shared_ptr<Object>> objects;
-    std::unordered_set<const Object*> visited;
-    for (const auto& object : scene->getObjects()) {
-        collectSceneObjects(object, objects, visited);
-    }
+    state.compiledPipeline = pipeline;
+    state.compiledPipelineConfigurationVersion =
+        pipeline->getConfigurationVersion();
 
-    state.sceneResources.rebuildMeshes(
-        device,
-        frameScheduler,
-        *state.rhi.commandList,
-        state.rhi.sceneResourceScope,
-        objects);
-
-    for (const auto& pass : state.frameOrchestrator.framePacket().passes) {
-        const auto& sources = state.frameOrchestrator.sourceRegistry();
-        for (const auto& requirement : pass.materialTextures) {
-            state.sceneResources.ensureDefaultTexture(
-                device,
-                state.rhi.sceneResourceScope,
-                requirement);
-        }
-        for (const auto objectId : pass.objectIds) {
-            const auto foundObject = sources.objects.find(objectId);
-            const auto object = foundObject == sources.objects.end()
-                ? nullptr
-                : foundObject->second.lock();
-            if (!object) {
-                continue;
-            }
-            state.sceneResources.ensureMaterialTextures(
-                device,
-                state.rhi.sceneResourceScope,
-                object->getMaterial(),
-                pass.materialTextures);
-            if (const auto mesh = object->getMesh()) {
-                for (const auto& submesh : mesh->getSubmeshes()) {
-                    state.sceneResources.ensureMaterialTextures(
-                        device,
-                        state.rhi.sceneResourceScope,
-                        submesh.getMaterial(),
-                        pass.materialTextures);
-                }
-            }
-        }
-    }
-
-    std::string preferredSkyboxPath;
-    for (const auto& object : objects) {
-        const auto skybox = std::dynamic_pointer_cast<Skybox>(object);
-        if (!skybox || !skybox->getCubemap()) {
-            continue;
-        }
-        preferredSkyboxPath = skybox->getCubemap()->getFilePath();
-        break;
-    }
-
-    // IBL precomputation is intentionally dormant. Skyboxes remain visible,
-    // while Device-owned automatic IBL generation is reserved for a future
-    // backend policy.
-    state.environmentLightingEnabled = false;
-    // The deferred-lighting descriptor always contains the IBL bindings.
-    // Prepare a valid environment even for closed scenes, then disable its
-    // lighting contribution through the UBO when no Skybox object is present.
-    state.sceneResources.prepareSkyboxVariants(
-        device,
-        state.rhi.persistentResourceScope,
-        preferredSkyboxPath);
-
-    if (state.sceneResources.skyCubemap()) {
-
-        state.sceneResources.rebuildSkyboxGeometry(
-            device,
-            frameScheduler,
-            *state.rhi.commandList,
-            state.rhi.sceneResourceScope,
-            true);
-        LOG_INFO(
-            "SceneRenderer: active skybox '{}' loaded, indices {}",
-            state.sceneResources.activeSkyboxName(),
-            state.sceneResources.skyboxIndexCount());
-    }
+    applySceneUpdates(scene);
 
     const auto executionConfig = FrameResourceConfig{
         frameScheduler.getWidth(),
@@ -1567,6 +1569,11 @@ void SceneRendererExecution::processScene(const std::shared_ptr<Scene>& scene) {
         executionConfig);
     state.rhi.frameExecutor.bindFramePacket(
         framePacket);
+    state.gpuScene.prepare(
+        device,
+        state.rhi.sceneResourceScope,
+        maxFramesInFlight_,
+        state.frameOrchestrator.sourceRegistry());
     // GPU-driven submission must be represented as explicit FramePacket
     // passes; the legacy side-channel compiler is intentionally not rebuilt.
     state.gpuDrivenGBuffer.reset();
@@ -1580,6 +1587,12 @@ void SceneRendererExecution::processScene(const std::shared_ptr<Scene>& scene) {
 }
 
 void SceneRendererExecution::rebuildDisplayResources(PipelineBase& pipeline) {
+    if (!rhiThread_.isCurrentThread()) {
+        waitForPendingRHIFrame();
+        rhiThread_.invoke(
+            [this, &pipeline] { rebuildDisplayResources(pipeline); });
+        return;
+    }
     auto& state = *renderState_;
     auto& device = *state.rhi.device;
     auto& frameScheduler = device.getFrameScheduler();
@@ -1621,38 +1634,18 @@ void SceneRendererExecution::renderFrame(Scene& scene) {
     auto& state = *renderState_;
     auto& device = *state.rhi.device;
     auto& frameScheduler = device.getFrameScheduler();
-    auto& cmdList = *state.rhi.commandList;
 
-    if (!scene.getPrimaryCamera() || state.rhi.frameExecutor.compiledPipeline().empty()) {
+    if (!scene.getPrimaryCamera() || !state.compiledPipeline) {
         return;
     }
 
-    if (!frameScheduler.beginFrame(cmdList)) {
-        return;
-    }
-
+    // No other frame job is active when renderFrame is entered. This index is
+    // therefore the exact slot the RHI worker will acquire for this packet.
     const uint32_t frameIdx = frameScheduler.getCurrentFrameIndex();
-    const auto completedGpuDurations = frameScheduler.consumeGpuTimestampDurations();
-    state.gpuPassTimings.clear();
-    if (frameIdx < state.gpuTimingNamesPerFrame.size()) {
-        const auto& completedNames = state.gpuTimingNamesPerFrame[frameIdx];
-        const size_t completedCount = std::min(
-            completedNames.size(), completedGpuDurations.size());
-        state.gpuPassTimings.reserve(completedCount);
-        for (size_t timingIndex = 0; timingIndex < completedCount; ++timingIndex) {
-            state.gpuPassTimings.emplace_back(
-                completedNames[timingIndex], completedGpuDurations[timingIndex]);
-        }
-        state.gpuTimingNamesPerFrame[frameIdx].clear();
-    }
-    const uint64_t timestampQueryPool = frameScheduler.getCurrentTimestampQueryPool();
-    const uint32_t timestampQueryCapacity = std::min(
-        static_cast<uint32_t>(state.rhi.frameExecutor.compiledPipeline().size() * 2u), 256u);
-    cmdList.resetTimestampQueryPool(timestampQueryPool, timestampQueryCapacity);
+    const uint32_t displayWidth = frameScheduler.getWidth();
+    const uint32_t displayHeight = frameScheduler.getHeight();
     std::unordered_map<const Object*, TSMat4f> currentModelMatrices;
     currentModelMatrices.reserve(state.viewState.previousModelMatrices.size() + 4u);
-    bool drawUI = state.ui && state.ui->beginFrame(
-        frameScheduler.getWidth(), frameScheduler.getHeight());
 
     SceneAnimationSystem::update(
         scene, state, std::chrono::steady_clock::now());
@@ -1672,12 +1665,11 @@ void SceneRendererExecution::renderFrame(Scene& scene) {
     if (activePipeline) {
         state.frameOrchestrator.compileFrame(
             scene, *activePipeline, state.viewState.temporalFrameIndex);
-        state.rhi.frameExecutor.bindFramePacket(
-            state.frameOrchestrator.framePacket());
+        auto& framePacket = state.frameOrchestrator.framePacket();
         const auto& executionPlan =
             state.frameOrchestrator.executionPlan();
         auto schedule = state.frameExecutionScheduler.schedule(
-            state.rhi.frameExecutor.compiledPipeline(), executionPlan);
+            framePacket, executionPlan);
         scheduledPasses = std::move(schedule.orderedPasses);
 
         if (schedule.diagnostics != state.lastFramePlanDiagnostics) {
@@ -1694,64 +1686,155 @@ void SceneRendererExecution::renderFrame(Scene& scene) {
             state.lastFramePlanDiagnostics = std::move(schedule.diagnostics);
         }
     } else {
-        scheduledPasses.reserve(state.rhi.frameExecutor.compiledPipeline().size());
-        for (auto& pass : state.rhi.frameExecutor.compiledPipeline().passes()) {
+        auto& framePacket = state.frameOrchestrator.framePacket();
+        scheduledPasses.reserve(framePacket.passes.size());
+        for (auto& pass : framePacket.passes) {
             scheduledPasses.push_back(&pass);
         }
     }
 
+    std::vector<FrameBufferUpload> pendingBufferUploads;
     FrameRuntimeParameterCompiler::populate(
         state,
         scene,
         *cam,
         viewFrame,
         scheduledPasses,
-        frameIdx,
-        frameScheduler.getWidth(),
-        frameScheduler.getHeight(),
+        displayWidth,
+        displayHeight,
         currentModelMatrices);
     const auto& sources = state.frameOrchestrator.sourceRegistry();
+    state.gpuScene.buildUploads(
+        frameIdx,
+        scene,
+        *cam,
+        viewFrame,
+        state.viewState,
+        sources,
+        state.settings,
+        state.environmentLightingEnabled,
+        state.internalRenderWidth,
+        state.internalRenderHeight,
+        displayWidth,
+        displayHeight,
+        pendingBufferUploads);
     auto executionBindings = FrameBindingResolver::resolve(
         device,
         state.sceneResources,
+        state.gpuScene,
         sources,
         scheduledPasses,
         state.settings,
-        state.viewState);
+        state.viewState,
+        frameIdx);
 
-    const auto swapchainTarget =
-        frameScheduler.getCurrentSwapchainTarget();
-    FrameExecuteContext executeContext;
-    executeContext.device = &device;
-    executeContext.commandList = &cmdList;
-    executeContext.swapchainTarget = &swapchainTarget;
-    executeContext.overlay = state.ui.get();
-    executeContext.bindings = &executionBindings;
-    executeContext.frameIndex = frameIdx;
-    executeContext.drawOverlay = drawUI;
-    executeContext.timestampQueryPool = timestampQueryPool;
-    executeContext.timestampQueryCapacity = timestampQueryCapacity;
+    const bool drawUI = state.ui && state.ui->beginFrame(
+        displayWidth, displayHeight);
 
-    const auto executeResult = state.rhi.frameExecutor.executeFrame(
-        state.frameOrchestrator.executionPlan(),
-        executeContext);
-    const uint32_t gpuTimestampCount =
-        executeResult.timestampQueryCount;
-    if (frameIdx < state.gpuTimingNamesPerFrame.size()) {
-        state.gpuTimingNamesPerFrame[frameIdx] =
-            executeResult.timestampPassNames;
-    }
-    frameScheduler.setCurrentTimestampQueryCount(gpuTimestampCount);
-    if (executeResult.swapchainUsed) {
-        frameScheduler.markCurrentSwapchainImagePresented();
-    }
+    auto packetForRHI = state.frameOrchestrator.framePacket();
+    auto planForRHI = state.frameOrchestrator.executionPlan();
+    auto result = std::make_shared<PendingRHIFrame::Result>();
+    auto completion = rhiThread_.submit(
+        [this,
+         expectedFrameIndex = frameIdx,
+         packet = std::move(packetForRHI),
+         plan = std::move(planForRHI),
+         bindings = std::move(executionBindings),
+         uploads = std::move(pendingBufferUploads),
+         drawUI,
+         result]() mutable {
+            auto& rhiState = *renderState_;
+            auto& rhiDevice = *rhiState.rhi.device;
+            auto& scheduler = rhiDevice.getFrameScheduler();
+            auto& commandList = *rhiState.rhi.commandList;
+            bool frameOpen = false;
+            try {
+                if (!scheduler.beginFrame(commandList)) {
+                    commandList.useNativeCommandBuffer(0);
+                    return;
+                }
+                frameOpen = true;
+                const uint32_t frameIndex = scheduler.getCurrentFrameIndex();
+                if (frameIndex != expectedFrameIndex) {
+                    throw std::runtime_error(
+                        "RHI frame slot changed after packet publication");
+                }
+
+                // beginFrame waited this slot's fence. Only now may mapped
+                // per-frame buffers be overwritten.
+                for (const auto& upload : uploads) {
+                    if (upload.buffer && !upload.bytes.empty()) {
+                        upload.buffer->setData(
+                            upload.bytes.data(), upload.bytes.size());
+                    }
+                }
+
+                const auto completedDurations =
+                    scheduler.consumeGpuTimestampDurations();
+                if (frameIndex < rhiState.gpuTimingNamesPerFrame.size()) {
+                    const auto& completedNames =
+                        rhiState.gpuTimingNamesPerFrame[frameIndex];
+                    const size_t count = std::min(
+                        completedNames.size(), completedDurations.size());
+                    result->completedTimings.reserve(count);
+                    for (size_t index = 0; index < count; ++index) {
+                        result->completedTimings.emplace_back(
+                            completedNames[index], completedDurations[index]);
+                    }
+                    rhiState.gpuTimingNamesPerFrame[frameIndex].clear();
+                }
+
+                const uint64_t timestampQueryPool =
+                    scheduler.getCurrentTimestampQueryPool();
+                const uint32_t timestampCapacity = std::min(
+                    static_cast<uint32_t>(plan.passes.size() * 2u), 256u);
+                commandList.resetTimestampQueryPool(
+                    timestampQueryPool, timestampCapacity);
+
+                rhiState.rhi.frameExecutor.bindFramePacket(packet);
+                const auto swapchainTarget =
+                    scheduler.getCurrentSwapchainTarget();
+
+                FrameExecuteContext context;
+                context.device = &rhiDevice;
+                context.commandList = &commandList;
+                context.swapchainTarget = &swapchainTarget;
+                context.overlay = rhiState.ui.get();
+                context.bindings = &bindings;
+                context.frameIndex = frameIndex;
+                context.drawOverlay = drawUI;
+                context.timestampQueryPool = timestampQueryPool;
+                context.timestampQueryCapacity = timestampCapacity;
+
+                const auto executeResult =
+                    rhiState.rhi.frameExecutor.executeFrame(plan, context);
+                if (frameIndex < rhiState.gpuTimingNamesPerFrame.size()) {
+                    rhiState.gpuTimingNamesPerFrame[frameIndex] =
+                        executeResult.timestampPassNames;
+                }
+                scheduler.setCurrentTimestampQueryCount(
+                    executeResult.timestampQueryCount);
+                if (executeResult.swapchainUsed) {
+                    scheduler.markCurrentSwapchainImagePresented();
+                }
+                scheduler.submitFrame();
+                frameOpen = false;
+                commandList.useNativeCommandBuffer(0);
+                result->submitted = true;
+            } catch (...) {
+                if (frameOpen) scheduler.abortFrame();
+                commandList.useNativeCommandBuffer(0);
+                throw;
+            }
+        });
+
+    pendingRHIFrame_ = std::make_unique<PendingRHIFrame>();
+    pendingRHIFrame_->completion = std::move(completion);
+    pendingRHIFrame_->result = std::move(result);
     state.loggedSubmeshMaterialBindings = true;
-    frameScheduler.submitFrame();
 
-    // Queue submission order guarantees that the preceding frame's color and
-    // depth attachments are complete before the next frame samples them.
-    // Publish the exact jittered matrices used for this submitted frame only
-    // after recording and submission have succeeded.
+    // Publication is speculative but ordered. The next render iteration waits
+    // the RHI result and invalidates history if acquire/record/submit failed.
     state.viewSystem.commitFrame(
         state.viewState,
         viewFrame,

@@ -63,6 +63,22 @@ uint64_t FrameCompiler::idFor(const void* object) {
     return found->second;
 }
 
+uint32_t FrameCompiler::objectIndexFor(
+    RenderObjectId objectId, uint32_t submeshIndex) {
+    auto& submeshes = objectIndices_[objectId];
+    const auto [found, inserted] = submeshes.try_emplace(
+        submeshIndex, nextObjectIndex_);
+    if (inserted) ++nextObjectIndex_;
+    return found->second;
+}
+
+uint32_t FrameCompiler::materialIndexFor(RenderMaterialId materialId) {
+    const auto [found, inserted] = materialIndices_.try_emplace(
+        materialId, nextMaterialIndex_);
+    if (inserted) ++nextMaterialIndex_;
+    return found->second;
+}
+
 FramePacket FrameCompiler::compile(
     const Scene& scene,
     const PipelineBase& pipeline,
@@ -113,8 +129,6 @@ FramePacket FrameCompiler::compile(
 
     std::unordered_set<RenderMeshId> emittedMeshes;
     std::unordered_set<RenderMaterialId> emittedMaterials;
-    std::unordered_map<const Object*, TSMat4f> currentModels;
-
     frame.passes.reserve(renderGraph.getNodes().size());
     for (const auto& node : renderGraph.getNodes()) {
         const auto& pass = node.pass;
@@ -165,7 +179,7 @@ FramePacket FrameCompiler::compile(
         packet.materialTextures = pass->getMaterialTextures();
         for (const auto& objectReference : pass->getObjects()) {
             if (const auto object = objectReference.lock()) {
-                const auto objectId = idFor(object.get());
+                const auto objectId = object->getRenderId();
                 packet.objectIds.push_back(objectId);
                 sourceRegistry_.objects[objectId] = object;
             }
@@ -224,9 +238,35 @@ FramePacket FrameCompiler::compile(
                 FrameDescriptorSource::UniformData
             });
         }
+        const auto addGpuSceneBinding = [&](uint32_t binding,
+            FrameDescriptorType type, FrameDescriptorSource source) {
+            packet.descriptorLayout.bindings.push_back({
+                binding, type,
+                FrameShaderStageVertex | FrameShaderStageFragment |
+                    FrameShaderStageCompute,
+                0, false});
+            packet.descriptorWrites.push_back({binding, type, source});
+        };
+        addGpuSceneBinding(
+            FrameViewUniformBinding, FrameDescriptorType::UniformBuffer,
+            FrameDescriptorSource::ViewUniform);
+        addGpuSceneBinding(
+            FrameObjectDataBinding, FrameDescriptorType::StorageBuffer,
+            FrameDescriptorSource::ObjectData);
+        addGpuSceneBinding(
+            FrameMaterialDataBinding, FrameDescriptorType::StorageBuffer,
+            FrameDescriptorSource::MaterialData);
+        addGpuSceneBinding(
+            FrameSceneLightBinding, FrameDescriptorType::StorageBuffer,
+            FrameDescriptorSource::SceneLights);
         for (const auto& read : packet.reads) {
             if (read.access ==
-                PipelineResourceAccess::BufferTransferRead) {
+                    PipelineResourceAccess::BufferTransferRead ||
+                read.access == PipelineResourceAccess::ColorRead ||
+                read.access == PipelineResourceAccess::DepthRead) {
+                // Attachment load/read-only depth uses are represented in the
+                // execution plan and dynamic-rendering attachments. They are
+                // ordering/lifetime dependencies, not shader descriptors.
                 continue;
             }
             if (read.binding == 0 && pass->getUniformByteSize() != 0) {
@@ -401,15 +441,8 @@ FramePacket FrameCompiler::compile(
                 continue;
             }
 
-            const auto objectId = idFor(object.get());
+            const auto objectId = object->getRenderId();
             const auto meshId = idFor(mesh.get());
-            const auto model = object->getModelMatrix();
-            const auto previous = previousModels_.find(object.get());
-            const auto previousModel = previous == previousModels_.end()
-                ? model
-                : previous->second;
-            currentModels[object.get()] = model;
-
             if (emittedMeshes.insert(meshId).second) {
                 frame.meshes.push_back({meshId});
                 sourceRegistry_.meshes[meshId] = mesh;
@@ -421,17 +454,22 @@ FramePacket FrameCompiler::compile(
                 uint32_t indexCount,
                 const std::shared_ptr<Material>& material) {
                 const auto materialId = idFor(material.get());
+                const auto materialIndex = materialIndexFor(materialId);
+                const auto objectIndex = objectIndexFor(
+                    objectId, submeshIndex);
+                sourceRegistry_.objectDataSources[objectIndex] = {
+                    object, material, submeshIndex};
                 if (material &&
                     emittedMaterials.insert(materialId).second) {
-                    frame.materials.push_back({materialId});
+                    frame.materials.push_back({materialId, materialIndex});
                     sourceRegistry_.materials[materialId] = material;
+                    sourceRegistry_.materialIndices[materialId] =
+                        materialIndex;
                 }
                 packet.draws.push_back({
-                    objectId,
                     meshId,
-                    materialId,
-                    model,
-                    previousModel,
+                    objectIndex,
+                    materialIndex,
                     submeshIndex,
                     firstIndex,
                     indexCount,
@@ -451,7 +489,10 @@ FramePacket FrameCompiler::compile(
                     0,
                     indexCount,
                     1,
-                    firstIndex
+                    firstIndex,
+                    0,
+                    0,
+                    objectIndex
                 });
             };
 
@@ -622,12 +663,12 @@ FramePacket FrameCompiler::compile(
         return frame;
     }
 
-    previousModels_ = std::move(currentModels);
     return frame;
 }
 
 void FrameCompiler::resetHistory() {
-    previousModels_.clear();
+    // Temporal transforms are owned by ViewState/GPUScene. FrameCompiler only
+    // retains stable render-ID to GPU index allocation.
 }
 
 } // namespace Tasrovy::Render

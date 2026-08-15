@@ -19,6 +19,11 @@ using RenderObjectId = uint64_t;
 using RenderMeshId = uint64_t;
 using RenderMaterialId = uint64_t;
 
+inline constexpr uint32_t FrameViewUniformBinding = 20;
+inline constexpr uint32_t FrameObjectDataBinding = 21;
+inline constexpr uint32_t FrameMaterialDataBinding = 22;
+inline constexpr uint32_t FrameSceneLightBinding = 23;
+
 struct FrameShaderPacket {
     std::string assetPath;
     std::string entryPoint;
@@ -98,7 +103,11 @@ enum class FrameDescriptorSource : uint8_t {
     RenderTexture,
     MaterialTexture,
     ImportedResource,
-    RenderBuffer
+    RenderBuffer,
+    ViewUniform,
+    ObjectData,
+    MaterialData,
+    SceneLights
 };
 
 struct FrameDescriptorWrite {
@@ -135,19 +144,17 @@ struct FrameMeshResource {
 
 struct FrameMaterialResource {
     RenderMaterialId id = 0;
+    uint32_t materialIndex = 0;
 };
 
 struct FrameDrawPacket {
-    RenderObjectId objectId = 0;
     RenderMeshId meshId = 0;
-    RenderMaterialId materialId = 0;
-    TSMat4f model = TSMat4f(1.0f);
-    TSMat4f previousModel = TSMat4f(1.0f);
+    uint32_t objectIndex = 0;
+    uint32_t materialIndex = 0;
     uint32_t submeshIndex = 0;
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
     bool flipProjectionY = true;
-    std::vector<std::byte> uniformData;
     std::vector<FrameDescriptorWrite> descriptorWrites;
 };
 

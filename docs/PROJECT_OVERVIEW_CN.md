@@ -60,10 +60,24 @@ Render 层不创建 Vulkan Buffer、Image 或 Pipeline，也不执行底层图�
 - `PrimitiveSceneProxy`：保存场景对象的渲染代理数据；
 - `FrameOrchestrator`：组织 FramePacket、执行计划和帧流程；
 - `RenderThread`：管理独立渲染线程；
+- `RHIThread`：独占 CommandBuffer 录制、帧 Buffer 上传与 Queue Submit；
 - `RendererRHIContext`：集中管理 Device、CommandList 和 FrameExecutor；
 - `ResourceMonitor`：统计和显示 GPU 资源状态。
 
 场景对象可以通过 Proxy 增量同步到 RenderScene，避免每帧完整重建渲染场景。
+
+当前 CPU 采用 Main/Game、Render、RHI 三线程职责拆分：Main Thread
+处理 GLFW 事件并通过 `RenderScene` 发布不可变 Scene Snapshot；Render
+Thread 消费快照，更新渲染线程私有 Scene，生成 FramePacket、RHI Execution
+Plan、Pass Constants 与 GPUScene 上传数据；RHI Thread 消费有界工作队列，在
+等待当前帧槽 Fence 后执行实际 Buffer 上传、CommandList 录制和 Vulkan Queue
+Submit。RenderGraph、Swapchain 和场景 GPU 资源的结构性重建通过同步 `invoke()`
+进入同一 RHI 队列，避免和已提交帧并发销毁资源。
+
+帧工作包只携带按值复制的 FramePacket、Execution Plan、资源 `shared_ptr` 和
+不可变上传字节，不携带可变 Scene 引用。关闭时先停止并 `join` Render Thread，
+再排空并停止 RHI Thread；如果录制在 Fence 重置后失败，FrameScheduler 会执行
+`abortFrame()` 恢复该帧槽，避免后续永久等待未触发的 Fence。
 
 #### RHI 与 Vulkan 后端
 
@@ -371,9 +385,9 @@ Bloom 使用多级降采样和升采样，而不是单次大范围模糊：
 - SSR 合成；
 - 最终颜色输出。
 
-### 11. GPU 驱动渲染基础
+### 11. GPU 驱动渲染实验代码（当前停用）
 
-GBuffer 管线包含可选的 GPU Driven 路径：
+项目保留了 GPU Driven GBuffer 的数据结构与 Shader 实验代码：
 
 - CPU 准备 Draw 数据；
 - Compute Shader 处理绘制命令；
@@ -381,7 +395,9 @@ GBuffer 管线包含可选的 GPU Driven 路径：
 - 在 Compute 与 Draw Indirect 阶段之间插入资源屏障；
 - 使用 Indirect Draw 提交几何绘制。
 
-该路径为后续实现 GPU Frustum Culling、Hi-Z Occlusion Culling 和更完整的 GPU Scene 提供基础。
+该路径尚未纳入当前 FramePacket 与 RHI Execution Plan，运行时固定使用 CPU
+生成 Draw Packet 的路径，界面不再提供 GPU Driven 切换项。保留的实验代码用于后续
+实现 GPU Frustum Culling、Hi-Z Occlusion Culling 和完整的间接绘制 Pass。
 
 ### 12. 资产与材质系统
 
@@ -467,7 +483,7 @@ Shader 使用 HLSL 编写，并通过 DXC 编译为 SPIR-V。
 - 跟踪 Buffer 与 Image；
 - 显示资源尺寸和用途；
 - 记录不同 Pass 的 GPU 时间；
-- 区分 CPU Driven 与 GPU Driven GBuffer；
+- 显示当前 CPU Draw Packet 路径的 Pass 性能；
 - 辅助分析资源生命周期和 Pass 性能。
 
 #### 图形调试流程
@@ -509,7 +525,7 @@ Shader 使用 HLSL 编写，并通过 DXC 编译为 SPIR-V。
 - Hi-Z 与 SSR；
 - TAA/TAAU；
 - 多级 Bloom 与时域后处理；
-- GPU Driven 渲染基础；
+- GPU Driven 数据结构与 Shader 实验代码（当前停用）；
 - 可视化调试和资源监控。
 
 通过该项目，我系统实践了从渲染算法、Shader 编写、GPU 资源管理到渲染架构设计和图形调试的完整开发流程，并构建了一个能够持续扩展新渲染技术的实时渲染基础框架。

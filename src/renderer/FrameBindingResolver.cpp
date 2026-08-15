@@ -2,8 +2,8 @@
 
 #include "RendererSettings.h"
 #include "SceneGPUResources.h"
+#include "GPUScene.h"
 #include "ViewState.h"
-#include "../RHI/CompiledRenderPipeline.h"
 #include "../RHI/Device.h"
 #include "../render/FrameCompiler.h"
 #include "../render/FramePacket.h"
@@ -99,14 +99,20 @@ bool FrameBindingResolver::hasImportedResource(
 Tasrovy::RHI::FrameExecutionBindings FrameBindingResolver::resolve(
     Tasrovy::RHI::Device& device,
     SceneGPUResources& sceneResources,
+    GPUScene& gpuScene,
     const Tasrovy::Render::FrameSourceRegistry& sources,
-    const std::vector<Tasrovy::RHI::CompiledPassResources*>& passes,
+    const std::vector<Tasrovy::Render::FramePassPacket*>& passes,
     const RendererSettings& settings,
-    const ViewState& viewState) {
+    const ViewState& viewState,
+    uint32_t frameIndex) {
     using namespace Tasrovy::Render;
     using namespace Tasrovy::RHI;
 
     FrameExecutionBindings bindings;
+    bindings.viewUniform = gpuScene.viewBuffer(frameIndex);
+    bindings.objectData = gpuScene.objectBuffer(frameIndex);
+    bindings.materialData = gpuScene.materialBuffer(frameIndex);
+    bindings.sceneLights = gpuScene.lightBuffer(frameIndex);
     for (const auto& [meshId, mesh] : sources.meshes) {
         if (!mesh) continue;
         const auto* gpuMesh = sceneResources.findMesh(*mesh);
@@ -122,11 +128,12 @@ Tasrovy::RHI::FrameExecutionBindings FrameBindingResolver::resolve(
 
     for (const auto& [materialId, material] : sources.materials) {
         if (!material) continue;
-        auto& textures = bindings.materialTextures[materialId];
+        const auto index = sources.materialIndices.find(materialId);
+        if (index == sources.materialIndices.end()) continue;
+        auto& textures = bindings.materialTextures[index->second];
         for (const auto* pass : passes) {
-            if (!pass || !pass->framePass) continue;
-            for (const auto& requirement :
-                 pass->framePass->materialTextures) {
+            if (!pass) continue;
+            for (const auto& requirement : pass->materialTextures) {
                 if (textures.contains(requirement.slot)) continue;
                 const auto image = sceneResources.resolveMaterialTexture(
                     material, requirement).image;
@@ -141,8 +148,8 @@ Tasrovy::RHI::FrameExecutionBindings FrameBindingResolver::resolve(
 
     std::unordered_set<std::string> requiredImports;
     for (const auto* pass : passes) {
-        if (!pass || !pass->framePass) continue;
-        for (const auto& write : pass->framePass->descriptorWrites) {
+        if (!pass) continue;
+        for (const auto& write : pass->descriptorWrites) {
             if (write.source == FrameDescriptorSource::ImportedResource &&
                 !write.importedResource.empty()) {
                 requiredImports.insert(write.importedResource);
@@ -167,9 +174,9 @@ Tasrovy::RHI::FrameExecutionBindings FrameBindingResolver::resolve(
     }
 
     for (auto* pass : passes) {
-        if (!pass || !pass->framePass) continue;
-        auto& packet = *pass->framePass;
-        if (!pass->permutations.empty() &&
+        if (!pass) continue;
+        auto& packet = *pass;
+        if (!packet.permutations.empty() &&
             packet.parameterProvider ==
                 ParameterProviders::FinalComposite) {
             const bool outlineOnly = settings.debugOutputSemantic ==

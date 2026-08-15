@@ -7,6 +7,9 @@ add_library(TasrovyRendererRuntime STATIC
         FrameBindingResolver.h
         FrameRuntimeParameterCompiler.cpp
         FrameRuntimeParameterCompiler.h
+        FrameBufferUpload.h
+        GPUScene.cpp
+        GPUScene.h
         GpuDrivenGBufferSystem.h
         FrameOrchestrator.cpp
         FrameOrchestrator.h
@@ -21,6 +24,8 @@ add_library(TasrovyRendererRuntime STATIC
         RenderScene.h
         RenderThread.cpp
         RenderThread.h
+        RHIThread.cpp
+        RHIThread.h
         ResourceMonitor.cpp
         ResourceMonitor.h
         SceneGPUResources.cpp
@@ -62,4 +67,27 @@ target_link_libraries(TasrovyRendererRuntime PUBLIC
 
 if (WIN32)
     target_link_libraries(TasrovyRendererRuntime PRIVATE psapi)
+endif()
+
+if (BUILD_TESTING)
+    add_executable(TasrovyRenderSceneSnapshotTest
+            tests/RenderSceneSnapshotTest.cpp
+    )
+    target_link_libraries(TasrovyRenderSceneSnapshotTest PRIVATE
+            TasrovyRendererRuntime
+    )
+    add_test(
+            NAME TasrovyRenderSceneSnapshot
+            COMMAND TasrovyRenderSceneSnapshotTest
+    )
+    add_executable(TasrovyRHIThreadTest
+            tests/RHIThreadTest.cpp
+    )
+    target_link_libraries(TasrovyRHIThreadTest PRIVATE
+            TasrovyRendererRuntime
+    )
+    add_test(
+            NAME TasrovyRHIThread
+            COMMAND TasrovyRHIThreadTest
+    )
 endif()

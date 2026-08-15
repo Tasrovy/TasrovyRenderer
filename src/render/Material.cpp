@@ -24,12 +24,17 @@ Material::Material(std::shared_ptr<const MaterialDescriptor> descriptor)
             continue;
         }
         const auto path = descriptor_->getTexturePaths().find(property.name);
+        const auto sampling =
+            descriptor_->getTextureSampling().find(property.name);
         textures_.emplace(
             property.name,
             TextureBinding{
                 path == descriptor_->getTexturePaths().end()
                     ? std::string()
-                    : path->second
+                    : path->second,
+                sampling == descriptor_->getTextureSampling().end()
+                    ? MaterialTextureUvSampling{}
+                    : sampling->second
             });
     }
 }
@@ -125,6 +130,24 @@ void Material::setTexture(const std::string& samplerName, const std::string& tex
             "texture slot is not declared by material descriptor: " + samplerName);
     }
     textures_[samplerName] = {texturePath};
+}
+
+void Material::setTextureUvSampling(
+    const std::string& samplerName,
+    MaterialTextureUvSampling sampling) {
+    auto found = textures_.find(samplerName);
+    if (found == textures_.end()) {
+        if (descriptor_) {
+            const auto& property = descriptor_->requireProperty(samplerName);
+            if (property.type != MaterialPropertyType::Texture2D) {
+                throw std::invalid_argument(
+                    "material property is not a texture2D: " + samplerName);
+            }
+        }
+        found = textures_.emplace(
+            samplerName, TextureBinding{}).first;
+    }
+    found->second.uvSampling = sampling;
 }
 
 void Material::clearTexture(const std::string& samplerName) {

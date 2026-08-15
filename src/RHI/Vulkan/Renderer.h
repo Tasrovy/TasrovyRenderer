@@ -21,6 +21,7 @@ public:
     
     // 结束一帧的渲染并提交
     void endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, VulkanQueue& presentQueue);
+    void abortFrame(VulkanQueue& graphicsQueue);
     void waitIdle();
 	void onSwapchainRecreated(uint32_t imageCount);
 	bool isSwapchainRebuildRequired() const { return _swapchainRebuildRequired; }
@@ -49,4 +50,5 @@ private:
     float _timestampPeriodNanoseconds = 0.0f;
     static constexpr uint32_t MaxTimestampQueries = 256;
     bool _swapchainRebuildRequired = false;
+    bool _frameOpen = false;
 };

@@ -59,18 +59,6 @@ struct PSOutput
     float2 velocity : SV_Target5;
 };
 
-float2 ResolveMaterialUV(float2 uv, uint mode)
-{
-    float2 orientedUv = uv;
-    if (mode == 1) orientedUv = float2(uv.x, 1.0f - uv.y);
-    else if (mode == 2) orientedUv = float2(1.0f - uv.x, uv.y);
-    else if (mode == 3) orientedUv = float2(1.0f - uv.x, 1.0f - uv.y);
-    else if (mode == 4) orientedUv = float2(uv.y, uv.x);
-    else if (mode == 5) orientedUv = float2(uv.y, 1.0f - uv.x);
-    else if (mode == 6) orientedUv = float2(1.0f - uv.y, uv.x);
-    return frac(orientedUv * frameData.uvTransform.xy + frameData.uvTransform.zw);
-}
-
 VSOutput VSMain(VSInput input, uint instanceId : SV_InstanceID)
 {
     DrawData draw = draws[instanceId];
@@ -92,7 +80,7 @@ VSOutput VSMain(VSInput input, uint instanceId : SV_InstanceID)
 PSOutput PSMain(VSOutput input)
 {
     DrawData draw = draws[input.drawIndex];
-    float2 materialUv = ResolveMaterialUV(input.uv0, (uint)round(draw.materialParams.w));
+    float2 materialUv = input.uv0;
     float4 sampled = baseColorTexture.SampleBias(
         baseColorSampler, materialUv, frameData.taaParams.z);
     float4 baseColor = draw.baseColorFactorAndTexture.w > 0.5f

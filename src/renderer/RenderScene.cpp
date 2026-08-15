@@ -82,7 +82,7 @@ void RenderScene::submitPipeline(
 RenderScene::Snapshot RenderScene::snapshot() const {
     std::lock_guard<std::mutex> guard(mutex_);
     return {
-        scene_,
+        publishedScene_,
         pipeline_,
         dirty_,
         version_
@@ -109,8 +109,13 @@ void RenderScene::adoptPipelineIfEmpty(
 }
 
 void RenderScene::markDirtyLocked() {
+    publishSceneLocked();
     dirty_ = true;
     ++version_;
+}
+
+void RenderScene::publishSceneLocked() {
+    publishedScene_ = scene_ ? scene_->clone() : nullptr;
 }
 
 void RenderScene::rebuildProxiesLocked() {

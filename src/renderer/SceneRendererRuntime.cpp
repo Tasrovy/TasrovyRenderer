@@ -9,13 +9,15 @@ namespace Tasrovy::Renderer {
 SceneRendererRuntime::SceneRendererRuntime(
     Tasrovy::Windowing::Window& window,
     uint32_t maxFramesInFlight)
-    : components_(window, maxFramesInFlight),
+    : rhiThread_(maxFramesInFlight),
+      components_(window, maxFramesInFlight),
       execution_(std::make_unique<SceneRendererExecution>(
           window,
           maxFramesInFlight,
           components_,
           renderScene_,
-          renderThread_)) {}
+          renderThread_,
+          rhiThread_)) {}
 
 SceneRendererRuntime::~SceneRendererRuntime() {
     stop();
@@ -23,7 +25,6 @@ SceneRendererRuntime::~SceneRendererRuntime() {
 
 void SceneRendererRuntime::setScene(
     std::shared_ptr<Tasrovy::Render::Scene> scene) {
-    components_.resetSceneTransientState();
     renderScene_.submitScene(std::move(scene));
 }
 
@@ -47,11 +48,13 @@ void SceneRendererRuntime::removePrimitive(const std::string& name) {
 }
 
 void SceneRendererRuntime::start() {
+    rhiThread_.start();
     renderThread_.start([this]() { execution_->run(); });
 }
 
 void SceneRendererRuntime::stop() {
     renderThread_.stop();
+    rhiThread_.stop();
 }
 
 bool SceneRendererRuntime::isRunning() const {

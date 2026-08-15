@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <cstddef>
+#include <cstdint>
 
 namespace Tasrovy::Render {
 
@@ -47,6 +48,10 @@ public:
     void setName(const std::string& name);
     const std::string& getName() const;
 
+    // Persistent render identity. It is copied into immutable scene snapshots,
+    // so render-thread GPUScene indices do not depend on Object addresses.
+    uint64_t getRenderId() const;
+
     void setActive(bool active);
     bool isActive() const;
 
@@ -61,12 +66,13 @@ public:
     virtual TSMat4f getModelMatrix() const;
 
 private:
-    Object() = default;
+    Object();
 
 protected:
     explicit Object(const std::string& name);
 
     std::string name_;
+    uint64_t renderId_ = 0;
     Transform transform_;
 
     std::weak_ptr<Mesh> mesh_;

@@ -3,6 +3,7 @@
 #include "FrameExecutionScheduler.h"
 #include "FrameOrchestrator.h"
 #include "GpuDrivenGBufferSystem.h"
+#include "GPUScene.h"
 #include "RendererRHIContext.h"
 #include "RendererSettings.h"
 #include "SceneGPUResources.h"
@@ -50,6 +51,7 @@ struct SceneRendererComponents {
     ViewState viewState;
     ViewSystem viewSystem;
     SceneGPUResources sceneResources;
+    GPUScene gpuScene;
     FrameOrchestrator frameOrchestrator;
     FrameExecutionScheduler frameExecutionScheduler;
     ShadowViewSystem shadowViewSystem;

@@ -2,6 +2,7 @@
 
 #include "RenderScene.h"
 #include "RenderThread.h"
+#include "RHIThread.h"
 #include "SceneRendererComponents.h"
 
 #include <cstdint>
@@ -30,7 +31,8 @@ public:
         uint32_t maxFramesInFlight,
         SceneRendererComponents& components,
         RenderScene& renderScene,
-        RenderThread& renderThread);
+        RenderThread& renderThread,
+        RHIThread& rhiThread);
     ~SceneRendererExecution();
 
     SceneRendererExecution(const SceneRendererExecution&) = delete;
@@ -41,9 +43,13 @@ public:
 private:
     void drawSceneDebugUI();
     void renderLoop();
-    void processScene(const std::shared_ptr<Tasrovy::Render::Scene>& scene);
+    void applySceneUpdates(
+        const std::shared_ptr<Tasrovy::Render::Scene>& scene);
+    void rebuildRenderGraph(
+        const std::shared_ptr<Tasrovy::Render::Scene>& scene);
     void rebuildDisplayResources(Tasrovy::Render::PipelineBase& pipeline);
     void renderFrame(Tasrovy::Render::Scene& scene);
+    bool waitForPendingRHIFrame();
 
     Tasrovy::Windowing::Window& window_;
     uint32_t maxFramesInFlight_;
@@ -51,6 +57,12 @@ private:
     SceneRendererComponents* renderState_ = nullptr;
     RenderScene& renderScene_;
     RenderThread& renderThread_;
+    RHIThread& rhiThread_;
+    struct PendingRHIFrame;
+    std::unique_ptr<PendingRHIFrame> pendingRHIFrame_;
+    // Render-thread-owned mutable working copy. Published RenderScene
+    // snapshots remain immutable and are never animated or resized in place.
+    std::shared_ptr<Tasrovy::Render::Scene> activeScene_;
 };
 
 } // namespace Tasrovy::Renderer

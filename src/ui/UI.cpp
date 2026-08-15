@@ -153,12 +153,14 @@ bool UIOverlay::beginFrame(uint32_t framebufferWidth, uint32_t framebufferHeight
     ImGui::NewFrame();
 
     if (_drawCallback) _drawCallback();
+    // Finalize immutable draw data on the render producer. The RHI consumer
+    // only records this data, and the next beginFrame is held until that RHI
+    // job completes.
+    ImGui::Render();
     return true;
 }
 
 void UIOverlay::renderDrawData(uint64_t nativeCommandBuffer) {
-    ImGui::Render();
-
     ImDrawData* drawData = ImGui::GetDrawData();
     if (drawData->DisplaySize.x <= 0.0f || drawData->DisplaySize.y <= 0.0f) {
         return;

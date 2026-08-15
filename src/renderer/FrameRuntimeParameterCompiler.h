@@ -9,10 +9,6 @@
 #include <functional>
 #include <string>
 
-namespace Tasrovy::RHI {
-struct CompiledPassResources;
-}
-
 namespace Tasrovy::Render {
 class Camera;
 class Object;
@@ -56,8 +52,7 @@ public:
         Tasrovy::Render::Scene& scene,
         Tasrovy::Render::Camera& camera,
         const ViewFrameData& viewFrame,
-        const std::vector<Tasrovy::RHI::CompiledPassResources*>& passes,
-        uint32_t frameIndex,
+        const std::vector<Tasrovy::Render::FramePassPacket*>& passes,
         uint32_t displayWidth,
         uint32_t displayHeight,
         std::unordered_map<
