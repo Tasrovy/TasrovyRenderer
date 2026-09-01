@@ -9,6 +9,7 @@
 #include "Pipeline.h"
 #include "Descriptor.h"
 #include "Pass.h"
+#include "RHITypes.h"
 
 namespace Tasrovy::RHI {
 
@@ -22,47 +23,16 @@ class CommandList;
 class FrameScheduler;
 
 // --- API-agnostic descriptors ---
-constexpr uint32_t FormatRGBA8Unorm = 37;
-constexpr uint32_t FormatRGBA8Srgb = 43;
-constexpr uint32_t FormatRGBA16Float = 97;
-constexpr uint32_t FormatRG16Float = 83;
-constexpr uint32_t FormatDepth32Float = 126;
-constexpr uint32_t FormatRGB32Float = 106;
-constexpr uint32_t FormatRG32Float = 103;
-constexpr uint32_t ShaderStageVertex = 0x00000001;
-constexpr uint32_t ShaderStageFragment = 0x00000010;
-constexpr uint32_t ShaderStageCompute = 0x00000020;
-constexpr uint32_t BufferUsageVertex = 0x1;
-constexpr uint32_t BufferUsageIndex = 0x2;
-constexpr uint32_t BufferUsageTransferSource = 0x4;
-constexpr uint32_t BufferUsageUniform = 0x10;
-constexpr uint32_t BufferUsageStorage = 0x20;
-constexpr uint32_t BufferUsageIndirect = 0x40;
-constexpr uint32_t PrimitiveTriangleList = 3;
-constexpr uint32_t CullNone = 0;
-constexpr uint32_t CullFront = 0x00000001;
-constexpr uint32_t CullBack = 0x00000002;
-constexpr uint32_t FrontFaceClockwise = 0;
-constexpr uint32_t FrontFaceCounterClockwise = 1;
-constexpr uint32_t CompareLess = 1;
-constexpr uint32_t CompareEqual = 2;
-constexpr uint32_t CompareLessOrEqual = 3;
-constexpr uint32_t CompareGreater = 4;
-constexpr uint32_t CompareNotEqual = 5;
-constexpr uint32_t BlendOff = 0;
-constexpr uint32_t BlendAlpha = 1;
-constexpr uint32_t BlendAdditive = 2;
-
 struct BufferDesc {
     uint64_t size = 0;
-    uint32_t usageFlags = 0;
+    BufferUsage usage = BufferUsage::None;
     bool hostVisible = false;
 };
 
 struct ImageDesc {
     uint32_t width = 0;
     uint32_t height = 0;
-    uint32_t format = 0;
+    Format format = Format::Unknown;
     bool generateMipmaps = false;
     bool isCubemap = false;
 };
@@ -91,16 +61,14 @@ struct SurfaceDeviceCreateInfo {
     uint32_t maxFramesInFlight = 2;
 };
 
-struct NativeOverlayContext {
-    uint64_t instance = 0;
-    uint64_t physicalDevice = 0;
-    uint64_t device = 0;
-    uint64_t graphicsQueue = 0;
-    uint32_t queueFamily = 0;
+struct BackendInteropContext {
+    GraphicsAPI api = GraphicsAPI::Unknown;
+    std::array<uintptr_t, 4> handles{};
+    uint32_t queueIndex = 0;
     uint32_t minImageCount = 0;
     uint32_t imageCount = 0;
     uint32_t sampleCount = 1;
-    uint32_t colorFormat = 0;
+    Format presentationFormat = Format::Unknown;
 };
 
 struct VirtualShadowMapDesc {
@@ -108,34 +76,39 @@ struct VirtualShadowMapDesc {
     uint32_t atlasSize = 0;
     uint32_t pageSize = 0;
     uint32_t residentPageCount = 0;
-    uint32_t format = FormatDepth32Float;
+    Format format = Format::Depth32Float;
+};
+
+struct ShaderModuleDesc {
+    std::string sourcePath;
+    std::string entryPoint;
+    ShaderStage stage = ShaderStage::Vertex;
+    uint64_t permutation = 0;
+    bool hasPermutation = false;
 };
 
 struct PipelineDesc {
-    std::string vertShaderPath;
-    std::string fragShaderPath;
-    std::string vertEntryPoint = "VSMain";
-    std::string fragEntryPoint = "PSMain";
+    ShaderModuleDesc vertexShader;
+    ShaderModuleDesc fragmentShader;
     uint32_t vertexStride = 0;
     std::vector<uint32_t> attributeLocations;
-    std::vector<uint32_t> attributeFormats;
+    std::vector<Format> attributeFormats;
     std::vector<uint32_t> attributeOffsets;
-    uint32_t topology = 3;
-    uint32_t cullMode = 2;
-    uint32_t frontFace = FrontFaceClockwise;
+    PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+    CullMode cullMode = CullMode::Back;
+    FrontFace frontFace = FrontFace::Clockwise;
     bool depthTest = true;
     bool depthWrite = true;
-    uint32_t depthCompareOp = 1;
-    uint32_t blendMode = BlendOff;
+    CompareOp depthCompareOp = CompareOp::Less;
+    BlendMode blendMode = BlendMode::Off;
     bool useMSAA = false;
-    std::vector<uint32_t> colorAttachmentFormats;
-    uint32_t depthAttachmentFormat = 0;
+    std::vector<Format> colorAttachmentFormats;
+    Format depthAttachmentFormat = Format::Unknown;
     std::shared_ptr<DescriptorSetLayout> descriptorSetLayout;
 };
 
 struct ComputePipelineDesc {
-    std::string shaderPath;
-    std::string entryPoint = "CSMain";
+    ShaderModuleDesc shader;
     std::shared_ptr<DescriptorSetLayout> descriptorSetLayout;
 };
 
@@ -148,7 +121,7 @@ enum class DescriptorResourceType : uint32_t {
 
 struct DescriptorSetDesc {
     std::vector<DescriptorResourceType> bindingTypes;
-    std::vector<uint32_t> stageFlags;
+    std::vector<ShaderStageFlags> stageFlags;
 };
 
 struct DescriptorPoolSizeDesc {
@@ -176,8 +149,6 @@ class Device : public std::enable_shared_from_this<Device> {
 public:
     using ResourceScope = uint64_t;
 
-    static std::shared_ptr<Device> create(void* nativeContext = nullptr,
-                                          void* nativeSubmitter = nullptr);
     static std::shared_ptr<Device> createForSurface(
         const SurfaceDeviceCreateInfo& createInfo);
     ~Device();
@@ -204,13 +175,13 @@ public:
     std::shared_ptr<Image> createTexture(const ImageUploadDesc& upload);
     std::shared_ptr<Image> createSolidTexture(
         const std::array<float, 4>& color,
-        uint32_t format);
-    std::shared_ptr<Image> createAttachment(uint32_t width, uint32_t height, uint32_t format);
-    std::shared_ptr<Image> createImage2D(uint32_t width, uint32_t height, uint32_t format);
+        Format format);
+    std::shared_ptr<Image> createAttachment(uint32_t width, uint32_t height, Format format);
+    std::shared_ptr<Image> createImage2D(uint32_t width, uint32_t height, Format format);
     std::shared_ptr<Image> createRenderTexture(const RenderTextureDesc& desc);
     std::shared_ptr<Image> createVirtualShadowMap(
         const VirtualShadowMapDesc& desc);
-    uint32_t resolveRenderTextureFormat(RenderTextureFormat format) const;
+    Format resolveRenderTextureFormat(RenderTextureFormat format) const;
 
     // --- Pipelines ---
     std::shared_ptr<Pipeline> createGraphicsPipeline(const PipelineDesc& desc);
@@ -224,7 +195,6 @@ public:
         uint32_t maxSets, const std::vector<DescriptorPoolSizeDesc>& poolSizes);
     DescriptorSet allocateDescriptorSet(DescriptorPool& pool, const DescriptorSetLayout& layout);
     void updateDescriptorSet(const DescriptorSet& descriptorSet, const std::vector<DescriptorWriteDesc>& writes);
-    void updateDescriptorSet(void* descriptorSet, const std::vector<DescriptorWriteDesc>& writes);
     DescriptorImageInfo getIBLDescriptorInfo(IBLMapType mapType, const std::string& name = "DefaultSky") const;
 
     // --- IBL ---
@@ -239,10 +209,10 @@ public:
     const FrameScheduler& getFrameScheduler() const;
 
     // --- Resource information ---
-    uint32_t getDepthFormat() const;
+    Format getDepthFormat() const;
     size_t getDeferredDeletionCount() const;
 
-    NativeOverlayContext getNativeOverlayContext() const;
+    BackendInteropContext getBackendInteropContext() const;
 
 private:
     void retainResourceUntyped(ResourceScope scope, std::shared_ptr<void> resource);

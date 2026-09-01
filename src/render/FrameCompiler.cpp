@@ -33,9 +33,10 @@ FrameShaderPacket shaderPacket(const std::shared_ptr<Shader>& shader) {
         return {};
     }
     return {
-        shader->getPath(),
+        shader->getSourcePath(),
         shader->getEntry(),
-        shader->getType()
+        shader->getType(),
+        shader->getPermutation()
     };
 }
 

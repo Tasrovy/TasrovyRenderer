@@ -234,7 +234,7 @@ std::vector<std::string> PipelineBase::validatePassDependencies() const {
         const auto writeResources = pass->getWriteResources();
 
         // A shader may not read a current-frame texture that the same pass
-        // also modifies. Vulkan attachment Load followed by attachment writes
+        // also modifies. An attachment Load followed by attachment writes
         // remains legal: it is a render-target load/store operation rather
         // than a sampled/storage feedback loop.
         for (const auto& read : readResources) {

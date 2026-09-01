@@ -24,13 +24,13 @@ Scene / Pipeline
 RHI Execution Plan
         │
         ▼
- Vulkan Executor
+  RHI Backend
         │
         ▼
        GPU
 ```
 
-其中，Render 系统负责描述场景、材质、渲染管线和资源依赖；RendererRuntime 负责组织场景代理与一帧的渲染过程；RHI 负责解析帧数据、管理 GPU 资源；Vulkan 后端负责将抽象命令翻译为实际的 Vulkan API 调用。
+其中，Render 系统负责描述场景、材质、渲染管线和资源依赖；RendererRuntime 负责组织场景代理与一帧的渲染过程；RHI 负责解析帧数据、管理 GPU 资源；当前选择的后端负责将抽象命令翻译为实际图形 API 调用。
 
 这种设计使上层渲染算法不直接依赖 `VkImage`、`VkBuffer`、`VkPipeline` 等 Vulkan 类型，为后续增加新渲染算法或扩展其他图形 API 后端提供了基础。
 
@@ -57,8 +57,11 @@ Render 层不创建 Vulkan Buffer、Image 或 Pipeline，也不执行底层图�
 
 - `SceneRenderer`：渲染流程入口与高层协调；
 - `RenderScene`：维护渲染线程使用的场景状态；
+- `SceneUpdateCoordinator`：集中消费 Snapshot，并在结构重建成功后确认 Dirty Version；
 - `PrimitiveSceneProxy`：保存场景对象的渲染代理数据；
 - `FrameOrchestrator`：组织 FramePacket、执行计划和帧流程；
+- `RenderFrameSubmission`：作为 Render Thread 到 RHI Thread 的完整按值提交边界；
+- `RendererDebugUI`：独立承载运行时设置、场景检查与调试输出；
 - `RenderThread`：管理独立渲染线程；
 - `RHIThread`：独占 CommandBuffer 录制、帧 Buffer 上传与 Queue Submit；
 - `RendererRHIContext`：集中管理 Device、CommandList 和 FrameExecutor；
@@ -71,15 +74,29 @@ Render 层不创建 Vulkan Buffer、Image 或 Pipeline，也不执行底层图�
 Thread 消费快照，更新渲染线程私有 Scene，生成 FramePacket、RHI Execution
 Plan、Pass Constants 与 GPUScene 上传数据；RHI Thread 消费有界工作队列，在
 等待当前帧槽 Fence 后执行实际 Buffer 上传、CommandList 录制和 Vulkan Queue
-Submit。RenderGraph、Swapchain 和场景 GPU 资源的结构性重建通过同步 `invoke()`
+Submit。执行窗口扩大到 `maxFramesInFlight`：Render Thread 可以连续生产多个不可变
+`RenderFrameSubmission`，RHI Thread 按序消费，只有准备复用同一 Frame Slot 时才等待
+最老提交完成。每个提交使用预测帧槽，实际 Buffer 写入延迟到 RHI 等待该槽 Fence 之后。
+如果某帧获取交换链图像失败，RHI 会使后续投机帧失效并丢弃其 UI 快照，Render Thread
+排空窗口、重置时域历史，再执行交换链恢复。RenderGraph、Swapchain 和场景 GPU 资源的
+结构性重建通过同步 `invoke()`
 进入同一 RHI 队列，避免和已提交帧并发销毁资源。
 
-帧工作包只携带按值复制的 FramePacket、Execution Plan、资源 `shared_ptr` 和
-不可变上传字节，不携带可变 Scene 引用。关闭时先停止并 `join` Render Thread，
+`RenderFrameSubmission` 只携带按值复制的 FramePacket、Execution Plan、Bindings、
+资源 `shared_ptr` 和不可变上传字节，不携带可变 Scene 引用。关闭时先停止并 `join` Render Thread，
 再排空并停止 RHI Thread；如果录制在 Fence 重置后失败，FrameScheduler 会执行
 `abortFrame()` 恢复该帧槽，避免后续永久等待未触发的 Fence。
 
-#### RHI 与 Vulkan 后端
+场景与调试 UI 使用每帧独立的两个主 CommandBuffer。FrameExecutor 只录制 Scene
+CommandBuffer；场景结束并将交换链图像转换为 Present 状态后，FrameScheduler 切换到
+UI CommandBuffer，使用 `loadOp = LOAD` 的动态渲染在已解析的单采样交换链图像上叠加
+ImGui，再恢复 Present 状态。两个 CommandBuffer 以 `[Scene, UI]` 顺序放入同一次
+Graphics Queue Submit，帧 Fence 与 Render-Finished Semaphore 覆盖整个批次，Present
+只等待该批次完成。ImGui `DrawData` 使用 `CloneOutput()` 深拷贝为带 token 的逐帧快照，
+因此下一次 `NewFrame()` 不会覆盖 RHI 尚未录制的 UI；ImGui Vulkan Backend 的 NewFrame、
+快照回收和命令录制只通过一个短互斥区串行，场景帧编译不持有该锁。
+
+#### RHI 与图形 API 后端
 
 RHI 提供与图形 API 无关的资源和命令接口，包括：
 
@@ -93,7 +110,7 @@ RHI 提供与图形 API 无关的资源和命令接口，包括：
 - FrameScheduler；
 - FrameExecutor。
 
-Vulkan 后端负责将这些抽象类型翻译为：
+当前 Vulkan 后端负责将这些抽象类型翻译为：
 
 - `VkBuffer`；
 - `VkImage`；
@@ -103,6 +120,8 @@ Vulkan 后端负责将这些抽象类型翻译为：
 - Vulkan Pipeline Stage、Access Mask 与 Image Layout。
 
 上层 Renderer 不直接使用 Vulkan 的同步标志和资源类型。
+
+公共 RHI 使用自有 Format、Shader Stage、Buffer Usage、光栅化状态和 Image Layout；FrameScheduler 与 FrameExecutor 分别通过后端接口执行帧调度和计划翻译。Shader 资产保存 HLSL Source、Entry Point 与 Permutation Key，具体后端解析 SPIR-V 或未来的 DXIL。详细边界见 [跨 API RHI 后端架构](RHI_BACKEND_ARCHITECTURE_CN.md)。
 
 ### 2. RenderGraph 与帧数据编译
 
@@ -210,6 +229,8 @@ Renderer 只描述资源需要进入的状态，不再直接传递 `VK_PIPELINE_
 - 历史纹理。
 
 使用 Fence 和 Semaphore 协调 CPU、GPU 与 Swapchain，避免覆盖仍在使用的帧资源。
+Render Thread 使用缓存的显示尺寸与预测帧槽准备下一帧，避免在 RHI Thread 修改
+FrameScheduler 时并发读取其可变状态；每帧 Buffer 上传仍延迟到对应 Fence 完成之后。
 
 ### 5. 延迟渲染与 PBR
 

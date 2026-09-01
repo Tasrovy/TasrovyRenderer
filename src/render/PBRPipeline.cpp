@@ -106,10 +106,10 @@ void PBRPipeline::GenPass(std::shared_ptr<Scene> scene) {
         "Skybox");
     addPBRMaterialTextures(forwardPass);
 
-    skyboxPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\skyvert.spv", ShaderType::Vertex));
-    skyboxPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\skyfrag.spv", ShaderType::Fragment));
-    forwardPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\vert.spv", ShaderType::Vertex));
-    forwardPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\frag.spv", ShaderType::Fragment));
+    skyboxPass->setVertexShader(Shader::create("res/Shaders/Source/sky.hlsl", ShaderType::Vertex));
+    skyboxPass->setFragmentShader(Shader::create("res/Shaders/Source/sky.hlsl", ShaderType::Fragment));
+    forwardPass->setVertexShader(Shader::create("res/Shaders/Source/testShader.hlsl", ShaderType::Vertex));
+    forwardPass->setFragmentShader(Shader::create("res/Shaders/Source/testShader.hlsl", ShaderType::Fragment));
 
     addPass(skyboxPass);
     addPass(forwardPass);

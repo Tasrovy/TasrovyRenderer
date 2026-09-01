@@ -4,8 +4,10 @@
 #include "RenderThread.h"
 #include "RHIThread.h"
 #include "SceneRendererComponents.h"
+#include "SceneUpdateCoordinator.h"
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 
@@ -20,6 +22,8 @@ class Scene;
 }
 
 namespace Tasrovy::Renderer {
+
+class RendererDebugUI;
 
 // Performs scene compilation and frame execution against runtime-owned scene
 // and thread services. This is an implementation component, not a composition
@@ -41,7 +45,6 @@ public:
     void run();
 
 private:
-    void drawSceneDebugUI();
     void renderLoop();
     void applySceneUpdates(
         const std::shared_ptr<Tasrovy::Render::Scene>& scene);
@@ -49,20 +52,25 @@ private:
         const std::shared_ptr<Tasrovy::Render::Scene>& scene);
     void rebuildDisplayResources(Tasrovy::Render::PipelineBase& pipeline);
     void renderFrame(Tasrovy::Render::Scene& scene);
+    bool pollPendingRHIFrame();
     bool waitForPendingRHIFrame();
+    bool consumeOldestRHIFrame(bool wait);
 
     Tasrovy::Windowing::Window& window_;
     uint32_t maxFramesInFlight_;
 
     SceneRendererComponents* renderState_ = nullptr;
-    RenderScene& renderScene_;
     RenderThread& renderThread_;
     RHIThread& rhiThread_;
+    SceneUpdateCoordinator sceneUpdates_;
+    std::unique_ptr<RendererDebugUI> debugUI_;
     struct PendingRHIFrame;
-    std::unique_ptr<PendingRHIFrame> pendingRHIFrame_;
-    // Render-thread-owned mutable working copy. Published RenderScene
-    // snapshots remain immutable and are never animated or resized in place.
-    std::shared_ptr<Tasrovy::Render::Scene> activeScene_;
+    std::deque<std::unique_ptr<PendingRHIFrame>> pendingRHIFrames_;
+    uint32_t nextRHIFrameIndex_ = 0;
+    bool pendingSwapchainRebuild_ = false;
+    // Accessed only by tasks running serially on RHIThread. A failed acquire
+    // invalidates every later speculative submission until swapchain recovery.
+    bool rhiFrameSequenceValid_ = true;
 };
 
 } // namespace Tasrovy::Renderer

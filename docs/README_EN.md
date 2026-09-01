@@ -25,7 +25,7 @@ The deferred renderer is the default pipeline, with a smaller forward PBR path r
 Scene / Pipeline
        |
        v
-RenderGraph -> FramePacket -> RHI Execution Plan -> Vulkan Executor
+RenderGraph -> FramePacket -> RHI Execution Plan -> RHI Backend
 ```
 
 Main modules:
@@ -56,6 +56,7 @@ Set `VCPKG_ROOT`, then run:
 
 ```powershell
 cmake -B cmake-build-debug `
+  -DTASROVY_RHI_BACKEND=Vulkan `
   "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 
 cmake --build cmake-build-debug --config Debug
@@ -80,12 +81,13 @@ The project is under active development:
 - Virtual Shadow Maps currently use a simplified page-mapping implementation
 - IBL precomputation is disabled by default, while its backend remains available
 - Experimental GPU-driven GBuffer code is not connected to the active runtime path
-- Thread scheduling currently favors ownership and synchronization correctness
+- Render and RHI use a bounded `maxFramesInFlight` window of immutable submissions
 
 ## Documentation
 
 - [Architecture and rendering pipeline](PROJECT_OVERVIEW_CN.md)
 - [GPUScene and uniform architecture](GPU_SCENE_UNIFORM_ARCHITECTURE_CN.md)
+- [Cross-API RHI backend architecture](RHI_BACKEND_ARCHITECTURE_CN.md)
 
 ## Asset Notice
 

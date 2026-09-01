@@ -8,6 +8,7 @@ add_library(TasrovyRendererRuntime STATIC
         FrameRuntimeParameterCompiler.cpp
         FrameRuntimeParameterCompiler.h
         FrameBufferUpload.h
+        RenderFrameSubmission.h
         GPUScene.cpp
         GPUScene.h
         GpuDrivenGBufferSystem.h
@@ -18,10 +19,14 @@ add_library(TasrovyRendererRuntime STATIC
         RendererSettings.h
         RendererFeaturePolicy.cpp
         RendererFeaturePolicy.h
+        RendererDebugUI.cpp
+        RendererDebugUI.h
         RendererRHIContext.cpp
         RendererRHIContext.h
         RenderScene.cpp
         RenderScene.h
+        SceneUpdateCoordinator.cpp
+        SceneUpdateCoordinator.h
         RenderThread.cpp
         RenderThread.h
         RHIThread.cpp
@@ -30,8 +35,6 @@ add_library(TasrovyRendererRuntime STATIC
         ResourceMonitor.h
         SceneGPUResources.cpp
         SceneGPUResources.h
-        SceneAnimationSystem.cpp
-        SceneAnimationSystem.h
         ShadowViewSystem.cpp
         ShadowViewSystem.h
         ViewState.h

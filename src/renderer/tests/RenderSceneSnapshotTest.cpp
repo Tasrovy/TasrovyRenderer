@@ -1,4 +1,5 @@
 #include "../RenderScene.h"
+#include "../SceneUpdateCoordinator.h"
 #include "../../render/Scene.h"
 #include "../../render/Object.h"
 
@@ -7,6 +8,7 @@
 int main() {
     using Tasrovy::Render::Scene;
     using Tasrovy::Renderer::RenderScene;
+    using Tasrovy::Renderer::SceneUpdateCoordinator;
 
     RenderScene renderScene;
     auto source = Scene::create("Published A");
@@ -58,6 +60,27 @@ int main() {
         second.scene->getObject(0)->getRenderId() != stableRenderId) {
         std::cerr << "Render identity changed across snapshots\n";
         return 7;
+    }
+
+    SceneUpdateCoordinator coordinator(renderScene);
+    const auto update = coordinator.synchronize(
+        [](const auto&) { return false; });
+    if (!update.scene || !update.rebuildRequired ||
+        !update.acknowledgesDirtyVersion ||
+        update.scene->getName() != "Published B") {
+        std::cerr << "Coordinator did not consume the dirty snapshot\n";
+        return 8;
+    }
+    coordinator.acknowledge(update);
+    if (renderScene.snapshot().dirty) {
+        std::cerr << "Coordinator did not acknowledge the consumed version\n";
+        return 9;
+    }
+    const auto stable = coordinator.synchronize(
+        [](const auto&) { return false; });
+    if (stable.rebuildRequired || stable.scene != update.scene) {
+        std::cerr << "Coordinator rebuilt an unchanged scene\n";
+        return 10;
     }
     return 0;
 }

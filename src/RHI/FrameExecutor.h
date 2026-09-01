@@ -59,10 +59,8 @@ struct FrameExecuteContext {
     Device* device = nullptr;
     CommandList* commandList = nullptr;
     const SwapchainRenderTarget* swapchainTarget = nullptr;
-    RenderOverlay* overlay = nullptr;
     const FrameExecutionBindings* bindings = nullptr;
     uint32_t frameIndex = 0;
-    bool drawOverlay = false;
     uint64_t timestampQueryPool = 0;
     uint32_t timestampQueryCapacity = 0;
 };

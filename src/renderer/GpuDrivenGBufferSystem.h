@@ -79,7 +79,7 @@ struct GpuDrivenDrawGroup {
     std::shared_ptr<RHI::Image> baseColor;
     uint32_t firstDraw = 0;
     uint32_t drawCount = 0;
-    uint32_t frontFace = RHI::FrontFaceClockwise;
+    RHI::FrontFace frontFace = RHI::FrontFace::Clockwise;
     std::vector<RHI::DescriptorSet> descriptorSets;
 };
 

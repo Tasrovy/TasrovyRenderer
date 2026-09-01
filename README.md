@@ -25,7 +25,7 @@ TasrovyRenderer 是一个使用 C++20、HLSL 和 Vulkan 构建的实验性实时
 Scene / Pipeline
        |
        v
-RenderGraph -> FramePacket -> RHI Execution Plan -> Vulkan Executor
+RenderGraph -> FramePacket -> RHI Execution Plan -> RHI Backend
 ```
 
 主要模块：
@@ -56,6 +56,7 @@ RenderGraph -> FramePacket -> RHI Execution Plan -> Vulkan Executor
 
 ```powershell
 cmake -B cmake-build-debug `
+  -DTASROVY_RHI_BACKEND=Vulkan `
   "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
 
 cmake --build cmake-build-debug --config Debug
@@ -80,12 +81,13 @@ cmake --build cmake-build-debug --config Debug
 - Virtual Shadow Map 为用于验证页映射流程的简化实现
 - IBL 预计算默认停用，相关后端实现仍被保留
 - GPU Driven GBuffer 实验代码暂未接入当前运行时执行链
-- 当前线程调度优先保证资源所有权和同步正确性
+- Render/RHI 使用 `maxFramesInFlight` 有界窗口并行生产、消费不可变帧提交
 
 ## 文档
 
 - [项目架构与渲染流程](docs/PROJECT_OVERVIEW_CN.md)
 - [GPUScene 与 Uniform 架构](docs/GPU_SCENE_UNIFORM_ARCHITECTURE_CN.md)
+- [跨 API RHI 后端架构](docs/RHI_BACKEND_ARCHITECTURE_CN.md)
 
 ## 资源说明
 

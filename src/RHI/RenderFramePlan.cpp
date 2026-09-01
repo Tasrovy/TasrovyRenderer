@@ -106,58 +106,58 @@ FrameTextureDescription makeFrameTextureDescription(
     return result;
 }
 
-uint32_t toRHIVertexFormat(Tasrovy::Render::FrameVertexFormat format) {
+Format toRHIVertexFormat(Tasrovy::Render::FrameVertexFormat format) {
     using Format = Tasrovy::Render::FrameVertexFormat;
     switch (format) {
-    case Format::Float2: return 103u;
-    case Format::Float3: return 106u;
-    case Format::Float4: return 109u;
+    case Format::Float2: return Tasrovy::RHI::Format::RG32Float;
+    case Format::Float3: return Tasrovy::RHI::Format::RGB32Float;
+    case Format::Float4: return Tasrovy::RHI::Format::RGBA32Float;
     }
-    return 106u;
+    return Tasrovy::RHI::Format::Unknown;
 }
 
-uint32_t toRHICullMode(Tasrovy::Render::CullMode mode) {
+CullMode toRHICullMode(Tasrovy::Render::CullMode mode) {
     using Mode = Tasrovy::Render::CullMode;
     switch (mode) {
-    case Mode::None: return 0u;
-    case Mode::Front: return 1u;
-    case Mode::Back: return 2u;
+    case Mode::None: return CullMode::None;
+    case Mode::Front: return CullMode::Front;
+    case Mode::Back: return CullMode::Back;
     }
-    return 2u;
+    return CullMode::Back;
 }
 
-uint32_t toRHITopology(Tasrovy::Render::Topology topology) {
+PrimitiveTopology toRHITopology(Tasrovy::Render::Topology topology) {
     using Topology = Tasrovy::Render::Topology;
     switch (topology) {
-    case Topology::TriangleList: return 3u;
-    case Topology::LineList: return 1u;
-    case Topology::PointList: return 0u;
+    case Topology::TriangleList: return PrimitiveTopology::TriangleList;
+    case Topology::LineList: return PrimitiveTopology::LineList;
+    case Topology::PointList: return PrimitiveTopology::PointList;
     }
-    return 3u;
+    return PrimitiveTopology::TriangleList;
 }
 
-uint32_t toRHICompare(Tasrovy::Render::DepthTestMode mode) {
+CompareOp toRHICompare(Tasrovy::Render::DepthTestMode mode) {
     using Mode = Tasrovy::Render::DepthTestMode;
     switch (mode) {
-    case Mode::Less: return 1u;
-    case Mode::Equal: return 2u;
-    case Mode::LessOrEqual: return 3u;
-    case Mode::Greater: return 4u;
-    case Mode::NotEqual: return 5u;
+    case Mode::Less: return CompareOp::Less;
+    case Mode::Equal: return CompareOp::Equal;
+    case Mode::LessOrEqual: return CompareOp::LessOrEqual;
+    case Mode::Greater: return CompareOp::Greater;
+    case Mode::NotEqual: return CompareOp::NotEqual;
     }
-    return 1u;
+    return CompareOp::Less;
 }
 
-uint32_t toRHIShaderStages(uint32_t stages) {
-    uint32_t result = 0;
+ShaderStageFlags toRHIShaderStages(uint32_t stages) {
+    auto result = ShaderStageFlags::None;
     if ((stages & Tasrovy::Render::FrameShaderStageVertex) != 0) {
-        result |= 0x00000001u;
+        result = result | ShaderStageFlags::Vertex;
     }
     if ((stages & Tasrovy::Render::FrameShaderStageFragment) != 0) {
-        result |= 0x00000010u;
+        result = result | ShaderStageFlags::Fragment;
     }
     if ((stages & Tasrovy::Render::FrameShaderStageCompute) != 0) {
-        result |= 0x00000020u;
+        result = result | ShaderStageFlags::Compute;
     }
     return result;
 }
@@ -190,9 +190,9 @@ RHIAttachmentPlan toRHIAttachment(
 RHIPipelinePlan makePipelinePlan(
     const Tasrovy::Render::FramePassPacket& pass) {
     RHIPipelinePlan result;
-    result.vertexShaderPath = pass.vertexShader.assetPath;
-    result.fragmentShaderPath = pass.fragmentShader.assetPath;
-    result.computeShaderPath = pass.computeShader.assetPath;
+    result.vertexShaderSource = pass.vertexShader.sourcePath;
+    result.fragmentShaderSource = pass.fragmentShader.sourcePath;
+    result.computeShaderSource = pass.computeShader.sourcePath;
     result.vertexEntryPoint = pass.vertexShader.entryPoint;
     result.fragmentEntryPoint = pass.fragmentShader.entryPoint;
     result.computeEntryPoint = pass.computeShader.entryPoint;
@@ -209,7 +209,7 @@ RHIPipelinePlan makePipelinePlan(
     result.depthTest = pass.state.depthTest;
     result.depthWrite = pass.state.depthWrite;
     result.depthCompare = toRHICompare(pass.state.depthTestMode);
-    result.blendMode = static_cast<uint32_t>(pass.state.blendMode);
+    result.blendMode = static_cast<BlendMode>(pass.state.blendMode);
     result.descriptorSets.setsPerFrame =
         pass.descriptorLayout.setsPerFrame;
     result.descriptorSets.uniformByteSize =
@@ -250,9 +250,9 @@ RHIPipelinePlan makePipelinePlan(
     for (const auto& permutation : pass.permutations) {
         result.permutations.push_back({
             permutation.key,
-            permutation.vertexShader.assetPath,
-            permutation.fragmentShader.assetPath,
-            permutation.computeShader.assetPath,
+            permutation.vertexShader.sourcePath,
+            permutation.fragmentShader.sourcePath,
+            permutation.computeShader.sourcePath,
             permutation.vertexShader.entryPoint,
             permutation.fragmentShader.entryPoint,
             permutation.computeShader.entryPoint

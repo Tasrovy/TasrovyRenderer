@@ -49,13 +49,25 @@ Renderer::Renderer(VulkanContext& context, uint32_t maxFramesInFlight)
         throw std::runtime_error("failed to create command pool!");
     }
 
-    _commandBuffers.resize(_maxFramesInFlight);
+    _sceneCommandBuffers.resize(_maxFramesInFlight);
+    _overlayCommandBuffers.resize(_maxFramesInFlight);
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = _commandPool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = _maxFramesInFlight;
-    if (vkAllocateCommandBuffers(_context.getDevice(), &allocInfo, _commandBuffers.data()) != VK_SUCCESS) {
+    if (vkAllocateCommandBuffers(
+            _context.getDevice(), &allocInfo,
+            _sceneCommandBuffers.data()) != VK_SUCCESS) {
+        vkDestroyCommandPool(_context.getDevice(), _commandPool, nullptr);
+        _commandPool = VK_NULL_HANDLE;
+        throw std::runtime_error("failed to allocate scene command buffers!");
+    }
+    if (vkAllocateCommandBuffers(
+            _context.getDevice(), &allocInfo,
+            _overlayCommandBuffers.data()) != VK_SUCCESS) {
+        vkDestroyCommandPool(_context.getDevice(), _commandPool, nullptr);
+        _commandPool = VK_NULL_HANDLE;
         throw std::runtime_error("failed to allocate command buffers!");
     }
 
@@ -150,7 +162,7 @@ VkCommandBuffer Renderer::beginFrame(VulkanSwapchain& swapchain) {
         throw std::runtime_error("failed to reset frame fence!");
     }
 
-    VkCommandBuffer commandBuffer = _commandBuffers[_currentFrame];
+    VkCommandBuffer commandBuffer = _sceneCommandBuffers[_currentFrame];
     result = vkResetCommandBuffer(commandBuffer, 0);
     if (result != VK_SUCCESS) {
         LOG_ERROR("Renderer: vkResetCommandBuffer failed: {} ({})", vkResultName(result), static_cast<int>(result));
@@ -166,13 +178,46 @@ VkCommandBuffer Renderer::beginFrame(VulkanSwapchain& swapchain) {
     }
 
     _frameOpen = true;
+    _overlayCommandsOpen = false;
 
     return commandBuffer;
 }
 
+VkCommandBuffer Renderer::beginOverlayCommands() {
+    if (!_frameOpen || _overlayCommandsOpen) {
+        throw std::logic_error(
+            "overlay command recording requires an open scene frame");
+    }
+
+    VkCommandBuffer sceneCommandBuffer = _sceneCommandBuffers[_currentFrame];
+    VkResult result = vkEndCommandBuffer(sceneCommandBuffer);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("failed to end scene command buffer!");
+    }
+
+    VkCommandBuffer overlayCommandBuffer =
+        _overlayCommandBuffers[_currentFrame];
+    result = vkResetCommandBuffer(overlayCommandBuffer, 0);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("failed to reset UI command buffer!");
+    }
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    result = vkBeginCommandBuffer(overlayCommandBuffer, &beginInfo);
+    if (result != VK_SUCCESS) {
+        throw std::runtime_error("failed to begin UI command buffer!");
+    }
+    _overlayCommandsOpen = true;
+    return overlayCommandBuffer;
+}
+
 void Renderer::endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, VulkanQueue& presentQueue) {
-    VkCommandBuffer commandBuffer = _commandBuffers[_currentFrame];
-    VkResult result = vkEndCommandBuffer(commandBuffer);
+    VkCommandBuffer sceneCommandBuffer = _sceneCommandBuffers[_currentFrame];
+    VkCommandBuffer overlayCommandBuffer =
+        _overlayCommandBuffers[_currentFrame];
+    VkResult result = vkEndCommandBuffer(
+        _overlayCommandsOpen ? overlayCommandBuffer : sceneCommandBuffer);
     if (result != VK_SUCCESS) {
         LOG_ERROR("Renderer: vkEndCommandBuffer failed: {} ({})", vkResultName(result), static_cast<int>(result));
         throw std::runtime_error("failed to end draw command buffer!");
@@ -187,8 +232,10 @@ void Renderer::endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, 
     submitInfo.pWaitSemaphores = waitSemaphores;
     submitInfo.pWaitDstStageMask = waitStages;
 
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
+    const VkCommandBuffer submittedCommandBuffers[] = {
+        sceneCommandBuffer, overlayCommandBuffer};
+    submitInfo.commandBufferCount = _overlayCommandsOpen ? 2u : 1u;
+    submitInfo.pCommandBuffers = submittedCommandBuffers;
 
     VkSemaphore signalSemaphores[] = {_renderFinishedSemaphores[_imageIndex]};
     submitInfo.signalSemaphoreCount = 1;
@@ -206,6 +253,7 @@ void Renderer::endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, 
     }
     _frameSubmissionSerials[_currentFrame] = _context.advanceDeletionFrame();
     _frameOpen = false;
+    _overlayCommandsOpen = false;
 
     {
         std::scoped_lock queueLock(_context.getQueueMutex());
@@ -252,6 +300,7 @@ void Renderer::abortFrame(VulkanQueue& graphicsQueue) {
     }
 
     _frameOpen = false;
+    _overlayCommandsOpen = false;
     _swapchainRebuildRequired = true;
     _currentFrame = (_currentFrame + 1) % _maxFramesInFlight;
 }

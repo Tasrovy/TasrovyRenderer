@@ -10,9 +10,6 @@
 #include "ShadowViewSystem.h"
 #include "ViewState.h"
 #include "ViewSystem.h"
-#include "TSVector.h"
-
-#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -44,8 +41,6 @@ struct SceneRendererComponents {
         uint32_t maxFrames);
     ~SceneRendererComponents();
 
-    void resetSceneTransientState();
-
     RendererRHIContext rhi;
     RendererSettings settings;
     ViewState viewState;
@@ -64,15 +59,14 @@ struct SceneRendererComponents {
     GpuDrivenGBufferSystem gpuDrivenGBuffer;
     std::vector<std::vector<std::string>> gpuTimingNamesPerFrame;
     std::vector<std::pair<std::string, double>> gpuPassTimings;
-    Tasrovy::Render::Object* animatedTaffy = nullptr;
-    std::shared_ptr<Tasrovy::Render::Object> taffyStressSource;
-    Tasrovy::Base::TSVec3f taffyBaseRotation =
-        Tasrovy::Base::TSVec3f(0.0f);
-    float taffyYawOffset = 0.0f;
-    std::chrono::steady_clock::time_point lastTaffyAnimationTime{};
     std::unique_ptr<Tasrovy::UI::UIOverlay> ui;
     std::unique_ptr<ResourceMonitor> resourceMonitor;
     uint32_t maxFramesInFlight = 0;
+    // Render-thread-owned copy of the last successfully created display
+    // extent. It lets frame N+1 be prepared without reading the RHI-owned
+    // swapchain scheduler while frame N is being recorded/submitted.
+    uint32_t displayWidth = 0;
+    uint32_t displayHeight = 0;
     uint32_t internalRenderWidth = 0;
     uint32_t internalRenderHeight = 0;
     bool internalExtentDirty = false;

@@ -30,7 +30,7 @@ struct SkyboxCandidate {
 
 ImageUploadDesc loadTextureUpload(
     const std::string& path,
-    uint32_t format,
+    Format format,
     bool generateMipmaps) {
     const auto source = Tasrovy::Assets::RenderAssetFactory::decodeTexture(path);
     ImageUploadDesc upload{};
@@ -45,7 +45,7 @@ ImageUploadDesc loadTextureUpload(
 
 ImageUploadDesc loadCubemapUpload(
     const std::string& directory,
-    uint32_t format = FormatRGBA8Srgb) {
+    Format format = Format::RGBA8Srgb) {
     const auto source =
         Tasrovy::Assets::RenderAssetFactory::decodeCubemap(directory);
     ImageUploadDesc upload{};
@@ -205,8 +205,8 @@ void SceneGPUResources::ensureDefaultTexture(
                     requirement.defaultColor.w
                 },
                 isSRGB(requirement.colorSpace)
-                    ? FormatRGBA8Srgb
-                    : FormatRGBA8Unorm)));
+                    ? Format::RGBA8Srgb
+                    : Format::RGBA8Unorm)));
 }
 
 void SceneGPUResources::ensureMaterialTextures(
@@ -232,8 +232,8 @@ void SceneGPUResources::ensureMaterialTextures(
             device.createTexture(loadTextureUpload(
                 binding->path,
                 isSRGB(requirement.colorSpace)
-                    ? FormatRGBA8Srgb
-                    : FormatRGBA8Unorm,
+                    ? Format::RGBA8Srgb
+                    : Format::RGBA8Unorm,
                 true)));
     }
 }
@@ -319,7 +319,7 @@ void SceneGPUResources::prepareSkyboxVariants(
         neutralCube.height = 1;
         neutralCube.channels = 4;
         neutralCube.arrayLayers = 6;
-        neutralCube.format = FormatRGBA8Unorm;
+        neutralCube.format = Format::RGBA8Unorm;
         neutralCube.generateMipmaps = false;
         neutralCube.cubemap = true;
         neutralCube.pixels.resize(6u * 4u, 0u);
@@ -335,7 +335,7 @@ void SceneGPUResources::prepareSkyboxVariants(
             persistentScope,
             device.createSolidTexture(
                 {1.0f, 1.0f, 1.0f, 1.0f},
-                FormatRGBA8Unorm));
+                Format::RGBA8Unorm));
     }
 
     if (skyboxVariants_.empty()) {

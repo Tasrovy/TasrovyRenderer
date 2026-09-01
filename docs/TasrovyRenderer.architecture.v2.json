@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "TasrovyRenderer 整体架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/Tasrovy/TasrovyRenderer",
+      "revision": "b24c3af15ad6cddfac2824ee1d572766340758df"
+    },
+    "viewBox": [1080, 600],
+    "views": [
+      { "id": "frame-path", "label": "主帧路径", "focus": ["app-scene", "scene-sync", "renderer-runtime", "render-graph", "frame-submission", "rhi-plan", "vulkan-backend", "gpu"], "note": "从场景发布跟踪到 RenderGraph 编译、RHI 计划、Vulkan 录制与呈现。" },
+      { "id": "thread-boundaries", "label": "三线程边界", "focus": ["app-scene", "scene-sync", "renderer-runtime", "frame-submission", "rhi-plan", "vulkan-backend"], "note": "主线程发布场景，Render 线程生产不可变帧提交，RHI 线程录制并提交。" },
+      { "id": "resources-ui", "label": "资源与调试", "focus": ["assets", "app-scene", "rhi-resources", "debug-ui", "frame-submission", "vulkan-backend"], "note": "查看资产导入、GPUScene / RHI 资源和独立 UI CommandBuffer 路径。" }
+    ]
+  },
+  "components": [
+    {
+      "id": "assets", "type": "database", "label": "Assets / FileSystem", "sublabel": "Model · Image · Material · Shader", "pos": [60, 10], "size": [170, 60],
+      "sources": [
+        { "path": "src/filesystem/AssetLoader.cpp", "label": "资产加载" },
+        { "path": "src/assets/RenderAssetFactory.cpp", "label": "渲染资产转换" }
+      ]
+    },
+    {
+      "id": "app-scene", "type": "frontend", "label": "Application + Scene", "sublabel": "窗口事件、场景对象与渲染入口", "tag": "Main Thread", "pos": [60, 230], "size": [170, 70],
+      "sources": [
+        { "path": "src/core/main.cpp", "label": "程序入口" },
+        { "path": "src/render/Scene.h", "label": "场景模型" },
+        { "path": "src/renderer/SceneRenderer.cpp", "label": "公共门面" }
+      ]
+    },
+    {
+      "id": "scene-sync", "type": "messagebus", "label": "RenderScene + Coordinator", "sublabel": "Snapshot · Dirty · Version · Proxy", "pos": [255, 230], "size": [175, 70],
+      "sources": [
+        { "path": "src/renderer/RenderScene.cpp", "label": "线程安全发布" },
+        { "path": "src/renderer/PrimitiveSceneProxy.cpp", "label": "基元代理" }
+      ]
+    },
+    {
+      "id": "renderer-runtime", "type": "backend", "label": "RendererRuntime", "sublabel": "SceneRendererExecution · GPUScene", "tag": "Render Thread", "pos": [455, 230], "size": [170, 70],
+      "sources": [
+        { "path": "src/renderer/SceneRendererRuntime.cpp", "label": "组合根" },
+        { "path": "src/renderer/SceneRendererExecution.cpp", "label": "帧编排" },
+        { "path": "src/renderer/GPUScene.cpp", "label": "GPU 场景数据" }
+      ]
+    },
+    {
+      "id": "render-graph", "type": "backend", "label": "RenderGraph + FrameCompiler", "sublabel": "RAW / WAR / WAW · 排序 · FramePacket", "pos": [650, 80], "size": [180, 70],
+      "sources": [
+        { "path": "src/render/RenderGraph.cpp", "label": "依赖与 Hazard" },
+        { "path": "src/render/FrameCompiler.cpp", "label": "FramePacket 编译" },
+        { "path": "src/render/DeferredPipeline.cpp", "label": "Deferred Pass 声明" }
+      ]
+    },
+    {
+      "id": "frame-submission", "type": "messagebus", "label": "RenderFrameSubmission", "sublabel": "Packet · Plan · Bindings", "pos": [650, 230], "size": [180, 70],
+      "sources": [
+        { "path": "src/renderer/SceneRendererExecution.cpp", "line": 656, "label": "生产与消费" },
+        { "path": "src/renderer/RHIThread.cpp", "label": "有界工作队列" }
+      ]
+    },
+    {
+      "id": "rhi-plan", "type": "backend", "label": "RHI Plan + Interfaces", "sublabel": "Scheduler · Executor · CommandList", "tag": "RHI Thread", "pos": [870, 230], "size": [180, 70],
+      "sources": [
+        { "path": "src/RHI/RenderFramePlan.cpp", "line": 277, "label": "RHI 计划编译" },
+        { "path": "src/RHI/Vulkan/VulkanFrameExecutor.cpp", "label": "帧执行" }
+      ]
+    },
+    {
+      "id": "rhi-resources", "type": "database", "label": "RHI Device / Resources", "sublabel": "Buffer · Image · Pipeline · Descriptor", "pos": [870, 80], "size": [180, 70],
+      "sources": [
+        { "path": "src/RHI/Device.cpp", "line": 52, "label": "ResourceScope" }
+      ]
+    },
+    {
+      "id": "vulkan-backend", "type": "backend", "label": "Vulkan Backend", "sublabel": "Dynamic Rendering · Scene/UI Cmd", "tag": "TASROVY_API_VULKAN", "pos": [870, 430], "size": [180, 70],
+      "sources": [
+        { "path": "src/RHI/Vulkan/VulkanFrameExecutor.cpp", "label": "Pass 执行与 Barrier" },
+        { "path": "src/RHI/Vulkan/Renderer.cpp", "line": 215, "label": "提交与 Present" }
+      ]
+    },
+    {
+      "id": "debug-ui", "type": "frontend", "label": "RendererDebugUI + ImGui", "sublabel": "设置、资源预览与 DrawData 快照", "pos": [650, 430], "size": [180, 70],
+      "sources": [
+        { "path": "src/ui/UI.cpp", "line": 37, "label": "ImGui 帧捕获" }
+      ]
+    },
+    {
+      "id": "gpu", "type": "external", "label": "GPU + Swapchain", "sublabel": "Graphics Queue · Fence · Present", "pos": [870, 530], "size": [180, 60],
+      "sources": [
+        { "path": "src/RHI/Vulkan/Renderer.cpp", "line": 133, "label": "帧同步" },
+        { "path": "src/RHI/Vulkan/VulkanSwapChain.cpp", "label": "交换链" }
+      ]
+    }
+  ],
+  "connections": [
+    { "id": "assets-scene", "from": "assets", "to": "app-scene", "label": "导入", "variant": "dashed", "labelAt": [145, 150] },
+    { "id": "scene-snapshot", "from": "app-scene", "to": "scene-sync", "label": "Snapshot vN", "variant": "emphasis", "labelAt": [242, 325] },
+    { "id": "sync-render", "from": "scene-sync", "to": "renderer-runtime", "label": "场景更新", "variant": "emphasis", "labelAt": [445, 205] },
+    { "id": "render-graph-build", "from": "renderer-runtime", "to": "render-graph", "label": "构建", "labelAt": [638, 164] },
+    { "id": "graph-submission", "from": "render-graph", "to": "frame-submission", "label": "FramePacket", "labelAt": [740, 165] },
+    { "id": "render-submission", "from": "renderer-runtime", "to": "frame-submission", "label": "帧数据", "variant": "emphasis", "labelAt": [638, 325] },
+    { "id": "ui-submission", "from": "debug-ui", "to": "frame-submission", "label": "Overlay Token", "labelAt": [740, 365] },
+    { "id": "submission-plan", "from": "frame-submission", "to": "rhi-plan", "label": "有界队列", "variant": "emphasis", "labelAt": [850, 325] },
+    { "id": "resources-plan", "from": "rhi-resources", "to": "rhi-plan", "label": "资源句柄", "labelAt": [960, 165] },
+    { "id": "plan-vulkan", "from": "rhi-plan", "to": "vulkan-backend", "label": "Plan", "variant": "emphasis", "labelAt": [960, 365] },
+    { "id": "vulkan-gpu", "from": "vulkan-backend", "to": "gpu", "variant": "emphasis" }
+  ]
+}

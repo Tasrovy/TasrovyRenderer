@@ -684,42 +684,42 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
 
     for (auto& shadowPass : shadowPasses) {
         shadowPass->setVertexShader(Shader::create(
-            "res\\Shaders\\Bin\\deferred_shadow_vert.spv", ShaderType::Vertex));
+            "res/Shaders/Source/deferred_shadow.hlsl", ShaderType::Vertex));
         shadowPass->setFragmentShader(Shader::create(
-            "res\\Shaders\\Bin\\deferred_shadow_frag.spv", ShaderType::Fragment));
+            "res/Shaders/Source/deferred_shadow.hlsl", ShaderType::Fragment));
     }
     for (auto& shadowPass : virtualShadowPasses) {
         shadowPass->setVertexShader(Shader::create(
-            "res\\Shaders\\Bin\\deferred_shadow_vert.spv", ShaderType::Vertex));
+            "res/Shaders/Source/deferred_shadow.hlsl", ShaderType::Vertex));
         shadowPass->setFragmentShader(Shader::create(
-            "res\\Shaders\\Bin\\deferred_shadow_frag.spv", ShaderType::Fragment));
+            "res/Shaders/Source/deferred_shadow.hlsl", ShaderType::Fragment));
     }
-    gBufferPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_gbuffer_vert.spv", ShaderType::Vertex));
-    gBufferPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_gbuffer_frag.spv", ShaderType::Fragment));
-    hbaoPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_hbao_vert.spv", ShaderType::Vertex));
-    hbaoPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_hbao_frag.spv", ShaderType::Fragment));
-    hiZInitPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_init_vert.spv", ShaderType::Vertex));
-    hiZInitPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_init_frag.spv", ShaderType::Fragment));
-    hiZQuarterPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_reduce_vert.spv", ShaderType::Vertex));
-    hiZQuarterPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_reduce_frag.spv", ShaderType::Fragment));
-    hiZEighthPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_reduce_vert.spv", ShaderType::Vertex));
-    hiZEighthPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_reduce_frag.spv", ShaderType::Fragment));
-    hiZSixteenthPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_reduce_vert.spv", ShaderType::Vertex));
-    hiZSixteenthPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_hiz_reduce_frag.spv", ShaderType::Fragment));
-    lightingPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_lighting_vert.spv", ShaderType::Vertex));
-    lightingPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_lighting_frag.spv", ShaderType::Fragment));
-    transparentPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_transparent_vert.spv", ShaderType::Vertex));
-    transparentPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_transparent_frag.spv", ShaderType::Fragment));
+    gBufferPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_gbuffer.hlsl", ShaderType::Vertex));
+    gBufferPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_gbuffer.hlsl", ShaderType::Fragment));
+    hbaoPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_hbao.hlsl", ShaderType::Vertex));
+    hbaoPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_hbao.hlsl", ShaderType::Fragment));
+    hiZInitPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_hiz_init.hlsl", ShaderType::Vertex));
+    hiZInitPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_hiz_init.hlsl", ShaderType::Fragment));
+    hiZQuarterPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_hiz_reduce.hlsl", ShaderType::Vertex));
+    hiZQuarterPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_hiz_reduce.hlsl", ShaderType::Fragment));
+    hiZEighthPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_hiz_reduce.hlsl", ShaderType::Vertex));
+    hiZEighthPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_hiz_reduce.hlsl", ShaderType::Fragment));
+    hiZSixteenthPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_hiz_reduce.hlsl", ShaderType::Vertex));
+    hiZSixteenthPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_hiz_reduce.hlsl", ShaderType::Fragment));
+    lightingPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_lighting.hlsl", ShaderType::Vertex));
+    lightingPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_lighting.hlsl", ShaderType::Fragment));
+    transparentPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_transparent.hlsl", ShaderType::Vertex));
+    transparentPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_transparent.hlsl", ShaderType::Fragment));
     for (const auto& bloomDownPass : {
              bloomDownHalfPass,
              bloomDownQuarterPass,
              bloomDownEighthPass,
              bloomDownSixteenthPass}) {
         bloomDownPass->setVertexShader(Shader::create(
-            "res\\Shaders\\Bin\\deferred_bloom_downsample_vert.spv",
+            "res/Shaders/Source/deferred_bloom_downsample.hlsl",
             ShaderType::Vertex));
         bloomDownPass->setFragmentShader(Shader::create(
-            "res\\Shaders\\Bin\\deferred_bloom_downsample_frag.spv",
+            "res/Shaders/Source/deferred_bloom_downsample.hlsl",
             ShaderType::Fragment));
     }
     for (const auto& bloomUpPass : {
@@ -727,38 +727,38 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
              bloomUpQuarterPass,
              bloomUpHalfPass}) {
         bloomUpPass->setVertexShader(Shader::create(
-            "res\\Shaders\\Bin\\deferred_bloom_upsample_vert.spv",
+            "res/Shaders/Source/deferred_bloom_upsample.hlsl",
             ShaderType::Vertex));
         bloomUpPass->setFragmentShader(Shader::create(
-            "res\\Shaders\\Bin\\deferred_bloom_upsample_frag.spv",
+            "res/Shaders/Source/deferred_bloom_upsample.hlsl",
             ShaderType::Fragment));
     }
-    ssrPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_ssr_vert.spv", ShaderType::Vertex));
-    ssrPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_ssr_frag.spv", ShaderType::Fragment));
-    depthOfFieldPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_dof_vert.spv", ShaderType::Vertex));
-    depthOfFieldPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_dof_frag.spv", ShaderType::Fragment));
-    temporalAaPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_taau_vert.spv", ShaderType::Vertex));
-    temporalAaPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_taau_frag.spv", ShaderType::Fragment));
-    temporalUpscalePass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_taau_vert.spv", ShaderType::Vertex));
-    temporalUpscalePass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_taau_frag.spv", ShaderType::Fragment));
-    motionBlurPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_motion_blur_vert.spv", ShaderType::Vertex));
-    motionBlurPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_motion_blur_frag.spv", ShaderType::Fragment));
+    ssrPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_ssr.hlsl", ShaderType::Vertex));
+    ssrPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_ssr.hlsl", ShaderType::Fragment));
+    depthOfFieldPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_dof.hlsl", ShaderType::Vertex));
+    depthOfFieldPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_dof.hlsl", ShaderType::Fragment));
+    temporalAaPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_taau.hlsl", ShaderType::Vertex));
+    temporalAaPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_taau.hlsl", ShaderType::Fragment));
+    temporalUpscalePass->setVertexShader(Shader::create("res/Shaders/Source/deferred_taau.hlsl", ShaderType::Vertex));
+    temporalUpscalePass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_taau.hlsl", ShaderType::Fragment));
+    motionBlurPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_motion_blur.hlsl", ShaderType::Vertex));
+    motionBlurPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_motion_blur.hlsl", ShaderType::Fragment));
     outlineTemporalPass->setVertexShader(Shader::create(
-        "res\\Shaders\\Bin\\deferred_outline_temporal_vert.spv",
+        "res/Shaders/Source/deferred_outline_temporal.hlsl",
         ShaderType::Vertex));
     outlineTemporalPass->setFragmentShader(Shader::create(
-        "res\\Shaders\\Bin\\deferred_outline_temporal_frag.spv",
+        "res/Shaders/Source/deferred_outline_temporal.hlsl",
         ShaderType::Fragment));
-    postProcessPass->setVertexShader(Shader::create("res\\Shaders\\Bin\\deferred_postprocess_vert.spv", ShaderType::Vertex));
-    postProcessPass->setFragmentShader(Shader::create("res\\Shaders\\Bin\\deferred_postprocess_frag.spv", ShaderType::Fragment));
+    postProcessPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_postprocess.hlsl", ShaderType::Vertex));
+    postProcessPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_postprocess.hlsl", ShaderType::Fragment));
     for (uint32_t permutation = 0; permutation < 8u; ++permutation) {
         postProcessPass->addShaderPermutation({
             permutation,
             postProcessPass->getVertexShader(),
             Shader::create(
-                "res\\Shaders\\Bin\\deferred_postprocess_" +
-                    std::to_string(permutation) + "_frag.spv",
-                ShaderType::Fragment),
+                "res/Shaders/Source/deferred_postprocess.hlsl",
+                ShaderType::Fragment,
+                permutation),
             nullptr
         });
     }

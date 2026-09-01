@@ -4,6 +4,7 @@
 #include "../CompiledRenderPipeline.h"
 #include "../Device.h"
 #include "../FrameExecutor.h"
+#include "../FrameExecutorBackend.h"
 #include "../RenderFramePlan.h"
 
 #include <cstdint>
@@ -27,60 +28,60 @@ namespace Tasrovy::RHI {
 
 namespace Vulkan {
 
-class VulkanFrameExecutor {
+class VulkanFrameExecutor final : public IFrameExecutorBackend {
 public:
     using TextureFrames =
         std::vector<std::shared_ptr<Image>>;
     using TextureMap =
         std::unordered_map<std::string, TextureFrames>;
 
-    void reset();
+    void reset() override;
 
     void compileExecution(
         Device& device,
         Tasrovy::Render::FramePacket& packet,
         const RenderFrameExecutionPlan& plan,
-        const FrameResourceConfig& config);
+        const FrameResourceConfig& config) override;
 
-    void bindFramePacket(Tasrovy::Render::FramePacket& packet);
+    void bindFramePacket(Tasrovy::Render::FramePacket& packet) override;
     FrameExecuteResult executeFrame(
         const RenderFrameExecutionPlan& plan,
-        const FrameExecuteContext& context);
+        const FrameExecuteContext& context) override;
 
     void rebuildDisplayResources(
         Device& device,
         const RenderFrameExecutionPlan& plan,
-        const FrameResourceConfig& config);
+        const FrameResourceConfig& config) override;
 
     void executePreBarriers(
         CommandList& commandList,
         const RenderPassExecutionPlan& pass,
-        uint32_t frameIndex);
+        uint32_t frameIndex) override;
 
     void executePostBarriers(
         CommandList& commandList,
         const RenderPassExecutionPlan& pass,
-        uint32_t frameIndex);
+        uint32_t frameIndex) override;
 
     void transition(
         CommandList& commandList,
         Image& image,
         RenderResourceState desired,
-        bool forceMemoryBarrier = false);
+        bool forceMemoryBarrier = false) override;
 
     std::shared_ptr<Image> resolve(
         const std::string& resourceName,
         uint32_t frameIndex,
-        bool previousFrame = false) const;
-    std::shared_ptr<Buffer> resolveBuffer(uint64_t resourceId) const;
+        bool previousFrame = false) const override;
+    std::shared_ptr<Buffer> resolveBuffer(uint64_t resourceId) const override;
 
     const ResolvedTextureInfo* textureInfo(
-        const std::string& resourceName) const;
+        const std::string& resourceName) const override;
 
-    const TextureMap& textures() const;
-    uint64_t allocatedBytes() const;
-    CompiledRenderPipeline& compiledPipeline();
-    const CompiledRenderPipeline& compiledPipeline() const;
+    const TextureMap& textures() const override;
+    uint64_t allocatedBytes() const override;
+    CompiledRenderPipeline& compiledPipeline() override;
+    const CompiledRenderPipeline& compiledPipeline() const override;
 
 private:
     void resolveResources(

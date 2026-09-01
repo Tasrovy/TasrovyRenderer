@@ -207,7 +207,7 @@ void ResourceMonitor::draw(
         }
     }
 
-    ImGui::SeparatorText("Tracked Vulkan Resources");
+    ImGui::SeparatorText("Tracked GPU Resources");
     ImGui::Text("Managed GPU memory: %s", formatBytes(state.tracked.totalLiveBytes).c_str());
     ImGui::Text("Live managed resources: %llu",
         static_cast<unsigned long long>(state.tracked.totalLiveCount));

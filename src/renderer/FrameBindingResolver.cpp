@@ -49,7 +49,7 @@ void ensureBuiltinImportedProviders() {
                 FrameImportedImageBinding binding;
                 binding.imageInfo = device.getIBLDescriptorInfo(
                     type, resources.activeSkyboxName());
-                binding.useImageInfo = binding.imageInfo.nativeView != 0;
+                binding.useImageInfo = binding.imageInfo.backendView != 0;
                 if (!binding.useImageInfo) {
                     binding.image = resources.iblFallbackCubemap();
                 }
@@ -69,7 +69,7 @@ void ensureBuiltinImportedProviders() {
                 binding.imageInfo = device.getIBLDescriptorInfo(
                     IBLMapType::BrdfLut,
                     resources.activeSkyboxName());
-                binding.useImageInfo = binding.imageInfo.nativeView != 0;
+                binding.useImageInfo = binding.imageInfo.backendView != 0;
                 if (!binding.useImageInfo) {
                     binding.image = resources.iblFallbackLut();
                 }

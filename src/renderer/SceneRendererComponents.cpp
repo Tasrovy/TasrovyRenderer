@@ -27,41 +27,25 @@ SceneRendererComponents::SceneRendererComponents(
     : rhi(window, maxFrames),
       maxFramesInFlight(maxFrames) {
     auto& device = *rhi.device;
+    displayWidth = std::max(device.getFrameScheduler().getWidth(), 1u);
+    displayHeight = std::max(device.getFrameScheduler().getHeight(), 1u);
     const float resolutionScale =
         std::max(settings.internalResolutionPercent, 1.0f) * 0.01f;
     internalRenderWidth = makeEvenExtent(
-        static_cast<float>(
-            std::max(device.getFrameScheduler().getWidth(), 1u)) *
+        static_cast<float>(displayWidth) *
         resolutionScale);
     internalRenderHeight = makeEvenExtent(
-        static_cast<float>(
-            std::max(device.getFrameScheduler().getHeight(), 1u)) *
+        static_cast<float>(displayHeight) *
         resolutionScale);
 
-    const auto overlayContext = device.getNativeOverlayContext();
     Tasrovy::UI::UIOverlay::CreateInfo overlayInfo{};
     overlayInfo.window = window.getHandle();
-    overlayInfo.instance = overlayContext.instance;
-    overlayInfo.physicalDevice = overlayContext.physicalDevice;
-    overlayInfo.device = overlayContext.device;
-    overlayInfo.graphicsQueue = overlayContext.graphicsQueue;
-    overlayInfo.queueFamily = overlayContext.queueFamily;
-    overlayInfo.minImageCount = overlayContext.minImageCount;
-    overlayInfo.imageCount = overlayContext.imageCount;
-    overlayInfo.msaaSamples = overlayContext.sampleCount;
-    overlayInfo.colorFormat = overlayContext.colorFormat;
+    overlayInfo.device = &device;
     ui = std::make_unique<Tasrovy::UI::UIOverlay>(overlayInfo);
     resourceMonitor = std::make_unique<ResourceMonitor>();
     gpuTimingNamesPerFrame.resize(maxFrames);
 }
 
 SceneRendererComponents::~SceneRendererComponents() = default;
-
-void SceneRendererComponents::resetSceneTransientState() {
-    taffyStressSource.reset();
-    animatedTaffy = nullptr;
-    taffyYawOffset = 0.0f;
-    lastTaffyAnimationTime = {};
-}
 
 } // namespace Tasrovy::Renderer

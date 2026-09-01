@@ -25,11 +25,12 @@ inline constexpr uint32_t FrameMaterialDataBinding = 22;
 inline constexpr uint32_t FrameSceneLightBinding = 23;
 
 struct FrameShaderPacket {
-    std::string assetPath;
+    std::string sourcePath;
     std::string entryPoint;
     ShaderType stage = ShaderType::Vertex;
+    std::optional<uint64_t> permutation;
 
-    bool empty() const { return assetPath.empty(); }
+    bool empty() const { return sourcePath.empty(); }
 };
 
 struct FrameTexturePacket {

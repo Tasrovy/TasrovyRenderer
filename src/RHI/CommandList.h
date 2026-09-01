@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <cstdint>
+#include "RHITypes.h"
 
 namespace Tasrovy::RHI {
 
@@ -10,6 +11,10 @@ class Pass;
 class DescriptorSet;
 class Image;
 class RenderOverlay;
+class Pipeline;
+class FrameScheduler;
+class BackendAccess;
+class ICommandListBackend;
 
 struct SwapchainRenderTarget {
     uint64_t colorImage = 0;
@@ -21,16 +26,6 @@ struct SwapchainRenderTarget {
     uint32_t width = 0;
     uint32_t height = 0;
     bool resolveImageWasPresented = false;
-};
-
-enum class ImageLayout {
-    Undefined,
-    ColorAttachment,
-    DepthAttachment,
-    DepthReadOnly,
-    ShaderRead,
-    General,
-    Present
 };
 
 enum class PipelineStage : uint32_t {
@@ -84,39 +79,30 @@ public:
         uint32_t atlasHeight = 0;
     };
 
-    static std::shared_ptr<CommandList> create();
     ~CommandList();
-
-    void setBackendContext(void* nativeContext);
-    void useNativeCommandBuffer(uint64_t nativeCommandBuffer);
 
     // --- Lifecycle ---
     void begin();
     void end();
-    uint64_t getNativeCommandBuffer() const;
 
     // --- Render pass ---
     void beginRenderPass(Pass& pass);
-    void beginRenderPass(Pass& pass,
-        uint64_t colorView, uint64_t resolveView, uint64_t depthView,
-        uint32_t width, uint32_t height);
     void endRenderPass();
     void beginSwapchainRenderPass(const SwapchainRenderTarget& target);
     void endSwapchainRenderPass(const SwapchainRenderTarget& target);
     void renderOverlay(
         RenderOverlay& overlay,
-        const SwapchainRenderTarget& target);
+        const SwapchainRenderTarget& target,
+        uint64_t frameToken);
 
     // --- Pipeline ---
-    void bindPipeline(uint64_t nativePipeline, uint64_t nativeLayout, uint32_t bindPoint = 0);
+    void bindPipeline(Pipeline& pipeline, bool compute = false);
 
     // --- Buffers ---
     void bindVertexBuffer(Buffer& buffer);
     void bindIndexBuffer(Buffer& buffer);
 
     // --- Descriptors ---
-    void setPipelineLayout(uint64_t nativeLayout);
-    void bindDescriptorSet(uint32_t setIndex, void* descriptorSet);
     void bindDescriptorSet(uint32_t setIndex, const DescriptorSet& descriptorSet);
 
     // --- State ---
@@ -125,7 +111,7 @@ public:
     // Maps a virtual shadow page to a rectangular region of a physical depth
     // atlas. Backends implement this without exposing native viewport types.
     void setVirtualShadowPage(const VirtualShadowPageDesc& page);
-    void setFrontFace(uint32_t frontFace);
+    void setFrontFace(FrontFace frontFace);
 
     // --- Draw ---
     void draw(uint32_t vertexCount, uint32_t instanceCount = 1);
@@ -160,6 +146,13 @@ public:
     void writeTimestamp(uint64_t nativeQueryPool, uint32_t queryIndex, bool begin);
 
 private:
+    friend class Device;
+    friend class FrameScheduler;
+    friend class BackendAccess;
+    static std::shared_ptr<CommandList> CreateFromBackend(
+        std::unique_ptr<ICommandListBackend> backend);
+    void useNativeCommandBuffer(uint64_t nativeCommandBuffer);
+    uint64_t getNativeCommandBuffer() const;
     CommandList() = default;
     struct Impl;
     std::unique_ptr<Impl> impl_;

@@ -4,6 +4,7 @@
 #include "../Image.h"
 #include "../Buffer.h"
 #include "../../render/FramePacket.h"
+#include "../RHIBackendAccess.h"
 
 #include <algorithm>
 #include <array>
@@ -145,15 +146,15 @@ bool passUsesResourceIn(
         (pass.depthAttachment && selected(*pass.depthAttachment));
 }
 
-uint32_t toRHIBufferUsage(uint32_t usage) {
+BufferUsage toRHIBufferUsage(uint32_t usage) {
     using namespace Tasrovy::Render;
-    uint32_t result = 0;
-    if ((usage & PipelineBufferUsageTransferSource) != 0) result |= 0x4u;
-    if ((usage & PipelineBufferUsageVertex) != 0) result |= 0x1u;
-    if ((usage & PipelineBufferUsageIndex) != 0) result |= 0x2u;
-    if ((usage & PipelineBufferUsageUniform) != 0) result |= 0x10u;
-    if ((usage & PipelineBufferUsageStorage) != 0) result |= 0x20u;
-    if ((usage & PipelineBufferUsageIndirect) != 0) result |= 0x40u;
+    auto result = BufferUsage::None;
+    if ((usage & PipelineBufferUsageTransferSource) != 0) result = result | BufferUsage::TransferSource;
+    if ((usage & PipelineBufferUsageVertex) != 0) result = result | BufferUsage::Vertex;
+    if ((usage & PipelineBufferUsageIndex) != 0) result = result | BufferUsage::Index;
+    if ((usage & PipelineBufferUsageUniform) != 0) result = result | BufferUsage::Uniform;
+    if ((usage & PipelineBufferUsageStorage) != 0) result = result | BufferUsage::Storage;
+    if ((usage & PipelineBufferUsageIndirect) != 0) result = result | BufferUsage::Indirect;
     return result;
 }
 
@@ -239,7 +240,7 @@ void VulkanFrameExecutor::compileExecution(
                 DescriptorResourceType::CombinedImageSampler);
             layoutDesc.stageFlags.assign(
                 static_cast<size_t>(maxBinding) + 1u,
-                ShaderStageFragment);
+                ShaderStageFlags::Fragment);
             for (const auto& binding : descriptorPlan.bindings) {
                 layoutDesc.bindingTypes[binding.binding] =
                     toDescriptorType(binding.type);
@@ -315,7 +316,8 @@ void VulkanFrameExecutor::compileExecution(
                     write.binding = packetWrite.binding;
                     write.type = toDescriptorType(packetWrite.type);
                     if (write.type == DescriptorResourceType::StorageImage) {
-                        write.imageInfo = image->getDescriptorInfoForStorage();
+                        write.imageInfo =
+                            BackendAccess::storageDescriptorInfo(*image);
                     } else {
                         write.image = image;
                     }
@@ -376,44 +378,47 @@ void VulkanFrameExecutor::compileExecution(
         }
 
         const auto& pipelinePlan = passPlan.pipeline;
-        if (!pipelinePlan.computeShaderPath.empty()) {
+        if (!pipelinePlan.computeShaderSource.empty()) {
             ComputePipelineDesc desc;
-            desc.shaderPath = pipelinePlan.computeShaderPath;
-            desc.entryPoint = pipelinePlan.computeEntryPoint.empty()
+            desc.shader.sourcePath = pipelinePlan.computeShaderSource;
+            desc.shader.entryPoint = pipelinePlan.computeEntryPoint.empty()
                 ? "CSMain"
                 : pipelinePlan.computeEntryPoint;
+            desc.shader.stage = ShaderStage::Compute;
             desc.descriptorSetLayout = compiled.descriptorSetLayout;
             compiled.gpuPipeline = device.retainResource(
                 config.sceneScope, device.createComputePipeline(desc));
             for (const auto& permutation : pipelinePlan.permutations) {
                 ComputePipelineDesc permutationDesc = desc;
-                if (!permutation.computeShaderPath.empty()) {
-                    permutationDesc.shaderPath =
-                        permutation.computeShaderPath;
+                if (!permutation.computeShaderSource.empty()) {
+                    permutationDesc.shader.sourcePath =
+                        permutation.computeShaderSource;
                 }
                 if (!permutation.computeEntryPoint.empty()) {
-                    permutationDesc.entryPoint =
+                    permutationDesc.shader.entryPoint =
                         permutation.computeEntryPoint;
                 }
+                permutationDesc.shader.permutation = permutation.key;
+                permutationDesc.shader.hasPermutation = true;
                 compiled.permutations.emplace(
                     permutation.key,
                     device.retainResource(
                         config.sceneScope,
                         device.createComputePipeline(permutationDesc)));
             }
-        } else if (!pipelinePlan.vertexShaderPath.empty() &&
-                   !pipelinePlan.fragmentShaderPath.empty()) {
+        } else if (!pipelinePlan.vertexShaderSource.empty() &&
+                   !pipelinePlan.fragmentShaderSource.empty()) {
             const auto buildGraphicsDesc = [&](
                 const RHIPipelinePermutationPlan* permutation) {
                 PipelineDesc desc;
-                desc.vertShaderPath = permutation &&
-                    !permutation->vertexShaderPath.empty()
-                    ? permutation->vertexShaderPath
-                    : pipelinePlan.vertexShaderPath;
-                desc.fragShaderPath = permutation &&
-                    !permutation->fragmentShaderPath.empty()
-                    ? permutation->fragmentShaderPath
-                    : pipelinePlan.fragmentShaderPath;
+                desc.vertexShader.sourcePath = permutation &&
+                    !permutation->vertexShaderSource.empty()
+                    ? permutation->vertexShaderSource
+                    : pipelinePlan.vertexShaderSource;
+                desc.fragmentShader.sourcePath = permutation &&
+                    !permutation->fragmentShaderSource.empty()
+                    ? permutation->fragmentShaderSource
+                    : pipelinePlan.fragmentShaderSource;
                 const auto& vertexEntry = permutation &&
                     !permutation->vertexEntryPoint.empty()
                     ? permutation->vertexEntryPoint
@@ -422,12 +427,20 @@ void VulkanFrameExecutor::compileExecution(
                     !permutation->fragmentEntryPoint.empty()
                     ? permutation->fragmentEntryPoint
                     : pipelinePlan.fragmentEntryPoint;
-                desc.vertEntryPoint = vertexEntry.empty()
+                desc.vertexShader.entryPoint = vertexEntry.empty()
                     ? "VSMain"
                     : vertexEntry;
-                desc.fragEntryPoint = fragmentEntry.empty()
+                desc.fragmentShader.entryPoint = fragmentEntry.empty()
                     ? "PSMain"
                     : fragmentEntry;
+                desc.vertexShader.stage = ShaderStage::Vertex;
+                desc.fragmentShader.stage = ShaderStage::Fragment;
+                if (permutation) {
+                    desc.vertexShader.permutation = permutation->key;
+                    desc.vertexShader.hasPermutation = true;
+                    desc.fragmentShader.permutation = permutation->key;
+                    desc.fragmentShader.hasPermutation = true;
+                }
                 desc.vertexStride = pipelinePlan.vertexLayout.stride;
                 for (const auto& attribute :
                     pipelinePlan.vertexLayout.attributes) {
@@ -517,7 +530,6 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
     const auto& bindings = *context.bindings;
     const uint32_t frameIndex = context.frameIndex;
     bool swapchainPassOpen = false;
-    bool drawOverlay = context.drawOverlay;
 
     const auto descriptorWrites = [&] (
         CompiledPassResources& compiled,
@@ -592,7 +604,8 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
                 if (packetWrite.type ==
                     Tasrovy::Render::FrameDescriptorType::StorageImage) {
                     write.type = DescriptorResourceType::StorageImage;
-                    write.imageInfo = image->getDescriptorInfoForStorage();
+                    write.imageInfo =
+                        BackendAccess::storageDescriptorInfo(*image);
                 } else {
                     write.type = DescriptorResourceType::CombinedImageSampler;
                     write.image = image;
@@ -675,11 +688,6 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
 
         if (!hasRasterCommands && swapchainPassOpen && context.swapchainTarget) {
             commandList.endSwapchainRenderPass(*context.swapchainTarget);
-            if (drawOverlay && context.overlay) {
-                commandList.renderOverlay(
-                    *context.overlay, *context.swapchainTarget);
-                drawOverlay = false;
-            }
             swapchainPassOpen = false;
         }
 
@@ -709,11 +717,6 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
         } else if (hasRasterCommands) {
             if (swapchainPassOpen && context.swapchainTarget) {
                 commandList.endSwapchainRenderPass(*context.swapchainTarget);
-                if (drawOverlay && context.overlay) {
-                    commandList.renderOverlay(
-                        *context.overlay, *context.swapchainTarget);
-                    drawOverlay = false;
-                }
                 swapchainPassOpen = false;
             }
             commandList.beginRenderPass(rhiPass);
@@ -727,11 +730,9 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
         }
         if (pipeline) {
             commandList.bindPipeline(
-                pipeline->getNativePipeline(), pipeline->getNativeLayout(),
+                *pipeline,
                 packetPass.execution ==
-                        Tasrovy::Render::PipelinePassExecution::Compute
-                    ? 1u
-                    : 0u);
+                    Tasrovy::Render::PipelinePassExecution::Compute);
         }
 
         const bool recordTimestamp = context.timestampQueryPool != 0 &&
@@ -808,8 +809,8 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
                 commandList.bindIndexBuffer(*mesh->second.indexBuffer);
                 commandList.setFrontFace(
                     draw.flipProjectionY
-                        ? FrontFaceClockwise
-                        : FrontFaceCounterClockwise);
+                        ? FrontFace::CounterClockwise
+                        : FrontFace::Clockwise);
                 if (descriptorIndex < compiled->descriptorSets.size()) {
                     commandList.bindDescriptorSet(
                         0, compiled->descriptorSets[descriptorIndex]);
@@ -860,9 +861,6 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
 
     if (swapchainPassOpen && context.swapchainTarget) {
         commandList.endSwapchainRenderPass(*context.swapchainTarget);
-        if (drawOverlay && context.overlay) {
-            commandList.renderOverlay(*context.overlay, *context.swapchainTarget);
-        }
     }
     return result;
 }
@@ -1161,14 +1159,11 @@ void VulkanFrameExecutor::transition(
     const auto source = translateResourceState(current);
     const auto destination = translateResourceState(desired);
 
-    const auto format = static_cast<VkFormat>(image.getFormat());
     const bool depth =
-        format == VK_FORMAT_D32_SFLOAT ||
-        format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
-        format == VK_FORMAT_D24_UNORM_S8_UINT;
+        image.getFormat() == Format::Depth32Float ||
+        image.getFormat() == Format::Depth32FloatStencil8;
     const bool stencil =
-        format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
-        format == VK_FORMAT_D24_UNORM_S8_UINT;
+        image.getFormat() == Format::Depth32FloatStencil8;
 
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1178,7 +1173,7 @@ void VulkanFrameExecutor::transition(
     barrier.newLayout = destination.layout;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = reinterpret_cast<VkImage>(image.getNativeImage());
+    barrier.image = reinterpret_cast<VkImage>(BackendAccess::image(image));
     barrier.subresourceRange.aspectMask = depth
         ? VK_IMAGE_ASPECT_DEPTH_BIT |
             (stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0u)
@@ -1190,7 +1185,7 @@ void VulkanFrameExecutor::transition(
 
     vkCmdPipelineBarrier(
         reinterpret_cast<VkCommandBuffer>(
-            commandList.getNativeCommandBuffer()),
+            BackendAccess::commandBuffer(commandList)),
         source.stages,
         destination.stages,
         0,

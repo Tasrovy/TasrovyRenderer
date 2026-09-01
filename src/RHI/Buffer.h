@@ -2,14 +2,13 @@
 
 #include <memory>
 #include <cstdint>
+#include "RHITypes.h"
 
 namespace Tasrovy::RHI {
 
-struct DescriptorBufferInfo {
-    uint64_t nativeBuffer = 0;
-    uint64_t offset = 0;
-    uint64_t range = 0;
-};
+class CommandList;
+class BackendAccess;
+class IBufferBackend;
 
 class Buffer : public std::enable_shared_from_this<Buffer> {
 public:
@@ -22,15 +21,16 @@ public:
     void setData(const void* data, uint64_t size, uint64_t offset);
     void* getMappedMemory();
 
-    uint64_t getNativeHandle() const;
-    DescriptorBufferInfo getDescriptorInfo() const;
-
 private:
     friend class Device;
     friend class CommandList;
+    friend class BackendAccess;
     Buffer() = default;
-    static std::shared_ptr<Buffer> CreateFromNative(void* nativeContext, uint64_t size, uint32_t usageFlags, bool hostVisible);
-    static std::shared_ptr<Buffer> CreateStagingFromNative(void* nativeContext, uint64_t size);
+    static std::shared_ptr<Buffer> CreateFromBackend(
+        std::unique_ptr<IBufferBackend> backend);
+    IBufferBackend& backend();
+    const IBufferBackend& backend() const;
+    DescriptorBufferInfo getDescriptorInfo() const;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

@@ -18,6 +18,7 @@ public:
     // 开始一帧的渲染，如果成功，返回一个可以记录命令的 Command Buffer
     // 如果返回 nullptr，意味着交换链需要重建，应该跳过这一帧
     VkCommandBuffer beginFrame(VulkanSwapchain& swapchain);
+    VkCommandBuffer beginOverlayCommands();
     
     // 结束一帧的渲染并提交
     void endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, VulkanQueue& presentQueue);
@@ -40,7 +41,8 @@ private:
     uint32_t _swapchainImageCount = 0;
 
     VkCommandPool _commandPool;
-    std::vector<VkCommandBuffer> _commandBuffers;
+    std::vector<VkCommandBuffer> _sceneCommandBuffers;
+    std::vector<VkCommandBuffer> _overlayCommandBuffers;
     std::vector<VkSemaphore> _imageAvailableSemaphores;
     std::vector<VkSemaphore> _renderFinishedSemaphores;
     std::vector<VkFence> _inFlightFences;
@@ -51,4 +53,5 @@ private:
     static constexpr uint32_t MaxTimestampQueries = 256;
     bool _swapchainRebuildRequired = false;
     bool _frameOpen = false;
+    bool _overlayCommandsOpen = false;
 };

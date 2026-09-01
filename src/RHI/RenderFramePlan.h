@@ -6,6 +6,7 @@
 #include <string>
 #include <optional>
 #include <vector>
+#include "RHITypes.h"
 
 namespace Tasrovy::Render {
 struct FramePacket;
@@ -98,7 +99,7 @@ struct RenderBufferLifetimePlan {
 
 struct RHIVertexAttributePlan {
     uint32_t location = 0;
-    uint32_t format = 0;
+    Format format = Format::Unknown;
     uint32_t offset = 0;
 };
 
@@ -117,7 +118,7 @@ enum class RHIDescriptorTypePlan : uint8_t {
 struct RHIDescriptorBindingPlan {
     uint32_t binding = 0;
     RHIDescriptorTypePlan type = RHIDescriptorTypePlan::UniformBuffer;
-    uint32_t stages = 0;
+    ShaderStageFlags stages = ShaderStageFlags::None;
     uint64_t resourceId = 0;
     bool previousFrame = false;
 };
@@ -142,28 +143,28 @@ struct RHIDescriptorSetPlan {
 
 struct RHIPipelinePermutationPlan {
     uint64_t key = 0;
-    std::string vertexShaderPath;
-    std::string fragmentShaderPath;
-    std::string computeShaderPath;
+    std::string vertexShaderSource;
+    std::string fragmentShaderSource;
+    std::string computeShaderSource;
     std::string vertexEntryPoint;
     std::string fragmentEntryPoint;
     std::string computeEntryPoint;
 };
 
 struct RHIPipelinePlan {
-    std::string vertexShaderPath;
-    std::string fragmentShaderPath;
-    std::string computeShaderPath;
+    std::string vertexShaderSource;
+    std::string fragmentShaderSource;
+    std::string computeShaderSource;
     std::string vertexEntryPoint;
     std::string fragmentEntryPoint;
     std::string computeEntryPoint;
     RHIVertexLayoutPlan vertexLayout;
-    uint32_t topology = 0;
-    uint32_t cullMode = 0;
+    PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+    CullMode cullMode = CullMode::Back;
     bool depthTest = true;
     bool depthWrite = true;
-    uint32_t depthCompare = 0;
-    uint32_t blendMode = 0;
+    CompareOp depthCompare = CompareOp::Less;
+    BlendMode blendMode = BlendMode::Off;
     RHIDescriptorLayoutPlan descriptorLayout;
     RHIDescriptorPoolPlan descriptorPool;
     RHIDescriptorSetPlan descriptorSets;

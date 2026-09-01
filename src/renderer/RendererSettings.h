@@ -92,7 +92,6 @@ struct RendererSettings {
     bool outlineTemporalDenoise = true;
     float outlineHistoryWeight = 0.85f;
 
-    bool taffyRotationEnabled = true;
     float internalResolutionPercent = 100.0f;
 };
 

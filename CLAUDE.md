@@ -40,7 +40,7 @@ Shaders are compiled with **DXC** (DirectX Shader Compiler) to SPIR-V. See `res/
   - All classes use `static create()` factory methods, constructors are private/protected
 
 - **`src/RHI/`** — Static library `TasrovyRHI`. Rendering Hardware Interface abstraction.
-  - `RHIConfig.h` — Graphics API selection via `#define TASROVY_USE_VULKAN` (currently only Vulkan supported)
+  - `RHIConfig.h` — Validates the graphics backend selected by the `TASROVY_RHI_BACKEND` CMake option (currently only Vulkan is implemented)
   - `Device` — Creates resources: buffers, images, pipelines, descriptors. Uses pimpl with `#ifdef` for backend
   - `CommandList` — Records GPU commands: bind pipeline/buffers, draw, barriers. Uses pimpl with `#ifdef`
   - `src/RHI/Vulkan/` — Vulkan backend implementations (VulkanContext, VulkanBuffer, VulkanImage, VulkanPipeline, VulkanSwapchain, Renderer, ImmediateSubmitter, DescriptorWriter, IBLMap, Model)

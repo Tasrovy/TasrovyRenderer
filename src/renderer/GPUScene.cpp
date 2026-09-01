@@ -82,11 +82,11 @@ void GPUScene::prepare(
         viewBuffers_[frame] = device.retainResource(
             scope, device.createUniformBuffer(sizeof(ViewUniform)));
         objectBuffers_[frame] = device.retainResource(scope, device.createBuffer({
-            sizeof(ObjectData) * objectCapacity_, RHI::BufferUsageStorage, true}));
+            sizeof(ObjectData) * objectCapacity_, RHI::BufferUsage::Storage, true}));
         materialBuffers_[frame] = device.retainResource(scope, device.createBuffer({
-            sizeof(MaterialData) * materialCapacity_, RHI::BufferUsageStorage, true}));
+            sizeof(MaterialData) * materialCapacity_, RHI::BufferUsage::Storage, true}));
         lightBuffers_[frame] = device.retainResource(scope, device.createBuffer({
-            sizeof(SceneLightData), RHI::BufferUsageStorage, true}));
+            sizeof(SceneLightData), RHI::BufferUsage::Storage, true}));
     }
 }
 
