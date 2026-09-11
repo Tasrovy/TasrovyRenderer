@@ -1,4 +1,5 @@
 #include "MaterialDescriptor.h"
+#include "MaterialTechnique.h"
 
 #include <fstream>
 #include <stdexcept>
@@ -70,6 +71,15 @@ MaterialPropertyType parsePropertyType(const std::string& type) {
     throw std::runtime_error("unsupported material property type: " + type);
 }
 
+std::filesystem::path resolveReferencedAsset(
+    const std::filesystem::path& owner,
+    const std::filesystem::path& value) {
+    if (value.is_absolute() || std::filesystem::exists(value)) {
+        return value;
+    }
+    return (owner.parent_path() / value).lexically_normal();
+}
+
 } // namespace
 
 std::shared_ptr<MaterialDescriptor> MaterialDescriptor::load(
@@ -89,6 +99,17 @@ std::shared_ptr<MaterialDescriptor> MaterialDescriptor::load(
     descriptor->castShadows_ = root.value("castShadows", true);
     descriptor->alphaCutoff_ = root.value("alphaCutoff", 0.5f);
     descriptor->surface_ = root.value("surface", 0u);
+    if (root.contains("technique")) {
+        const auto techniquePath =
+            root.at("technique").get<std::string>();
+        if (techniquePath.empty()) {
+            throw std::runtime_error(
+                "material technique path must not be empty: " +
+                path.string());
+        }
+        descriptor->technique_ = MaterialTechnique::load(
+            resolveReferencedAsset(path, techniquePath));
+    }
 
     const auto& properties = root.at("properties");
     if (!properties.is_array()) {
@@ -124,6 +145,7 @@ std::shared_ptr<MaterialDescriptor> MaterialDescriptor::load(
             if (value.is_string()) {
                 descriptor->texturePaths_[name] = value.get<std::string>();
                 descriptor->textureSampling_[name] = {};
+                descriptor->textureMipmaps_[name] = true;
                 break;
             }
             if (!value.is_object()) {
@@ -137,6 +159,8 @@ std::shared_ptr<MaterialDescriptor> MaterialDescriptor::load(
                 parseVec2(value.value("scale", json::array()), TSVec2f(1.0f)),
                 parseVec2(value.value("offset", json::array()), TSVec2f(0.0f))
             };
+            descriptor->textureMipmaps_[name] =
+                value.value("mipmaps", true);
             break;
         }
     }
@@ -165,6 +189,14 @@ const std::unordered_map<std::string, std::string>& MaterialDescriptor::getTextu
 const std::unordered_map<std::string, MaterialTextureUvSampling>&
 MaterialDescriptor::getTextureSampling() const {
     return textureSampling_;
+}
+const std::unordered_map<std::string, bool>&
+MaterialDescriptor::getTextureMipmaps() const {
+    return textureMipmaps_;
+}
+std::shared_ptr<const MaterialTechnique>
+MaterialDescriptor::getTechnique() const {
+    return technique_;
 }
 bool MaterialDescriptor::castsShadows() const { return castShadows_; }
 float MaterialDescriptor::getAlphaCutoff() const { return alphaCutoff_; }

@@ -15,10 +15,26 @@ struct FramePacket;
 namespace Tasrovy::RHI {
 
 enum class FrameTextureFormat {
+    R8Unorm,
+    RG8Unorm,
     RGBA8Unorm,
-    RGBA16Float,
+    RGBA8Srgb,
+    R8Uint,
+    R16Uint,
+    R32Uint,
+    RG16Uint,
+    R16Float,
     RG16Float,
+    RGBA16Float,
+    R32Float,
+    RG32Float,
+    RGBA32Float,
+    R11G11B10Float,
+    RGB10A2Unorm,
+    Depth16Unorm,
+    Depth24UnormStencil8,
     Depth32Float,
+    Depth32FloatStencil8,
     Swapchain
 };
 
@@ -151,6 +167,16 @@ struct RHIPipelinePermutationPlan {
     std::string computeEntryPoint;
 };
 
+struct RHIDrawShaderVariantPlan {
+    uint64_t id = 0;
+    std::string vertexShaderSource;
+    std::string fragmentShaderSource;
+    std::string vertexEntryPoint;
+    std::string fragmentEntryPoint;
+    std::optional<uint64_t> vertexPermutation;
+    std::optional<uint64_t> fragmentPermutation;
+};
+
 struct RHIPipelinePlan {
     std::string vertexShaderSource;
     std::string fragmentShaderSource;
@@ -169,6 +195,7 @@ struct RHIPipelinePlan {
     RHIDescriptorPoolPlan descriptorPool;
     RHIDescriptorSetPlan descriptorSets;
     std::vector<RHIPipelinePermutationPlan> permutations;
+    std::vector<RHIDrawShaderVariantPlan> drawShaderVariants;
 };
 
 struct RHIAttachmentPlan {
@@ -185,6 +212,7 @@ struct RenderPassExecutionPlan {
     size_t packetPassIndex = 0;
     std::string name;
     uint32_t execution = 0;
+    uint32_t externalFeature = 0;
     uint32_t passType = 0;
     std::array<float, 4> clearColor{0.0f, 0.0f, 0.0f, 1.0f};
     RHIPipelinePlan pipeline;

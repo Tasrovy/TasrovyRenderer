@@ -13,6 +13,7 @@ namespace Tasrovy::Render {
 
 class Shader;
 class MaterialDescriptor;
+class MaterialTechnique;
 
 enum class MaterialSurface {
     Opaque,
@@ -25,20 +26,21 @@ public:
     struct TextureBinding {
         std::string path;
         MaterialTextureUvSampling uvSampling;
+        bool generateMipmaps = true;
     };
 
     static std::shared_ptr<Material> create();
     static std::shared_ptr<Material> create(
         std::shared_ptr<const MaterialDescriptor> descriptor);
-    static std::shared_ptr<Material> create(std::weak_ptr<Shader> shader);
+    static std::shared_ptr<Material> create(std::shared_ptr<Shader> shader);
     static std::shared_ptr<Material> create(
-        std::weak_ptr<Shader> vertexShader,
-        std::weak_ptr<Shader> fragmentShader);
+        std::shared_ptr<Shader> vertexShader,
+        std::shared_ptr<Shader> fragmentShader);
 
-    void setShader(std::weak_ptr<Shader> shader);
+    void setShader(std::shared_ptr<Shader> shader);
     std::shared_ptr<Shader> getShader() const;
-    void setVertexShader(std::weak_ptr<Shader> shader);
-    void setFragmentShader(std::weak_ptr<Shader> shader);
+    void setVertexShader(std::shared_ptr<Shader> shader);
+    void setFragmentShader(std::shared_ptr<Shader> shader);
     std::shared_ptr<Shader> getVertexShader() const;
     std::shared_ptr<Shader> getFragmentShader() const;
 
@@ -51,6 +53,9 @@ public:
     void setTextureUvSampling(
         const std::string& samplerName,
         MaterialTextureUvSampling sampling);
+    void setTextureMipmaps(
+        const std::string& samplerName,
+        bool generateMipmaps);
     void clearTexture(const std::string& samplerName);
     void setSurface(MaterialSurface surface);
     MaterialSurface getSurface() const;
@@ -72,6 +77,8 @@ public:
     bool hasVec3(const std::string& name) const;
     bool hasTexture(const std::string& samplerName) const;
     std::shared_ptr<const MaterialDescriptor> getDescriptor() const;
+    void setTechnique(std::shared_ptr<const MaterialTechnique> technique);
+    std::shared_ptr<const MaterialTechnique> getTechnique() const;
 
     // Bulk access for RHI binding
     const std::unordered_map<std::string, float>& getFloatParams() const;
@@ -85,8 +92,8 @@ private:
     Material();
     explicit Material(std::shared_ptr<const MaterialDescriptor> descriptor);
 
-    std::weak_ptr<Shader> vertexShader_;
-    std::weak_ptr<Shader> fragmentShader_;
+    std::shared_ptr<Shader> vertexShader_;
+    std::shared_ptr<Shader> fragmentShader_;
 
     std::unordered_map<std::string, float> floats_;
     std::unordered_map<std::string, TSVec3f> vec3s_;
@@ -94,6 +101,7 @@ private:
     std::unordered_map<std::string, TSMat4f> mat4s_;
     std::unordered_map<std::string, TextureBinding> textures_;
     std::shared_ptr<const MaterialDescriptor> descriptor_;
+    std::shared_ptr<const MaterialTechnique> technique_;
     MaterialSurface surface_ = MaterialSurface::Opaque;
     float alphaCutoff_ = 0.5f;
     bool castShadows_ = true;

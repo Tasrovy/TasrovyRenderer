@@ -8,6 +8,20 @@ include(CTest)
 set(TASROVY_RHI_BACKEND "Vulkan" CACHE STRING "Graphics backend")
 set_property(CACHE TASROVY_RHI_BACKEND PROPERTY STRINGS Vulkan D3D12)
 
+option(TASROVY_ENABLE_DLSS_NR
+    "Build the optional NVIDIA NGX DLSS Neural Rendering integration" OFF)
+set(TASROVY_NGX_SDK_ROOT "" CACHE PATH
+    "Path to the NVIDIA DLSS/NGX SDK root")
+set(TASROVY_DLSS_NR_RUNTIME_DIR
+    "${CMAKE_SOURCE_DIR}/third_party/nvidia/ngx/runtime" CACHE PATH
+    "Directory containing nvngx_dlssnr.dll")
+option(TASROVY_ALLOW_UNTRUSTED_DLSS_NR_RUNTIME
+    "Allow loading a DLSS-NR runtime whose Authenticode signature was not verified" OFF)
+
+if(TASROVY_ENABLE_DLSS_NR AND NOT TASROVY_RHI_BACKEND STREQUAL "Vulkan")
+    message(FATAL_ERROR "DLSS Neural Rendering currently requires the Vulkan backend")
+endif()
+
 if(TASROVY_RHI_BACKEND STREQUAL "Vulkan")
     add_compile_definitions(TASROVY_API_VULKAN=1)
     find_package(volk CONFIG REQUIRED)
@@ -21,6 +35,7 @@ find_package(glfw3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(assimp CONFIG REQUIRED)
+find_package(meshoptimizer CONFIG REQUIRED)
 
 # imgui: built from source in third_party/
 set(TASROVY_IMGUI_SOURCES

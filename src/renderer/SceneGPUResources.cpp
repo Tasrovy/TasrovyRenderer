@@ -12,8 +12,12 @@
 #include "Logger.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <stdexcept>
 #include <utility>
 
 namespace Tasrovy::Renderer {
@@ -40,6 +44,94 @@ ImageUploadDesc loadTextureUpload(
     upload.format = format;
     upload.generateMipmaps = generateMipmaps;
     upload.pixels = source.pixels;
+    return upload;
+}
+
+uint32_t readLittleEndianU32(
+    const std::array<uint8_t, 148>& header,
+    size_t offset) {
+    return static_cast<uint32_t>(header[offset]) |
+        (static_cast<uint32_t>(header[offset + 1]) << 8u) |
+        (static_cast<uint32_t>(header[offset + 2]) << 16u) |
+        (static_cast<uint32_t>(header[offset + 3]) << 24u);
+}
+
+ImageUploadDesc loadRgba16FloatDds(const std::string& path) {
+    constexpr uint32_t DdsHeaderSize = 124u;
+    constexpr uint32_t DdsPixelFormatSize = 32u;
+    constexpr uint32_t DxgiFormatR16G16B16A16Float = 10u;
+    constexpr uint32_t D3d10ResourceDimensionTexture2D = 3u;
+    constexpr size_t DdsDx10PayloadOffset = 148u;
+
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        throw std::runtime_error("Failed to open DDS texture: " + path);
+    }
+
+    std::array<uint8_t, DdsDx10PayloadOffset> header{};
+    stream.read(
+        reinterpret_cast<char*>(header.data()),
+        static_cast<std::streamsize>(header.size()));
+    if (stream.gcount() != static_cast<std::streamsize>(header.size())) {
+        throw std::runtime_error("DDS header is truncated: " + path);
+    }
+
+    const bool validMagic =
+        header[0] == 'D' && header[1] == 'D' &&
+        header[2] == 'S' && header[3] == ' ';
+    const bool hasDx10Header =
+        header[84] == 'D' && header[85] == 'X' &&
+        header[86] == '1' && header[87] == '0';
+    if (!validMagic ||
+        readLittleEndianU32(header, 4) != DdsHeaderSize ||
+        readLittleEndianU32(header, 76) != DdsPixelFormatSize ||
+        !hasDx10Header) {
+        throw std::runtime_error(
+            "Color grading LUT must be a DDS file with a DX10 header: " +
+            path);
+    }
+
+    const uint32_t width = readLittleEndianU32(header, 16);
+    const uint32_t height = readLittleEndianU32(header, 12);
+    const uint32_t mipCount = std::max(readLittleEndianU32(header, 28), 1u);
+    const uint32_t dxgiFormat = readLittleEndianU32(header, 128);
+    const uint32_t resourceDimension = readLittleEndianU32(header, 132);
+    const uint32_t arraySize = readLittleEndianU32(header, 140);
+    if (dxgiFormat != DxgiFormatR16G16B16A16Float ||
+        resourceDimension != D3d10ResourceDimensionTexture2D ||
+        arraySize != 1u || mipCount != 1u) {
+        throw std::runtime_error(
+            "Color grading DDS must be a single-mip, single-layer "
+            "R16G16B16A16_FLOAT Texture2D: " + path);
+    }
+
+    const uint64_t expectedWidth =
+        static_cast<uint64_t>(height) * height;
+    const uint64_t expectedPayloadSize =
+        static_cast<uint64_t>(width) * height * 8u;
+    if (height < 2u || width != expectedWidth) {
+        throw std::runtime_error(
+            "Flattened color grading LUT must have dimensions N*N by N: " +
+            path);
+    }
+
+    std::vector<uint8_t> pixels{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()
+    };
+    if (pixels.size() != expectedPayloadSize) {
+        throw std::runtime_error(
+            "Unexpected RGBA16F DDS payload size for color grading LUT: " +
+            path);
+    }
+
+    ImageUploadDesc upload{};
+    upload.width = width;
+    upload.height = height;
+    upload.channels = 4u;
+    upload.format = Format::RGBA16Float;
+    upload.generateMipmaps = false;
+    upload.pixels = std::move(pixels);
     return upload;
 }
 
@@ -223,7 +315,9 @@ void SceneGPUResources::ensureMaterialTextures(
             continue;
         }
         const auto cacheKey = materialTextureCacheKey(
-            binding->path, requirement.colorSpace);
+            binding->path,
+            requirement.colorSpace,
+            binding->generateMipmaps);
         if (materialTextures_.contains(cacheKey)) {
             continue;
         }
@@ -234,7 +328,7 @@ void SceneGPUResources::ensureMaterialTextures(
                 isSRGB(requirement.colorSpace)
                     ? Format::RGBA8Srgb
                     : Format::RGBA8Unorm,
-                true)));
+                binding->generateMipmaps)));
     }
 }
 
@@ -250,11 +344,14 @@ ResolvedMaterialTexture SceneGPUResources::resolveMaterialTexture(
         return {fallbackKey, fallbackImage};
     }
 
-    const auto path = material->getTexture(requirement.slot);
-    if (path.empty()) {
+    const auto* binding = material->resolveTexture(requirement);
+    if (!binding || binding->path.empty()) {
         return {fallbackKey, fallbackImage};
     }
-    const auto key = materialTextureCacheKey(path, requirement.colorSpace);
+    const auto key = materialTextureCacheKey(
+        binding->path,
+        requirement.colorSpace,
+        binding->generateMipmaps);
     const auto found = materialTextures_.find(key);
     return found == materialTextures_.end()
         ? ResolvedMaterialTexture{fallbackKey, fallbackImage}
@@ -307,6 +404,24 @@ void SceneGPUResources::rebuildSkyboxGeometry(
             indices.data(),
             indexSize);
     }
+}
+
+void SceneGPUResources::prepareGlobalTextures(
+    Device& device,
+    Device::ResourceScope persistentScope) {
+    if (colorGradingLut_) return;
+
+    constexpr const char* ColorGradingLutPath =
+        "res/Textures/ColorGrading/LUT.dds";
+    auto upload = loadRgba16FloatDds(ColorGradingLutPath);
+    colorGradingLut_ = device.retainResource(
+        persistentScope,
+        device.createTexture(upload));
+    LOG_INFO(
+        "SceneGPUResources: loaded {}x{} RGBA16F flattened color grading LUT '{}'",
+        upload.width,
+        upload.height,
+        ColorGradingLutPath);
 }
 
 void SceneGPUResources::prepareSkyboxVariants(
@@ -423,6 +538,10 @@ const std::shared_ptr<Image>& SceneGPUResources::iblFallbackLut() const {
     return iblFallbackLut_;
 }
 
+const std::shared_ptr<Image>& SceneGPUResources::colorGradingLut() const {
+    return colorGradingLut_;
+}
+
 const std::vector<SkyboxVariant>&
 SceneGPUResources::skyboxVariants() const {
     return skyboxVariants_;
@@ -479,7 +598,8 @@ bool SceneGPUResources::isSRGB(
 
 std::string SceneGPUResources::materialTextureCacheKey(
     const std::string& path,
-    MaterialTextureColorSpace colorSpace) {
+    MaterialTextureColorSpace colorSpace,
+    bool generateMipmaps) {
     auto normalized =
         std::filesystem::path(path).lexically_normal().generic_string();
     std::transform(
@@ -490,6 +610,7 @@ std::string SceneGPUResources::materialTextureCacheKey(
             return static_cast<char>(std::tolower(character));
         });
     normalized += isSRGB(colorSpace) ? "|srgb" : "|linear";
+    normalized += generateMipmaps ? "|mips" : "|no-mips";
     return normalized;
 }
 

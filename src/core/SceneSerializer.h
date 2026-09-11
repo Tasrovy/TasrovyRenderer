@@ -1,7 +1,9 @@
 #pragma once
 
 #include <filesystem>
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace Tasrovy::Render {
@@ -20,8 +22,17 @@ struct SceneArchive {
     std::vector<std::shared_ptr<Render::Texture>> textures;
 };
 
+struct SceneMetadata {
+    std::filesystem::path path;
+    std::string name;
+    uint32_t version = 0;
+};
+
 class SceneSerializer {
 public:
+    static bool inspect(
+        const std::filesystem::path& path,
+        SceneMetadata& metadata);
     static bool save(
         const std::filesystem::path& path,
         const std::shared_ptr<Render::Scene>& scene);

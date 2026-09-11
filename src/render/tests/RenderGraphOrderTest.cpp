@@ -1,10 +1,13 @@
 #include "Pipeline.h"
 #include "PipelinePass.h"
 #include "RenderGraph.h"
+#include "Shader.h"
 
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -30,11 +33,12 @@ public:
 
     void buffer(
         const std::string& name,
-        bool external = false) {
+        bool external = false,
+        uint32_t usage = PipelineBufferUsageTransferSource) {
         declareBuffer({
             name,
             256,
-            PipelineBufferUsageTransferSource,
+            usage,
             external,
             external
         });
@@ -170,6 +174,68 @@ bool bufferCopyOrderIsDeclarationIndependent() {
         {"FirstCopy", "SecondCopy"});
 }
 
+bool computeStorageBufferOrdersItsConsumer() {
+    TestPipeline pipeline;
+    pipeline.buffer(
+        "LightMasks", false, PipelineBufferUsageStorage);
+
+    auto cull = PipelinePass::create("LightCullXY");
+    cull->setExecution(PipelinePassExecution::Compute);
+    auto computeShader = Shader::create(
+        "res/Shaders/Source/test_compute.hlsl",
+        ShaderType::Compute);
+    computeShader->setEntry("CSMain");
+    cull->setComputeShader(std::move(computeShader));
+    cull->setDispatch(10, 7, 1);
+    cull->addStorageBuffer(
+        "lightMasks", "LightMasks", 1,
+        PipelineResourceAccess::BufferStorageWrite);
+
+    auto lighting = PipelinePass::create("Lighting");
+    lighting->addStorageBuffer(
+        "lightMasks", "LightMasks", 1,
+        PipelineResourceAccess::BufferStorageRead);
+
+    // Deliberately reverse declaration order. The storage RAW dependency
+    // must still put the compute producer before the graphics consumer.
+    pipeline.pass(lighting);
+    pipeline.pass(cull);
+
+    const auto graph = RenderGraph::compile(pipeline);
+    if (!expectOrder(graph, {"LightCullXY", "Lighting"})) {
+        return false;
+    }
+    return std::any_of(
+        graph.getEdges().begin(), graph.getEdges().end(),
+        [](const RenderGraphEdge& edge) {
+            return edge.resource == "LightMasks" &&
+                edge.hazard == RenderGraphHazard::ReadAfterWrite;
+        });
+}
+
+bool invalidComputePassIsRejected() {
+    TestPipeline pipeline;
+    auto compute = PipelinePass::create("InvalidCompute");
+    compute->setExecution(PipelinePassExecution::Compute);
+    compute->setDispatch(0, 1, 1);
+    pipeline.pass(compute);
+
+    const auto graph = RenderGraph::compile(pipeline);
+    if (graph.isValid()) {
+        std::cerr << "Expected invalid compute pass to be rejected\n";
+        return false;
+    }
+    bool missingShader = false;
+    bool emptyDispatch = false;
+    for (const auto& diagnostic : graph.getDiagnostics()) {
+        missingShader |= diagnostic.find("has no compute shader") !=
+            std::string::npos;
+        emptyDispatch |= diagnostic.find("empty dispatch dimension") !=
+            std::string::npos;
+    }
+    return missingShader && emptyDispatch;
+}
+
 bool cyclicGraphHasNoExecutableFallback() {
     TestPipeline pipeline;
     pipeline.texture("AOutput");
@@ -222,6 +288,12 @@ int main() {
     }
     if (!bufferCopyOrderIsDeclarationIndependent()) {
         return 5;
+    }
+    if (!computeStorageBufferOrdersItsConsumer()) {
+        return 6;
+    }
+    if (!invalidComputePassIsRejected()) {
+        return 7;
     }
     return 0;
 }

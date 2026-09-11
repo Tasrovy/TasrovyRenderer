@@ -32,6 +32,7 @@
 #include "../render/FramePacket.h"
 #include "../render/Material.h"
 #include "../render/MaterialDescriptor.h"
+#include "../render/MaterialTechnique.h"
 #include "../render/PBRMaterialBindings.h"
 #include "../render/Camera.h"
 #include "../render/DeferredPipeline.h"
@@ -45,6 +46,7 @@
 #include "../render/Scene.h"
 #include "../render/Shader.h"
 #include "../render/Skybox.h"
+#include "../render/StylizedPBRPipeline.h"
 #include "../render/Texture.hpp"
 #include "../ui/UI.h"
 #include "../window/Window.h"
@@ -78,6 +80,131 @@ namespace {
 
 using PassResources = FramePassPacket;
 inline constexpr const char* OutlineOnlyDebugOutput = "__OutlineOnly";
+inline constexpr const char* TaffyStressPrefix = "TaffyStress_";
+
+size_t countTaffyStressInstances(const Scene& scene) {
+    return static_cast<size_t>(std::count_if(
+        scene.getObjects().begin(),
+        scene.getObjects().end(),
+        [](const std::shared_ptr<Object>& object) {
+            return object && object->getName().starts_with(TaffyStressPrefix);
+        }));
+}
+
+bool createTaffyStressInstances(Scene& scene, size_t instanceCount) {
+    const auto sourceIt = std::find_if(
+        scene.getObjects().begin(),
+        scene.getObjects().end(),
+        [](const std::shared_ptr<Object>& object) {
+            return object && object->getName() == "Taffy";
+        });
+    if (sourceIt == scene.getObjects().end() || !*sourceIt) {
+        LOG_WARN("Stress test: source object 'Taffy' was not found");
+        return false;
+    }
+    if (countTaffyStressInstances(scene) != 0) {
+        return false;
+    }
+
+    const auto source = *sourceIt;
+    const auto mesh = source->getMesh();
+    if (!mesh || mesh->getVertices().empty()) {
+        LOG_WARN("Stress test: Taffy has no mesh data");
+        return false;
+    }
+
+    TSVec3f boundsMin(std::numeric_limits<float>::max());
+    TSVec3f boundsMax(std::numeric_limits<float>::lowest());
+    for (const auto& vertex : mesh->getVertices()) {
+        boundsMin.x = std::min(boundsMin.x, vertex.position.x);
+        boundsMin.y = std::min(boundsMin.y, vertex.position.y);
+        boundsMin.z = std::min(boundsMin.z, vertex.position.z);
+        boundsMax.x = std::max(boundsMax.x, vertex.position.x);
+        boundsMax.y = std::max(boundsMax.y, vertex.position.y);
+        boundsMax.z = std::max(boundsMax.z, vertex.position.z);
+    }
+
+    constexpr uint32_t GridSide = 10;
+    constexpr float InstanceScale = 0.075f;
+    constexpr float GridSpacing = 0.48f;
+    static_assert(GridSide * GridSide * GridSide == 1000);
+    if (instanceCount != GridSide * GridSide * GridSide) {
+        return false;
+    }
+
+    const TSVec3f instanceScale = source->getScale() * InstanceScale;
+    const TSVec3f localCenter = (boundsMin + boundsMax) * 0.5f;
+    const float firstCell =
+        -0.5f * static_cast<float>(GridSide - 1) * GridSpacing;
+
+    for (size_t index = 0; index < instanceCount; ++index) {
+        const uint32_t x = static_cast<uint32_t>(index % GridSide);
+        const uint32_t z = static_cast<uint32_t>(
+            (index / GridSide) % GridSide);
+        const uint32_t y = static_cast<uint32_t>(
+            index / (GridSide * GridSide));
+
+        // Object::clone preserves renderId for immutable scene snapshots.
+        // Runtime instances need fresh identities, so copy render properties
+        // into newly created Objects instead.
+        auto instance = Object::create(
+            std::string(TaffyStressPrefix) + std::to_string(index));
+        instance->setMesh(mesh);
+        instance->setMaterial(source->getMaterial());
+        instance->setRotation(source->getRotationQuat());
+        instance->setScale(instanceScale);
+        instance->setActive(source->isActive());
+        instance->setFlipProjectionY(source->getFlipProjectionY());
+        instance->setPosition(TSVec3f(
+            firstCell + static_cast<float>(x) * GridSpacing -
+                localCenter.x * instanceScale.x,
+            static_cast<float>(y) * GridSpacing -
+                boundsMin.y * instanceScale.y,
+            firstCell + static_cast<float>(z) * GridSpacing -
+                localCenter.z * instanceScale.z));
+        scene.addObject(std::move(instance));
+    }
+
+    LOG_INFO("Stress test: generated {} Taffy instances", instanceCount);
+    return true;
+}
+
+size_t removeTaffyStressInstances(Scene& scene) {
+    const size_t removed = scene.removeObjectsIf(
+        [](const Object& object) {
+            return object.getName().starts_with(TaffyStressPrefix);
+        });
+    if (removed != 0) {
+        LOG_INFO("Stress test: removed {} Taffy instances", removed);
+    }
+    return removed;
+}
+
+Object* findTaffyRotationAnchor(Scene& scene) {
+    if (auto* source = scene.findObject("Taffy")) {
+        return source;
+    }
+    return scene.findObject(
+        std::string(TaffyStressPrefix) + "0");
+}
+
+bool applyTaffyRotation(
+    Scene& scene,
+    const TSVec3f& baseRotation,
+    float yawOffset) {
+    bool updated = false;
+    const TSVec3f rotation =
+        baseRotation + TSVec3f(0.0f, yawOffset, 0.0f);
+    for (const auto& object : scene.getObjects()) {
+        if (!object) continue;
+        if (object->getName() == "Taffy" ||
+            object->getName().starts_with(TaffyStressPrefix)) {
+            object->setRotation(rotation);
+            updated = true;
+        }
+    }
+    return updated;
+}
 
 std::string formatBytes(uint64_t bytes) {
     constexpr double KiB = 1024.0;
@@ -147,14 +274,30 @@ const char* materialSurfaceName(MaterialSurface surface) {
     return "Unknown";
 }
 
-bool drawMaterialDebug(Material& material) {
-    bool needsPipelineRefresh = false;
+const char* materialCategoryName(MaterialCategory category) {
+    switch (category) {
+    case MaterialCategory::Scene: return "Scene";
+    case MaterialCategory::Vegetation: return "Vegetation";
+    case MaterialCategory::Character: return "Character";
+    case MaterialCategory::Special: return "Special";
+    }
+    return "Unknown";
+}
+
+SceneChange drawMaterialDebug(Material& material) {
+    SceneChange changes = SceneChange::None;
     const auto descriptor = material.getDescriptor();
     if (descriptor) {
         ImGui::Text("Material: %s", descriptor->getName().c_str());
         ImGui::TextDisabled(
             "Descriptor: %s",
             descriptor->getSourcePath().generic_string().c_str());
+        if (const auto technique = material.getTechnique()) {
+            ImGui::Text(
+                "Technique: %s (%s)",
+                technique->getName().c_str(),
+                materialCategoryName(technique->getCategory()));
+        }
         ImGui::Separator();
         for (const auto& property : descriptor->getProperties()) {
             ImGui::PushID(property.name.c_str());
@@ -163,6 +306,7 @@ bool drawMaterialDebug(Material& material) {
                 float value = material.getFloat(property.name);
                 if (ImGui::DragFloat(property.name.c_str(), &value, 0.01f)) {
                     material.setFloat(property.name, value);
+                    changes |= SceneChange::Material;
                 }
                 break;
             }
@@ -179,6 +323,7 @@ bool drawMaterialDebug(Material& material) {
                     material.setVec3(
                         property.name,
                         TSVec3f(components[0], components[1], components[2]));
+                    changes |= SceneChange::Material;
                 }
                 break;
             }
@@ -197,6 +342,7 @@ bool drawMaterialDebug(Material& material) {
                         TSVec4f(
                             components[0], components[1],
                             components[2], components[3]));
+                    changes |= SceneChange::Material;
                 }
                 break;
             }
@@ -211,18 +357,19 @@ bool drawMaterialDebug(Material& material) {
     const char* surfaceNames[] = { "Opaque", "Masked", "Transparent" };
     if (ImGui::Combo("Surface", &surface, surfaceNames, 3)) {
         material.setSurface(static_cast<MaterialSurface>(surface));
-        needsPipelineRefresh = true;
+        changes |= SceneChange::Material | SceneChange::Structural;
     }
 
     bool castsShadows = material.castsShadows();
     if (ImGui::Checkbox("Cast Shadows", &castsShadows)) {
         material.setCastShadows(castsShadows);
-        needsPipelineRefresh = true;
+        changes |= SceneChange::Material | SceneChange::Structural;
     }
 
     float alphaCutoff = material.getAlphaCutoff();
     if (ImGui::DragFloat("Alpha Cutoff", &alphaCutoff, 0.01f, 0.0f, 1.0f)) {
         material.setAlphaCutoff(alphaCutoff);
+        changes |= SceneChange::Material;
     }
 
     if (ImGui::TreeNode("Textures")) {
@@ -264,7 +411,7 @@ bool drawMaterialDebug(Material& material) {
                     const std::filesystem::path texturePath(path.data());
                     if (texturePath.empty() || std::filesystem::is_regular_file(texturePath)) {
                         material.setTexture(slot, path.data());
-                        needsPipelineRefresh = true;
+                        changes |= SceneChange::Material | SceneChange::Structural;
                     } else {
                         LOG_WARN(
                             "Material texture does not exist: '{}'",
@@ -275,7 +422,7 @@ bool drawMaterialDebug(Material& material) {
                 if (ImGui::Button("Default")) {
                     material.clearTexture(slot);
                     path.fill('\0');
-                    needsPipelineRefresh = true;
+                    changes |= SceneChange::Material | SceneChange::Structural;
                 }
                 if (binding.path.empty()) {
                     ImGui::TextDisabled(
@@ -288,6 +435,14 @@ bool drawMaterialDebug(Material& material) {
                     ImGui::TextColored(
                         ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
                         "File not found");
+                }
+                bool generateMipmaps = binding.generateMipmaps;
+                if (ImGui::Checkbox("Generate Mipmaps", &generateMipmaps)) {
+                    material.setTextureMipmaps(slot, generateMipmaps);
+                    // Mip count is part of the physical image description, so
+                    // changing it requires rebuilding the cached GPU texture.
+                    changes |= SceneChange::Material |
+                        SceneChange::Structural;
                 }
                 auto uvSampling = binding.uvSampling;
                 int uvMode = static_cast<int>(uvSampling.mode);
@@ -306,6 +461,7 @@ bool drawMaterialDebug(Material& material) {
                     uvSampling.mode =
                         static_cast<MaterialTextureUvMode>(uvMode);
                     material.setTextureUvSampling(slot, uvSampling);
+                    changes |= SceneChange::Material;
                 }
                 ImGui::Separator();
                 ImGui::PopID();
@@ -334,30 +490,31 @@ bool drawMaterialDebug(Material& material) {
     }
 
     ImGui::Text("Surface: %s", materialSurfaceName(material.getSurface()));
-    return needsPipelineRefresh;
+    return changes;
 }
 
-bool drawObjectDebug(const std::shared_ptr<Object>& object) {
+SceneChange drawObjectDebug(const std::shared_ptr<Object>& object) {
     if (!object) {
-        return false;
+        return SceneChange::None;
     }
 
-    bool needsPipelineRefresh = false;
+    SceneChange changes = SceneChange::None;
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_DefaultOpen;
     const bool open = ImGui::TreeNodeEx(object.get(), flags, "%s", object->getName().c_str());
     if (!open) {
-        return false;
+        return SceneChange::None;
     }
 
     bool active = object->isActive();
     if (ImGui::Checkbox("Active", &active)) {
         object->setActive(active);
-        needsPipelineRefresh = true;
+        changes |= SceneChange::Structural;
     }
 
     bool flipProjectionY = object->getFlipProjectionY();
     if (ImGui::Checkbox("Flip Projection Y", &flipProjectionY)) {
         object->setFlipProjectionY(flipProjectionY);
+        changes |= SceneChange::Transform;
     }
     ImGui::TextDisabled(
         "Front face: %s",
@@ -368,17 +525,36 @@ bool drawObjectDebug(const std::shared_ptr<Object>& object) {
     TSVec3f scale = object->getScale();
     if (drawVec3Control("Position", position)) {
         object->setPosition(position);
+        changes |= SceneChange::Transform;
     }
     if (drawEulerDegreesControl("Rotation", rotation)) {
         object->setRotation(rotation);
+        changes |= SceneChange::Transform;
     }
     if (drawVec3Control("Scale", scale, 0.01f)) {
         object->setScale(scale);
+        changes |= SceneChange::Transform;
     }
 
     const auto mesh = object->getMesh();
     if (mesh) {
-        ImGui::Text("Mesh: %zu vertices, %zu indices", mesh->getVertexCount(), mesh->getIndexCount());
+        ImGui::Text(
+            "Mesh: %zu vertices, %zu indices, %zu LODs",
+            mesh->getVertexCount(),
+            mesh->getIndexCount(),
+            mesh->getLODCount());
+        if (mesh->getLODCount() > 1 && ImGui::TreeNode("LOD Chain")) {
+            for (size_t index = 0; index < mesh->getLODCount(); ++index) {
+                const auto& lod = mesh->getLOD(index);
+                ImGui::Text(
+                    "LOD%zu: %u triangles, coverage %.3f, error %.5f",
+                    index,
+                    lod.indexCount / 3,
+                    lod.minimumScreenCoverage,
+                    lod.simplificationError);
+            }
+            ImGui::TreePop();
+        }
         if (ImGui::TreeNode("Submeshes")) {
             for (size_t index = 0; index < mesh->getSubmeshes().size(); ++index) {
                 const auto& submesh = mesh->getSubmeshes()[index];
@@ -404,7 +580,7 @@ bool drawObjectDebug(const std::shared_ptr<Object>& object) {
                     : submesh.getMaterialName();
                 if (ImGui::TreeNode(label.c_str())) {
                     if (const auto material = object->getSubmeshMaterial(index)) {
-                        needsPipelineRefresh |= drawMaterialDebug(*material);
+                        changes |= drawMaterialDebug(*material);
                     } else {
                         ImGui::TextUnformatted("Material: none");
                     }
@@ -413,7 +589,7 @@ bool drawObjectDebug(const std::shared_ptr<Object>& object) {
                 ImGui::PopID();
             }
         } else if (const auto material = object->getMaterial()) {
-            needsPipelineRefresh |= drawMaterialDebug(*material);
+            changes |= drawMaterialDebug(*material);
         } else {
             ImGui::TextUnformatted("Material: none");
         }
@@ -421,11 +597,11 @@ bool drawObjectDebug(const std::shared_ptr<Object>& object) {
     }
 
     for (const auto& child : object->getChildren()) {
-        needsPipelineRefresh |= drawObjectDebug(child);
+        changes |= drawObjectDebug(child);
     }
 
     ImGui::TreePop();
-    return needsPipelineRefresh;
+    return changes;
 }
 
 } // namespace
@@ -475,6 +651,7 @@ void RendererDebugUI::draw() {
     auto& state = components_;
     auto lockedScene = renderScene_.lock();
     const auto scene = lockedScene.scene();
+    SceneChange publishedChanges = SceneChange::None;
     if (state.resourceMonitor) {
         state.resourceMonitor->draw(
             state.rhi.device
@@ -490,13 +667,66 @@ void RendererDebugUI::draw() {
     } else {
         ImGui::Text("Scene: %s", scene->getName().c_str());
         ImGui::Text("Objects: %zu", scene->getObjectCount());
-        ImGui::Separator();
-        bool needsPipelineRefresh = false;
-        for (const auto& object : scene->getObjects()) {
-            needsPipelineRefresh |= drawObjectDebug(object);
+        const auto now = std::chrono::steady_clock::now();
+        if (!taffyRotationEnabled_) {
+            if (ImGui::Button("Start Taffy Rotation")) {
+                if (const auto* anchor = findTaffyRotationAnchor(*scene)) {
+                    taffyRotationEnabled_ = true;
+                    taffyBaseRotation_ = anchor->getRotationEuler();
+                    taffyYawOffset_ = 0.0f;
+                    lastTaffyRotationTime_ = now;
+                }
+            }
+        } else if (ImGui::Button("Stop Taffy Rotation")) {
+            taffyRotationEnabled_ = false;
+            lastTaffyRotationTime_ = {};
         }
-        if (needsPipelineRefresh) {
-            lockedScene.markDirty();
+        ImGui::SameLine();
+        ImGui::TextDisabled(
+            taffyRotationEnabled_
+                ? "45 degrees/second around Y"
+                : "Rotation paused");
+
+        const size_t stressInstanceCount =
+            countTaffyStressInstances(*scene);
+        if (stressInstanceCount == 0) {
+            if (ImGui::Button("Generate 1000 Taffys")) {
+                if (createTaffyStressInstances(*scene, 1000)) {
+                    publishedChanges |= SceneChange::Structural;
+                }
+            }
+        } else {
+            ImGui::TextDisabled(
+                "Taffy stress instances: %zu", stressInstanceCount);
+            if (ImGui::Button("Remove 1000 Taffys")) {
+                if (removeTaffyStressInstances(*scene) != 0) {
+                    publishedChanges |= SceneChange::Structural;
+                }
+            }
+        }
+
+        if (taffyRotationEnabled_) {
+            const float deltaSeconds = std::clamp(
+                std::chrono::duration<float>(
+                    now - lastTaffyRotationTime_).count(),
+                0.0f,
+                0.1f);
+            taffyYawOffset_ = std::fmod(
+                taffyYawOffset_ + pi<float>() * 0.25f * deltaSeconds,
+                two_pi<float>());
+            if (applyTaffyRotation(
+                    *scene, taffyBaseRotation_, taffyYawOffset_)) {
+                publishedChanges |= SceneChange::Transform;
+            }
+            lastTaffyRotationTime_ = now;
+        }
+        ImGui::Separator();
+        for (const auto& object : scene->getObjects()) {
+            if (object &&
+                object->getName().starts_with(TaffyStressPrefix)) {
+                continue;
+            }
+            publishedChanges |= drawObjectDebug(object);
         }
     }
     ImGui::End();
@@ -520,21 +750,27 @@ void RendererDebugUI::draw() {
 
     ImGui::Text("Tasrovy RHI frame");
     ImGui::Text("FPS: %.1f  Frame: %.2f ms", fps, frameMs);
-    const char* pipelineNames[] = {"PBR", "Deferred"};
+    const char* pipelineNames[] = {"PBR", "Deferred", "Stylized PBR"};
     if (lockedScene.pipeline()) {
         if (lockedScene.pipeline()->getName() == "Deferred") {
             state.settings.selectedPipelineIndex = 1;
         } else if (lockedScene.pipeline()->getName() == "PBR") {
             state.settings.selectedPipelineIndex = 0;
+        } else if (lockedScene.pipeline()->getName() == "StylizedPBR") {
+            state.settings.selectedPipelineIndex = 2;
         }
     }
-    if (ImGui::Combo("Pipeline", &state.settings.selectedPipelineIndex, pipelineNames, 2)) {
-        lockedScene.pipeline() = state.settings.selectedPipelineIndex == 1
-            ? std::static_pointer_cast<PipelineBase>(DeferredPipeline::create())
-            : std::static_pointer_cast<PipelineBase>(PBRPipeline::create());
+    if (ImGui::Combo("Pipeline", &state.settings.selectedPipelineIndex, pipelineNames, 3)) {
+        if (state.settings.selectedPipelineIndex == 2) {
+            lockedScene.pipeline() = StylizedPBRPipeline::create();
+        } else if (state.settings.selectedPipelineIndex == 1) {
+            lockedScene.pipeline() = DeferredPipeline::create();
+        } else {
+            lockedScene.pipeline() = PBRPipeline::create();
+        }
         state.settings.debugOutputResource.clear();
         state.settings.debugOutputSemantic = DebugTextureSemantic::FinalOutput;
-        lockedScene.markDirty();
+        publishedChanges |= SceneChange::Pipeline;
         LOG_INFO(
             "SceneRenderer: switched pipeline to '{}'",
             lockedScene.pipeline()->getName());
@@ -694,6 +930,38 @@ void RendererDebugUI::draw() {
             ImGui::SliderFloat(
                 "History Weight", &state.settings.taaHistoryWeight, 0.0f, 0.98f);
         }
+        if (state.settings.temporalAAMode == 2) {
+            if (ImGui::SliderFloat(
+                    "Mip Bias Adjustment",
+                    &state.settings.temporalMipBiasAdjustment,
+                    -2.0f,
+                    2.0f,
+                    "%+.2f")) {
+                state.viewState.temporalHistoryValid = false;
+            }
+            const float internalScale = std::min(
+                static_cast<float>(state.internalRenderWidth) /
+                    static_cast<float>(std::max(state.displayWidth, 1u)),
+                static_cast<float>(state.internalRenderHeight) /
+                    static_cast<float>(std::max(state.displayHeight, 1u)));
+            const float automaticMipBias = std::clamp(
+                std::log2(std::max(internalScale, 0.25f)),
+                -2.0f,
+                0.0f);
+            const float effectiveMipBias = std::clamp(
+                automaticMipBias + state.settings.temporalMipBiasAdjustment,
+                -2.0f,
+                0.0f);
+            ImGui::TextDisabled(
+                "Mip Bias: auto %.2f, effective %.2f",
+                automaticMipBias,
+                effectiveMipBias);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##MipBias")) {
+                state.settings.temporalMipBiasAdjustment = 0.0f;
+                state.viewState.temporalHistoryValid = false;
+            }
+        }
         if (ImGui::SliderFloat(
                 "Internal Resolution",
                 &state.settings.internalResolutionPercent,
@@ -765,6 +1033,100 @@ void RendererDebugUI::draw() {
         ImGui::SliderFloat("Bloom Intensity", &state.settings.bloomIntensity, 0.0f, 3.0f);
         ImGui::SliderFloat("Bloom Radius", &state.settings.bloomRadius, 0.25f, 4.0f);
         ImGui::SliderFloat("Exposure", &state.settings.exposure, 0.05f, 5.0f);
+        ImGui::Checkbox(
+            "Color Grading LUT", &state.settings.colorGradingEnabled);
+        if (state.settings.colorGradingEnabled) {
+            ImGui::SliderFloat(
+                "Color Grading Strength",
+                &state.settings.colorGradingStrength,
+                0.0f,
+                1.0f);
+            ImGui::SliderFloat(
+                "LUT Exposure Compensation",
+                &state.settings.colorGradingExposureCompensationEv,
+                -4.0f,
+                4.0f,
+                "%+.2f EV");
+        }
+        ImGui::Checkbox(
+            "Final CAS Sharpening",
+            &state.settings.finalSharpeningEnabled);
+        if (state.settings.finalSharpeningEnabled) {
+            ImGui::SliderFloat(
+                "Final Sharpening Strength",
+                &state.settings.finalSharpeningStrength,
+                0.0f,
+                1.0f);
+        }
+        ImGui::SliderFloat(
+            "Chromatic Aberration",
+            &state.settings.chromaticAberrationPixels,
+            0.0f,
+            3.0f,
+            "%.2f px");
+        ImGui::SliderFloat(
+            "Vignette Strength",
+            &state.settings.vignetteStrength,
+            0.0f,
+            1.0f);
+        if (state.settings.vignetteStrength > 0.0f) {
+            ImGui::SliderFloat(
+                "Vignette Power",
+                &state.settings.vignettePower,
+                0.25f,
+                8.0f);
+            float vignetteColor[3] = {
+                state.settings.vignetteColor.x,
+                state.settings.vignetteColor.y,
+                state.settings.vignetteColor.z
+            };
+            if (ImGui::ColorEdit3("Vignette Color", vignetteColor)) {
+                state.settings.vignetteColor = TSVec3f(
+                    vignetteColor[0], vignetteColor[1], vignetteColor[2]);
+            }
+        }
+        ImGui::SliderFloat(
+            "Display Dither Strength",
+            &state.settings.displayDitherStrength,
+            0.0f,
+            1.0f);
+        ImGui::Separator();
+        bool dlssNrChanged = ImGui::Checkbox(
+            "DLSS Neural Rendering (Experimental)",
+            &state.settings.dlssNeuralRenderingEnabled);
+        if (state.settings.dlssNeuralRenderingEnabled) {
+            static const char* dlssNrStyles[] = {
+                "Default", "Natural", "Cinematic"
+            };
+            dlssNrChanged |= ImGui::Combo(
+                "NR Style",
+                &state.settings.dlssNrStyle,
+                dlssNrStyles,
+                static_cast<int>(std::size(dlssNrStyles)));
+            dlssNrChanged |= ImGui::SliderFloat(
+                "NR Intensity", &state.settings.dlssNrIntensity,
+                0.0f, 1.0f);
+            dlssNrChanged |= ImGui::SliderFloat(
+                "NR Local Tone", &state.settings.dlssNrLocalToneStrength,
+                0.0f, 1.0f);
+            dlssNrChanged |= ImGui::SliderFloat(
+                "NR Local Structure",
+                &state.settings.dlssNrLocalStructureStrength,
+                0.0f, 1.0f);
+            dlssNrChanged |= ImGui::SliderFloat(
+                "NR Skin Structure",
+                &state.settings.dlssNrSkinStructureStrength,
+                -1.0f, 2.0f);
+            dlssNrChanged |= ImGui::Checkbox(
+                "NR Automatic Mask", &state.settings.dlssNrUseAutoMask);
+            dlssNrChanged |= ImGui::Checkbox(
+                "NR UI Correction", &state.settings.dlssNrUiCorrection);
+            ImGui::TextDisabled(
+                "Feature 18 backend pending; current pass preserves SDR color.");
+        }
+        if (dlssNrChanged) {
+            state.viewState.temporalHistoryValid = false;
+        }
         ImGui::Separator();
         ImGui::Checkbox("Normal Outline", &state.settings.outlineEnabled);
         if (state.settings.outlineEnabled) {
@@ -997,15 +1359,19 @@ void RendererDebugUI::draw() {
 
             if (drawVec3Control("Position##Camera", position)) {
                 camera->setPosition(position);
+                publishedChanges |= SceneChange::Transform;
             }
             if (drawEulerDegreesControl("Rotation##Camera", rotation)) {
                 camera->setRotation(rotation);
+                publishedChanges |= SceneChange::Transform;
             }
             if (ImGui::SliderFloat("FOV", &fov, 10.0f, 120.0f)) {
                 camera->setFOV(fov);
+                publishedChanges |= SceneChange::Transform;
             }
             if (ImGui::DragFloat("Aspect", &aspect, 0.01f, 0.1f, 4.0f)) {
                 camera->setAspect(aspect);
+                publishedChanges |= SceneChange::Transform;
             }
         } else {
             ImGui::TextUnformatted("No primary camera");
@@ -1031,12 +1397,15 @@ void RendererDebugUI::draw() {
 
                 if (drawVec3Control("Direction", direction, 0.01f)) {
                     light->setDirection(direction);
+                    publishedChanges |= SceneChange::Lighting;
                 }
                 if (drawColorControl("Color", color)) {
                     light->setColor(color);
+                    publishedChanges |= SceneChange::Lighting;
                 }
                 if (ImGui::DragFloat("Intensity", &intensity, 0.1f, 0.0f, 1000.0f)) {
                     light->setIntensity(intensity);
+                    publishedChanges |= SceneChange::Lighting;
                 }
 
                 if (auto* point = dynamic_cast<PointLight*>(light)) {
@@ -1046,15 +1415,19 @@ void RendererDebugUI::draw() {
                     float quadratic = point->getQuadratic();
                     if (drawVec3Control("Position", position)) {
                         point->setPosition(position);
+                        publishedChanges |= SceneChange::Lighting;
                     }
                     if (ImGui::DragFloat("Constant", &constant, 0.01f, 0.0f, 10.0f)) {
                         point->setConstant(constant);
+                        publishedChanges |= SceneChange::Lighting;
                     }
                     if (ImGui::DragFloat("Linear", &linear, 0.01f, 0.0f, 10.0f)) {
                         point->setLinear(linear);
+                        publishedChanges |= SceneChange::Lighting;
                     }
                     if (ImGui::DragFloat("Quadratic", &quadratic, 0.01f, 0.0f, 10.0f)) {
                         point->setQuadratic(quadratic);
+                        publishedChanges |= SceneChange::Lighting;
                     }
                 }
 
@@ -1065,15 +1438,19 @@ void RendererDebugUI::draw() {
                     bool twoSided = area->isTwoSided();
                     if (drawVec3Control("Position", position)) {
                         area->setPosition(position);
+                        publishedChanges |= SceneChange::Lighting;
                     }
                     if (ImGui::DragFloat("Width", &width, 0.05f, 0.01f, 100.0f)) {
                         area->setWidth(width);
+                        publishedChanges |= SceneChange::Lighting;
                     }
                     if (ImGui::DragFloat("Height", &height, 0.05f, 0.01f, 100.0f)) {
                         area->setHeight(height);
+                        publishedChanges |= SceneChange::Lighting;
                     }
                     if (ImGui::Checkbox("Two Sided", &twoSided)) {
                         area->setTwoSided(twoSided);
+                        publishedChanges |= SceneChange::Lighting;
                     }
                 }
 
@@ -1082,9 +1459,11 @@ void RendererDebugUI::draw() {
                     float cutoff = spot->getCutoff();
                     if (drawVec3Control("Position", position)) {
                         spot->setPosition(position);
+                        publishedChanges |= SceneChange::Lighting;
                     }
                     if (ImGui::DragFloat("Cutoff", &cutoff, 0.1f, 0.0f, 90.0f)) {
                         spot->setCutoff(cutoff);
+                        publishedChanges |= SceneChange::Lighting;
                     }
                 }
 
@@ -1105,6 +1484,7 @@ void RendererDebugUI::draw() {
     }
 
     ImGui::End();
+    lockedScene.markChanged(publishedChanges);
 }
 
 

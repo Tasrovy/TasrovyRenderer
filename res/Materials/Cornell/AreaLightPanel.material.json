@@ -1,5 +1,6 @@
 {
   "name": "CornellAreaLightPanel",
+  "technique": "res/MaterialTechniques/Special.technique.json",
   "castShadows": false,
   "properties": [
     {"name": "baseColorFactor", "type": "float4", "value": [1.0, 1.0, 1.0, 1.0]},

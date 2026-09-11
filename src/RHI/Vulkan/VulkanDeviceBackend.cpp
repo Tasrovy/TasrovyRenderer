@@ -17,16 +17,31 @@
 #include "VulkanResourceBackends.h"
 #include "VulkanShaderBinary.h"
 #include "VulkanSwapChain.h"
+#ifdef TASROVY_ENABLE_DLSS_NR
+#include "VulkanDlssNrExecutor.h"
+#endif
 #include "../RHIBackendAccess.h"
 
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace Tasrovy::RHI::Vulkan {
 namespace {
+
+template <typename Range>
+void appendUniqueExtensions(
+    std::vector<std::string>& destination, const Range& source) {
+    for (const auto& extension : source) {
+        if (std::find(destination.begin(), destination.end(), extension) ==
+            destination.end()) {
+            destination.emplace_back(extension);
+        }
+    }
+}
 
 VkDescriptorType descriptorType(DescriptorResourceType type) {
     switch (type) {
@@ -42,6 +57,23 @@ VkDescriptorType descriptorType(DescriptorResourceType type) {
     return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 }
 
+void requireFormatFeatures(
+    VkPhysicalDevice physicalDevice,
+    VkFormat format,
+    VkFormatFeatureFlags required,
+    const char* usageName) {
+    if (format == VK_FORMAT_UNDEFINED) {
+        throw std::invalid_argument("Cannot create an image with an unknown format");
+    }
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &properties);
+    if ((properties.optimalTilingFeatures & required) != required) {
+        throw std::runtime_error(
+            std::string("Vulkan format ") + std::to_string(format) +
+            " does not support " + usageName + " with optimal tiling");
+    }
+}
+
 } // namespace
 
 VulkanDeviceBackend::VulkanDeviceBackend(
@@ -53,9 +85,30 @@ VulkanDeviceBackend::VulkanDeviceBackend(
         throw std::runtime_error("GLFW did not provide Vulkan extensions");
     std::vector<const char*> extensions(
         extensionNames, extensionNames + extensionCount);
+    std::vector<std::string> deviceExtensions{
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
+    };
+#if defined(TASROVY_ENABLE_DLSS_NR) && \
+    TASROVY_ALLOW_UNTRUSTED_DLSS_NR_RUNTIME
+    const auto ngxExtensions = queryDlssNrExtensionRequirements();
+    std::vector<std::string> instanceExtensionStorage;
+    instanceExtensionStorage.reserve(ngxExtensions.instance.size());
+    appendUniqueExtensions(instanceExtensionStorage, ngxExtensions.instance);
+    for (const auto& extension : instanceExtensionStorage) {
+        const bool alreadyPresent = std::any_of(
+            extensions.begin(), extensions.end(),
+            [&extension](const char* existing) {
+                return extension == existing;
+            });
+        if (!alreadyPresent)
+            extensions.push_back(extension.c_str());
+    }
+    appendUniqueExtensions(deviceExtensions, ngxExtensions.device);
+#endif
     auto* window = static_cast<GLFWwindow*>(createInfo.nativeWindowHandle);
     context_ = std::make_unique<VulkanContext>(
-        "Vulkan", extensions,
+        "Vulkan", extensions, std::move(deviceExtensions),
         [window](VkInstance instance) {
             VkSurfaceKHR surface = VK_NULL_HANDLE;
             if (glfwCreateWindowSurface(
@@ -114,6 +167,18 @@ std::unique_ptr<IImageBackend> VulkanDeviceBackend::createTexture(
     const ImageUploadDesc& upload) {
     const VkFormat format = upload.format == Format::Unknown
         ? VK_FORMAT_R8G8B8A8_SRGB : toVkFormat(upload.format);
+    if (upload.format != Format::Unknown && isDepthFormat(upload.format)) {
+        throw std::invalid_argument(
+            "Texture uploads do not accept depth/stencil formats");
+    }
+    VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if (upload.generateMipmaps) {
+        required |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+    }
+    requireFormatFeatures(
+        context_->getPhysicalDevice(), format, required,
+        "sampled texture upload usage");
     auto image = upload.cubemap
         ? VulkanImage::createCubemap(
             *context_, *submitter_, upload.pixels.data(),
@@ -128,23 +193,46 @@ std::unique_ptr<IImageBackend> VulkanDeviceBackend::createTexture(
 
 std::unique_ptr<IImageBackend> VulkanDeviceBackend::createSolidTexture(
     const std::array<float, 4>& color, Format format) {
+    if (isDepthFormat(format)) {
+        throw std::invalid_argument(
+            "Solid color textures do not accept depth/stencil formats");
+    }
+    const auto vkFormat = toVkFormat(format);
+    requireFormatFeatures(
+        context_->getPhysicalDevice(), vkFormat,
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+            VK_FORMAT_FEATURE_TRANSFER_DST_BIT,
+        "solid sampled texture usage");
     return std::make_unique<VulkanImageBackend>(
         VulkanImage::createSolidTexture(
-            *context_, *submitter_, color, toVkFormat(format)));
+            *context_, *submitter_, color, vkFormat));
 }
 
 std::unique_ptr<IImageBackend> VulkanDeviceBackend::createAttachment(
     uint32_t width, uint32_t height, Format format,
     bool storage, bool useDeviceMsaa) {
     const auto vkFormat = toVkFormat(format);
-    const bool depth = format == Format::Depth32Float ||
-        format == Format::Depth32FloatStencil8;
+    const bool depth = isDepthFormat(format);
+    if (storage && depth) {
+        throw std::invalid_argument(
+            "Depth/stencil render textures cannot be storage images");
+    }
     VkImageUsageFlags usage = depth
         ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
               VK_IMAGE_USAGE_SAMPLED_BIT
         : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
               VK_IMAGE_USAGE_SAMPLED_BIT;
     if (storage && !depth) usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+        (depth ? VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+               : VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
+    if (storage && !depth) {
+        required |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+    }
+    requireFormatFeatures(
+        context_->getPhysicalDevice(), vkFormat, required,
+        storage ? "sampled, attachment and storage image usage"
+                : "sampled and attachment image usage");
     return std::make_unique<VulkanImageBackend>(
         VulkanImage::createAttachment(
             *context_, {width, height}, vkFormat, usage,
@@ -154,18 +242,38 @@ std::unique_ptr<IImageBackend> VulkanDeviceBackend::createAttachment(
 
 std::unique_ptr<IImageBackend> VulkanDeviceBackend::createImage2D(
     uint32_t width, uint32_t height, Format format) {
+    if (isDepthFormat(format)) {
+        throw std::invalid_argument(
+            "Sampled image creation does not accept depth/stencil formats");
+    }
+    const auto vkFormat = toVkFormat(format);
+    requireFormatFeatures(
+        context_->getPhysicalDevice(), vkFormat,
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+            VK_FORMAT_FEATURE_TRANSFER_DST_BIT,
+        "sampled image usage");
     return std::make_unique<VulkanImageBackend>(
         VulkanImage::createImage2D(
-            *context_, {width, height}, toVkFormat(format),
+            *context_, {width, height}, vkFormat,
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT));
 }
 
 std::unique_ptr<IImageBackend> VulkanDeviceBackend::createVirtualShadowMap(
     const VirtualShadowMapDesc& desc) {
+    if (!isDepthFormat(desc.format)) {
+        throw std::invalid_argument(
+            "Virtual shadow maps require a depth format");
+    }
+    const auto vkFormat = toVkFormat(desc.format);
+    requireFormatFeatures(
+        context_->getPhysicalDevice(), vkFormat,
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        "sampled depth attachment usage");
     return std::make_unique<VulkanImageBackend>(
         VulkanImage::createVirtualShadowAtlas(
             *context_, {desc.atlasSize, desc.atlasSize},
-            toVkFormat(desc.format)));
+            vkFormat));
 }
 
 std::unique_ptr<IPipelineBackend>

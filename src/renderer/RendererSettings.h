@@ -52,6 +52,28 @@ struct RendererSettings {
     float bloomIntensity = 0.25f;
     float bloomRadius = 1.0f;
     float exposure = 1.0f;
+    bool colorGradingEnabled = true;
+    float colorGradingStrength = 1.0f;
+    float colorGradingExposureCompensationEv = 0.0f;
+    bool finalSharpeningEnabled = true;
+    float finalSharpeningStrength = 0.5f;
+    float chromaticAberrationPixels = 0.0f;
+    float vignetteStrength = 0.0f;
+    float vignettePower = 2.0f;
+    Tasrovy::Base::TSVec3f vignetteColor =
+        Tasrovy::Base::TSVec3f(0.0f);
+    float displayDitherStrength = 0.35f;
+
+    // Same-resolution DLSS Neural Rendering. Until the NGX runtime is
+    // installed, the render pass remains a color-preserving fallback.
+    bool dlssNeuralRenderingEnabled = false;
+    int dlssNrStyle = 0;
+    float dlssNrIntensity = 1.0f;
+    float dlssNrLocalToneStrength = 1.0f;
+    float dlssNrLocalStructureStrength = 1.0f;
+    float dlssNrSkinStructureStrength = -1.0f;
+    bool dlssNrUseAutoMask = false;
+    bool dlssNrUiCorrection = false;
 
     bool depthOfFieldEnabled = false;
     float dofFocusDistance = 5.0f;
@@ -69,6 +91,9 @@ struct RendererSettings {
     // 2: fixed internal resolution with temporal upscale.
     int temporalAAMode = 2;
     float taaHistoryWeight = 0.9f;
+    // Added to the resolution-derived TAAU bias, then clamped to [-2, 0].
+    // Positive values favor blurrier mip levels and reduce sub-pixel shimmer.
+    float temporalMipBiasAdjustment = 0.0f;
 
     bool ssaoEnabled = true;
     float ssaoRadiusPixels = 12.0f;
@@ -82,14 +107,14 @@ struct RendererSettings {
     float ssrThickness = 0.25f;
     float ssrIntensity = 0.65f;
 
-    bool outlineEnabled = true;
+    bool outlineEnabled = false;
     float outlineThreshold = 0.12f;
     float outlineThickness = 1.0f;
     float outlineStrength = 0.85f;
     float outlineSoftness = 0.05f;
     Tasrovy::Base::TSVec3f outlineColor =
         Tasrovy::Base::TSVec3f(0.02f, 0.015f, 0.02f);
-    bool outlineTemporalDenoise = true;
+    bool outlineTemporalDenoise = false;
     float outlineHistoryWeight = 0.85f;
 
     float internalResolutionPercent = 100.0f;

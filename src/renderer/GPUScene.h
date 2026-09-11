@@ -103,5 +103,7 @@ private:
 static_assert(sizeof(ViewUniform) % 16 == 0);
 static_assert(sizeof(ObjectData) == 144);
 static_assert(sizeof(MaterialData) == 160);
+static_assert(sizeof(GpuLightData) == 64);
+static_assert(sizeof(SceneLightData) == 48 + MaxSceneLights * 64);
 
 } // namespace Tasrovy::Renderer

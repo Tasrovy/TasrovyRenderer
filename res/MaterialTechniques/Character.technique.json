@@ -1,0 +1,18 @@
+{
+  "name": "Character",
+  "category": "character",
+  "variants": {
+    "shadow": {
+      "vertex": "res/Shaders/Source/deferred_shadow.hlsl",
+      "fragment": "res/Shaders/Source/deferred_shadow.hlsl"
+    },
+    "gbuffer": {
+      "vertex": "res/Shaders/Source/deferred_gbuffer.hlsl",
+      "fragment": "res/Shaders/Source/deferred_gbuffer.hlsl"
+    },
+    "forward": {
+      "vertex": "res/Shaders/Source/testShader.hlsl",
+      "fragment": "res/Shaders/Source/testShader.hlsl"
+    }
+  }
+}

@@ -128,6 +128,88 @@ void ensureBuiltinProviders() {
                     settings.debugVelocityScale);
             });
         providers().emplace(
+            ParameterProviders::ColorGrading,
+            [](FrameParameterProviderContext& context) {
+                const auto& settings = context.settings;
+                const bool debugOutput =
+                    !settings.debugOutputResource.empty();
+                ColorGradingPassConstants constants;
+                constants.parameters = TSVec4f(
+                    settings.colorGradingEnabled && !debugOutput
+                        ? 1.0f
+                        : 0.0f,
+                    std::clamp(settings.colorGradingStrength, 0.0f, 1.0f),
+                    settings.exposure,
+                    debugOutput ? 1.0f : 0.0f);
+                const float displayWidth = static_cast<float>(
+                    std::max(context.displayWidth, 1u));
+                const float displayHeight = static_cast<float>(
+                    std::max(context.displayHeight, 1u));
+                constants.resolutionAndSharpening = TSVec4f(
+                    1.0f / displayWidth,
+                    1.0f / displayHeight,
+                    displayWidth / displayHeight,
+                    settings.finalSharpeningEnabled
+                        ? std::clamp(
+                              settings.finalSharpeningStrength,
+                              0.0f,
+                              1.0f)
+                        : 0.0f);
+                constants.lensAndOutput = TSVec4f(
+                    std::max(settings.chromaticAberrationPixels, 0.0f),
+                    std::clamp(settings.vignetteStrength, 0.0f, 1.0f),
+                    std::max(settings.vignettePower, 0.01f),
+                    std::max(settings.displayDitherStrength, 0.0f));
+                constants.vignetteGeometry = TSVec4f(
+                    0.5f, 0.5f, 1.0f, 0.0f);
+                constants.vignetteColorAndBloom = TSVec4f(
+                    settings.vignetteColor,
+                    settings.bloomEnabled ? 1.0f : 0.0f);
+                constants.bloom = TSVec4f(
+                    settings.bloomIntensity,
+                    settings.colorGradingExposureCompensationEv,
+                    0.0f,
+                    0.0f);
+                storePacketBytes(context.output, constants);
+                context.outputOverridden = true;
+            });
+        providers().emplace(
+            ParameterProviders::DlssNrPrepare,
+            [](FrameParameterProviderContext& context) {
+                DlssNrPreparePassConstants constants;
+                constants.displayExtentAndJitter = TSVec4f(
+                    static_cast<float>(std::max(context.displayWidth, 1u)),
+                    static_cast<float>(std::max(context.displayHeight, 1u)),
+                    context.viewFrame.jitterDeltaUv.x,
+                    context.viewFrame.jitterDeltaUv.y);
+                storePacketBytes(context.output, constants);
+                context.outputOverridden = true;
+            });
+        providers().emplace(
+            ParameterProviders::DlssNr,
+            [](FrameParameterProviderContext& context) {
+                const auto& settings = context.settings;
+                DlssNrPassConstants constants;
+                constants.appearance = TSVec4f(
+                    static_cast<float>(std::clamp(settings.dlssNrStyle, 0, 2)),
+                    std::clamp(settings.dlssNrIntensity, 0.0f, 1.0f),
+                    std::clamp(settings.dlssNrLocalToneStrength, 0.0f, 1.0f),
+                    std::clamp(
+                        settings.dlssNrLocalStructureStrength, 0.0f, 1.0f));
+                constants.options = TSVec4f(
+                    std::clamp(
+                        settings.dlssNrSkinStructureStrength, -1.0f, 2.0f),
+                    settings.dlssNrUseAutoMask ? 1.0f : 0.0f,
+                    settings.dlssNrUiCorrection ? 1.0f : 0.0f,
+                    !context.viewState.temporalHistoryValid ||
+                            context.viewFrame.cameraCut
+                        ? 1.0f
+                        : 0.0f);
+                storePacketBytes(context.output, constants);
+                context.outputOverridden = true;
+            });
+        providers().emplace(ParameterProviders::DlssNrPresent, noOp);
+        providers().emplace(
             ParameterProviders::DepthOfField,
             [](FrameParameterProviderContext& context) {
                 const auto& settings = context.settings;
@@ -164,6 +246,11 @@ void ensureBuiltinProviders() {
                     static_cast<float>(std::max(context.displayWidth, 1u)),
                 static_cast<float>(context.internalHeight) /
                     static_cast<float>(std::max(context.displayHeight, 1u)));
+            constants.jitter = TSVec4f(
+                context.viewFrame.jitterDeltaUv.x,
+                context.viewFrame.jitterDeltaUv.y,
+                0.0f,
+                0.0f);
             storePacketBytes(context.output, constants);
             context.outputOverridden = true;
         };
@@ -194,8 +281,8 @@ void ensureBuiltinProviders() {
                         ? 1.0f
                         : 0.0f,
                     settings.outlineHistoryWeight,
-                    0.0f,
-                    0.0f);
+                    context.viewFrame.jitterDeltaUv.x,
+                    context.viewFrame.jitterDeltaUv.y);
             });
         providers().emplace(
             ParameterProviders::BloomPrefilter,
@@ -261,7 +348,8 @@ void FrameRuntimeParameterCompiler::populate(
         state.internalRenderHeight,
         displayWidth,
         displayHeight,
-        state.settings.temporalAAMode);
+        state.settings.temporalAAMode,
+        state.settings.temporalMipBiasAdjustment);
     const float temporalMipBias = resolutionParameters.temporalMipBias;
 
     const FrameLightingParameters lighting =
@@ -312,10 +400,31 @@ void FrameRuntimeParameterCompiler::populate(
         if (!context.outputOverridden) {
             storePacketBytes(output, uniform);
         }
+        if (output.size() != packet.parameters.uniformByteSize) {
+            throw std::invalid_argument(
+                "Frame parameter provider '" + packet.parameterProvider +
+                "' produced " + std::to_string(output.size()) +
+                " uniform bytes for pass '" + packet.name +
+                "', but the pass declares " +
+                std::to_string(packet.parameters.uniformByteSize));
+        }
     };
 
     for (PassResources* scheduledPass : scheduledPasses) {
         auto& pass = *scheduledPass;
+        for (auto& command : pass.commands) {
+            if (command.type != FrameCommandType::Dispatch ||
+                !command.dispatchUsesInternalExtent) {
+                continue;
+            }
+            command.groupCountX =
+                (state.internalRenderWidth + command.groupCountX - 1u) /
+                command.groupCountX;
+            command.groupCountY =
+                (state.internalRenderHeight + command.groupCountY - 1u) /
+                command.groupCountY;
+            command.dispatchUsesInternalExtent = false;
+        }
         if (pass.parameters.uniformByteSize == 0) {
             continue;
         }
@@ -347,6 +456,16 @@ void FrameRuntimeParameterCompiler::populate(
                     "Frame parameter provider '" +
                     pass.parameterProvider +
                     "' is not registered");
+            }
+            if (pass.parameters.uniformData.size() !=
+                pass.parameters.uniformByteSize) {
+                throw std::invalid_argument(
+                    "Frame parameter provider '" + pass.parameterProvider +
+                    "' produced " +
+                    std::to_string(pass.parameters.uniformData.size()) +
+                    " uniform bytes for pass '" + pass.name +
+                    "', but the pass declares " +
+                    std::to_string(pass.parameters.uniformByteSize));
             }
         } else if (passUsesFullscreenDraw(pass)) {
             UniformBufferObject ubo{};

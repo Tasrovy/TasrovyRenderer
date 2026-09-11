@@ -31,6 +31,7 @@ struct CompiledPassResources {
     std::vector<std::shared_ptr<Pass>> rhiPasses;
     std::shared_ptr<Pipeline> gpuPipeline;
     std::unordered_map<uint64_t, std::shared_ptr<Pipeline>> permutations;
+    std::unordered_map<uint64_t, std::shared_ptr<Pipeline>> drawShaderVariants;
     std::shared_ptr<DescriptorSetLayout> descriptorSetLayout;
     std::shared_ptr<DescriptorPool> descriptorPool;
     std::vector<DescriptorSet> descriptorSets;

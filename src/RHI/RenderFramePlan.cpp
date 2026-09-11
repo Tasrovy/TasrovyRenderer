@@ -64,14 +64,46 @@ FrameTextureFormat toFrameTextureFormat(
     const Tasrovy::Render::PipelineTextureFormat format) {
     using Format = Tasrovy::Render::PipelineTextureFormat;
     switch (format) {
+    case Format::R8Unorm:
+        return FrameTextureFormat::R8Unorm;
+    case Format::RG8Unorm:
+        return FrameTextureFormat::RG8Unorm;
     case Format::RGBA8Unorm:
         return FrameTextureFormat::RGBA8Unorm;
-    case Format::RGBA16Float:
-        return FrameTextureFormat::RGBA16Float;
+    case Format::RGBA8Srgb:
+        return FrameTextureFormat::RGBA8Srgb;
+    case Format::R8Uint:
+        return FrameTextureFormat::R8Uint;
+    case Format::R16Uint:
+        return FrameTextureFormat::R16Uint;
+    case Format::R32Uint:
+        return FrameTextureFormat::R32Uint;
+    case Format::RG16Uint:
+        return FrameTextureFormat::RG16Uint;
+    case Format::R16Float:
+        return FrameTextureFormat::R16Float;
     case Format::RG16Float:
         return FrameTextureFormat::RG16Float;
+    case Format::RGBA16Float:
+        return FrameTextureFormat::RGBA16Float;
+    case Format::R32Float:
+        return FrameTextureFormat::R32Float;
+    case Format::RG32Float:
+        return FrameTextureFormat::RG32Float;
+    case Format::RGBA32Float:
+        return FrameTextureFormat::RGBA32Float;
+    case Format::R11G11B10Float:
+        return FrameTextureFormat::R11G11B10Float;
+    case Format::RGB10A2Unorm:
+        return FrameTextureFormat::RGB10A2Unorm;
+    case Format::Depth16Unorm:
+        return FrameTextureFormat::Depth16Unorm;
+    case Format::Depth24UnormStencil8:
+        return FrameTextureFormat::Depth24UnormStencil8;
     case Format::Depth32Float:
         return FrameTextureFormat::Depth32Float;
+    case Format::Depth32FloatStencil8:
+        return FrameTextureFormat::Depth32FloatStencil8;
     case Format::Swapchain:
         return FrameTextureFormat::Swapchain;
     }
@@ -258,6 +290,17 @@ RHIPipelinePlan makePipelinePlan(
             permutation.computeShader.entryPoint
         });
     }
+    for (const auto& variant : pass.drawShaderVariants) {
+        result.drawShaderVariants.push_back({
+            variant.id,
+            variant.vertexShader.sourcePath,
+            variant.fragmentShader.sourcePath,
+            variant.vertexShader.entryPoint,
+            variant.fragmentShader.entryPoint,
+            variant.vertexShader.permutation,
+            variant.fragmentShader.permutation
+        });
+    }
     return result;
 }
 
@@ -347,6 +390,8 @@ RenderFrameExecutionPlan RHIFrameCompiler::compile(
         passPlan.packetPassIndex = passIndex;
         passPlan.name = packetPass.name;
         passPlan.execution = static_cast<uint32_t>(packetPass.execution);
+        passPlan.externalFeature =
+            static_cast<uint32_t>(packetPass.externalFeature);
         passPlan.passType = static_cast<uint32_t>(packetPass.type);
         passPlan.clearColor = {
             packetPass.state.clearColor.x,
@@ -513,7 +558,8 @@ RenderFrameExecutionPlan RHIFrameCompiler::compile(
             lifetime.last,
             texture->second->description.external,
             lifetime.persistent,
-            lifetime.storage,
+            lifetime.storage ||
+                texture->second->description.storageCapable,
             -1,
             makeFrameTextureDescription(texture->second->description)
         });

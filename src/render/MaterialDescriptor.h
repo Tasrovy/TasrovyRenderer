@@ -13,6 +13,8 @@
 
 namespace Tasrovy::Render {
 
+class MaterialTechnique;
+
 enum class MaterialPropertyType : uint8_t {
     Float,
     Float3,
@@ -40,6 +42,8 @@ public:
     const std::unordered_map<std::string, std::string>& getTexturePaths() const;
     const std::unordered_map<std::string, MaterialTextureUvSampling>&
         getTextureSampling() const;
+    const std::unordered_map<std::string, bool>& getTextureMipmaps() const;
+    std::shared_ptr<const MaterialTechnique> getTechnique() const;
     bool castsShadows() const;
     float getAlphaCutoff() const;
     uint32_t getSurface() const;
@@ -54,6 +58,8 @@ private:
     std::unordered_map<std::string, TSVec4f> vec4s_;
     std::unordered_map<std::string, std::string> texturePaths_;
     std::unordered_map<std::string, MaterialTextureUvSampling> textureSampling_;
+    std::unordered_map<std::string, bool> textureMipmaps_;
+    std::shared_ptr<const MaterialTechnique> technique_;
     bool castShadows_ = true;
     float alphaCutoff_ = 0.5f;
     uint32_t surface_ = 0;

@@ -1,8 +1,10 @@
 #include "Material.h"
 #include "MaterialDescriptor.h"
+#include "MaterialTechnique.h"
 #include "Shader.h"
 
 #include <stdexcept>
+#include <utility>
 
 namespace Tasrovy::Render {
 
@@ -19,6 +21,7 @@ Material::Material(std::shared_ptr<const MaterialDescriptor> descriptor)
     castShadows_ = descriptor_->castsShadows();
     alphaCutoff_ = descriptor_->getAlphaCutoff();
     surface_ = static_cast<MaterialSurface>(descriptor_->getSurface());
+    technique_ = descriptor_->getTechnique();
     for (const auto& property : descriptor_->getProperties()) {
         if (property.type != MaterialPropertyType::Texture2D) {
             continue;
@@ -26,6 +29,8 @@ Material::Material(std::shared_ptr<const MaterialDescriptor> descriptor)
         const auto path = descriptor_->getTexturePaths().find(property.name);
         const auto sampling =
             descriptor_->getTextureSampling().find(property.name);
+        const auto mipmaps =
+            descriptor_->getTextureMipmaps().find(property.name);
         textures_.emplace(
             property.name,
             TextureBinding{
@@ -34,7 +39,10 @@ Material::Material(std::shared_ptr<const MaterialDescriptor> descriptor)
                     : path->second,
                 sampling == descriptor_->getTextureSampling().end()
                     ? MaterialTextureUvSampling{}
-                    : sampling->second
+                    : sampling->second,
+                mipmaps == descriptor_->getTextureMipmaps().end()
+                    ? true
+                    : mipmaps->second
             });
     }
 }
@@ -48,63 +56,59 @@ std::shared_ptr<Material> Material::create(
     return std::shared_ptr<Material>(new Material(std::move(descriptor)));
 }
 
-std::shared_ptr<Material> Material::create(std::weak_ptr<Shader> shader) {
+std::shared_ptr<Material> Material::create(std::shared_ptr<Shader> shader) {
     auto mat = std::shared_ptr<Material>(new Material());
-    mat->setShader(shader);
+    mat->setShader(std::move(shader));
     return mat;
 }
 
 std::shared_ptr<Material> Material::create(
-    std::weak_ptr<Shader> vertexShader,
-    std::weak_ptr<Shader> fragmentShader) {
+    std::shared_ptr<Shader> vertexShader,
+    std::shared_ptr<Shader> fragmentShader) {
     auto mat = std::shared_ptr<Material>(new Material());
-    mat->setVertexShader(vertexShader);
-    mat->setFragmentShader(fragmentShader);
+    mat->setVertexShader(std::move(vertexShader));
+    mat->setFragmentShader(std::move(fragmentShader));
     return mat;
 }
 
-void Material::setShader(std::weak_ptr<Shader> shader) {
-    const auto shared = shader.lock();
-    if (!shared) {
+void Material::setShader(std::shared_ptr<Shader> shader) {
+    if (!shader) {
         vertexShader_.reset();
         fragmentShader_.reset();
         return;
     }
 
-    switch (shared->getType()) {
+    switch (shader->getType()) {
     case ShaderType::Vertex:
-        vertexShader_ = shader;
+        vertexShader_ = std::move(shader);
         break;
     case ShaderType::Fragment:
-        fragmentShader_ = shader;
+        fragmentShader_ = std::move(shader);
         break;
     default:
-        fragmentShader_ = shader;
+        fragmentShader_ = std::move(shader);
         break;
     }
 }
 
 std::shared_ptr<Shader> Material::getShader() const {
-    if (auto fragmentShader = fragmentShader_.lock()) {
-        return fragmentShader;
-    }
-    return vertexShader_.lock();
+    return fragmentShader_ ? fragmentShader_ : vertexShader_;
 }
 
-void Material::setVertexShader(std::weak_ptr<Shader> shader) {
-    vertexShader_ = shader;
+void Material::setVertexShader(std::shared_ptr<Shader> shader) {
+    vertexShader_ = std::move(shader);
 }
 
-void Material::setFragmentShader(std::weak_ptr<Shader> shader) {
-    fragmentShader_ = shader;
+void Material::setFragmentShader(std::shared_ptr<Shader> shader) {
+    fragmentShader_ = std::move(shader);
 }
 
 std::shared_ptr<Shader> Material::getVertexShader() const {
-    return vertexShader_.lock();
+    return vertexShader_;
 }
 
 std::shared_ptr<Shader> Material::getFragmentShader() const {
-    return fragmentShader_.lock();
+    return fragmentShader_;
 }
 
 void Material::setFloat(const std::string& name, float value) { floats_[name] = value; }
@@ -148,6 +152,24 @@ void Material::setTextureUvSampling(
             samplerName, TextureBinding{}).first;
     }
     found->second.uvSampling = sampling;
+}
+
+void Material::setTextureMipmaps(
+    const std::string& samplerName,
+    bool generateMipmaps) {
+    auto found = textures_.find(samplerName);
+    if (found == textures_.end()) {
+        if (descriptor_) {
+            const auto& property = descriptor_->requireProperty(samplerName);
+            if (property.type != MaterialPropertyType::Texture2D) {
+                throw std::invalid_argument(
+                    "material property is not a texture2D: " + samplerName);
+            }
+        }
+        found = textures_.emplace(
+            samplerName, TextureBinding{}).first;
+    }
+    found->second.generateMipmaps = generateMipmaps;
 }
 
 void Material::clearTexture(const std::string& samplerName) {
@@ -225,6 +247,15 @@ bool Material::hasTexture(const std::string& samplerName) const {
 
 std::shared_ptr<const MaterialDescriptor> Material::getDescriptor() const {
     return descriptor_;
+}
+
+void Material::setTechnique(
+    std::shared_ptr<const MaterialTechnique> technique) {
+    technique_ = std::move(technique);
+}
+
+std::shared_ptr<const MaterialTechnique> Material::getTechnique() const {
+    return technique_;
 }
 
 const std::unordered_map<std::string, float>& Material::getFloatParams() const { return floats_; }

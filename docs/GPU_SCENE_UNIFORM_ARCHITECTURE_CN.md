@@ -72,4 +72,4 @@ GBuffer 与 Transparent 不再需要 b0；它们直接消费 View/Object/Materia
 - `applySceneUpdates()`：应用 Mesh、Material Texture、Skybox 等场景 GPU 资源更新；
 - `rebuildRenderGraph()`：重新生成 Pipeline、RenderGraph、FramePacket 和 RHI Execution Plan，在重建边界等待 in-flight frame，并重新编译图资源和 GPUScene 容量。
 
-当前结构性 Scene dirty 仍会触发 `rebuildRenderGraph()`；普通每帧 Transform、Camera、Material 标量和 Light 数据由 GPUScene 的 per-frame update 上传，不需要生成 per-draw UBO。
+当前 Scene 使用 Structural、Transform、Material、Lighting、Pipeline 五类 Generation。Structural 或 Pipeline 变化触发 `rebuildRenderGraph()`；Transform、Camera、Material 参数和 Light 变化增量合并到渲染线程 Scene，再由 GPUScene 的 per-frame update 上传，不需要生成 per-draw UBO。材质实例、纹理绑定或 Surface 路由变化会同时推进 Structural Generation。

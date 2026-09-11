@@ -146,7 +146,15 @@ VkCommandBuffer Renderer::beginFrame(VulkanSwapchain& swapchain) {
 
     result = swapchain.acquireNextImage(_imageAvailableSemaphores[_currentFrame], &_imageIndex);
 
-    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+    if (result == VK_ERROR_OUT_OF_DATE_KHR ||
+        result == VK_TIMEOUT || result == VK_NOT_READY) {
+        // Do not reset this frame's fence: no image was acquired and no
+        // submission will signal it. The caller completes the pending RHI
+        // task and schedules swapchain recovery instead of waiting forever.
+        if (result == VK_TIMEOUT || result == VK_NOT_READY) {
+            LOG_WARN(
+                "Renderer: swapchain image acquire did not complete; scheduling resize recovery");
+        }
         _swapchainRebuildRequired = true;
         return nullptr;
     } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {

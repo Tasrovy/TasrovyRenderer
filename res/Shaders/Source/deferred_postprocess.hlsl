@@ -67,14 +67,10 @@ struct VSOutput
 [[vk::combinedImageSampler]] SamplerState sceneColorSampler : register(s1, space0);
 [[vk::combinedImageSampler]] Texture2D gBufferNormal : register(t2, space0);
 [[vk::combinedImageSampler]] SamplerState gBufferNormalSampler : register(s2, space0);
-[[vk::combinedImageSampler]] Texture2D bloomLowRes : register(t3, space0);
-[[vk::combinedImageSampler]] SamplerState bloomLowResSampler : register(s3, space0);
 [[vk::combinedImageSampler]] Texture2D outlineMask : register(t4, space0);
 [[vk::combinedImageSampler]] SamplerState outlineMaskSampler : register(s4, space0);
 [[vk::combinedImageSampler]] Texture2D gBufferWorldPos : register(t5, space0);
 [[vk::combinedImageSampler]] SamplerState gBufferWorldPosSampler : register(s5, space0);
-
-#include "PostProcess/postprocess_tonemap.hlsli"
 
 VSOutput VSMain(uint vertexId : SV_VertexID)
 {
@@ -150,17 +146,12 @@ float4 PSMain(VSOutput input) : SV_Target
     }
 
     float3 color = sourceColor;
-#if TASROVY_POST_BLOOM
-    if (uvTransform.x > 0.5f) {
-        color += bloomLowRes.SampleLevel(
-            bloomLowResSampler, input.uv, 0.0f).rgb * uvTransform.z;
-    }
-#endif
-    color = ApplyExposureToneMap(color, uvTransform.w);
 #if TASROVY_POST_OUTLINE
     float outline = outlineMask.SampleLevel(
         outlineMaskSampler, input.uv, 0.0f).r;
     color = lerp(color, lightDir.rgb, saturate(outline));
 #endif
-    return float4(saturate(color), 1.0f);
+    // Keep this intermediate in scene-linear HDR. The final display pass
+    // applies either the LogC/LUT transform or the fallback tone map.
+    return float4(max(color, 0.0f.xxx), 1.0f);
 }

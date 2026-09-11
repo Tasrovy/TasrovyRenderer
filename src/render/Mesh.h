@@ -41,6 +41,17 @@ enum class VertexElementFormat {
     Float4
 };
 
+// All LODs reference the same vertex buffer. Each level occupies one range in
+// the combined index buffer, keeping runtime switching to a firstIndex/count
+// change instead of a resource rebind.
+struct MeshLOD {
+    uint32_t indexOffset = 0;
+    uint32_t indexCount = 0;
+    float simplificationError = 0.0f;
+    float minimumScreenCoverage = 0.0f;
+    std::vector<Submesh> submeshes;
+};
+
 enum class VertexInputRate {
     PerVertex,
     PerInstance
@@ -75,6 +86,8 @@ public:
     void setVertices(std::vector<MeshVertex> vertices);
     void setIndices(std::vector<uint32_t> indices);
     void setSubmeshes(std::vector<Submesh> submeshes);
+    void setLODChain(std::vector<uint32_t> combinedIndices,
+                     std::vector<MeshLOD> lods);
     void setSubmeshMaterial(size_t submeshIndex, std::shared_ptr<Material> material);
 
     const std::vector<MeshVertex>& getVertices() const;
@@ -82,9 +95,14 @@ public:
     const std::vector<Submesh>& getSubmeshes() const;
     std::vector<Submesh>& getSubmeshes();
     std::shared_ptr<Material> getSubmeshMaterial(size_t submeshIndex) const;
+    const MeshLOD& getLOD(size_t lodIndex) const;
+    size_t getLODCount() const;
+    size_t selectLOD(float screenCoverage) const;
 
     size_t getVertexCount() const;
     size_t getIndexCount() const;
+    TSVec3f getBoundsCenter() const;
+    float getBoundsRadius() const;
     void setSourcePath(std::string sourcePath);
     const std::string& getSourcePath() const;
 
@@ -101,7 +119,13 @@ private:
     std::vector<MeshVertex> vertices_;
     std::vector<uint32_t> indices_;
     std::vector<Submesh> submeshes_;
+    std::vector<MeshLOD> lods_;
     std::string sourcePath_;
+    TSVec3f boundsCenter_ = TSVec3f(0.0f);
+    float boundsRadius_ = 0.0f;
+
+    void resetLOD0();
+    void updateBounds();
 };
 
 } // namespace Tasrovy::Render

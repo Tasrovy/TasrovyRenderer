@@ -1,8 +1,9 @@
 {
   "name": "TaffyFace",
+  "technique": "res/MaterialTechniques/Character.technique.json",
   "properties": [
     {"name": "baseColorFactor", "type": "float4", "value": [1.0, 1.0, 1.0, 1.0]},
-    {"name": "baseColorTexture", "type": "texture2D", "value": {"path": "res/Textures/Taffy/face.png", "uvMode": "flipY"}},
+    {"name": "baseColorTexture", "type": "texture2D", "value": {"path": "res/Textures/Taffy/face.png", "uvMode": "flipY", "mipmaps": true}},
     {"name": "metallic", "type": "float", "value": 0.0},
     {"name": "roughness", "type": "float", "value": 0.75},
     {"name": "ao", "type": "float", "value": 1.0},

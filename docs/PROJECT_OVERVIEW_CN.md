@@ -57,7 +57,7 @@ Render 层不创建 Vulkan Buffer、Image 或 Pipeline，也不执行底层图�
 
 - `SceneRenderer`：渲染流程入口与高层协调；
 - `RenderScene`：维护渲染线程使用的场景状态；
-- `SceneUpdateCoordinator`：集中消费 Snapshot，并在结构重建成功后确认 Dirty Version；
+- `SceneUpdateCoordinator`：集中消费 Snapshot，并比较 Structural、Transform、Material、Lighting、Pipeline 五类 Generation；结构或管线变化触发重建，变换、材质参数和光照变化增量合并到渲染线程 Scene；
 - `PrimitiveSceneProxy`：保存场景对象的渲染代理数据；
 - `FrameOrchestrator`：组织 FramePacket、执行计划和帧流程；
 - `RenderFrameSubmission`：作为 Render Thread 到 RHI Thread 的完整按值提交边界；
@@ -440,6 +440,11 @@ Render Mesh/Texture Description
 ```
 
 FileSystem 负责文件读取和解码，Assets 负责格式转换，Render 只保存逻辑资源描述，RHI 负责 GPU 上传。
+
+模型转换为 Render Mesh 时，Assets 使用 `meshoptimizer` 按材质子网格自动生成传统
+LOD 链。各级 LOD 共用顶点数据，并连续存放在同一个索引缓冲中；FrameCompiler 根据
+主相机下的屏幕覆盖率选择 LOD，只改变 Draw Packet 的索引范围。所有几何 Pass 复用同一
+选择结果，以避免 GBuffer 与阴影之间使用不同层级。
 
 #### 材质描述
 

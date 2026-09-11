@@ -130,6 +130,14 @@ struct FramePipelinePermutation {
     FrameShaderPacket computeShader;
 };
 
+// A graphics-pipeline variant selected by an individual draw. The pass still
+// owns the render targets, descriptor ABI and fixed-function state.
+struct FrameDrawShaderVariant {
+    uint64_t id = 0;
+    FrameShaderPacket vertexShader;
+    FrameShaderPacket fragmentShader;
+};
+
 struct FrameAttachmentPacket {
     RenderResourceId resourceId = 0;
     std::string resourceName;
@@ -153,10 +161,12 @@ struct FrameDrawPacket {
     uint32_t objectIndex = 0;
     uint32_t materialIndex = 0;
     uint32_t submeshIndex = 0;
+    uint32_t lodLevel = 0;
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
     bool flipProjectionY = true;
     std::vector<FrameDescriptorWrite> descriptorWrites;
+    uint64_t shaderVariantId = 0;
 };
 
 enum class FrameCommandType : uint8_t {
@@ -180,6 +190,7 @@ struct FrameCommandPacket {
     uint32_t groupCountX = 1;
     uint32_t groupCountY = 1;
     uint32_t groupCountZ = 1;
+    bool dispatchUsesInternalExtent = false;
     RenderResourceId sourceResourceId = 0;
     RenderResourceId destinationResourceId = 0;
     uint64_t sourceOffset = 0;
@@ -202,6 +213,7 @@ struct FramePassPacket {
     std::string name;
     PipelinePassType type = PipelinePassType::Generic;
     PipelinePassExecution execution = PipelinePassExecution::Mesh;
+    PipelineExternalFeature externalFeature = PipelineExternalFeature::None;
     std::string parameterProvider = ParameterProviders::Standard;
     uint32_t viewIndex = 0;
     FramePipelineState state;
@@ -214,6 +226,7 @@ struct FramePassPacket {
     std::vector<FrameDescriptorWrite> descriptorWrites;
     uint64_t selectedPermutationKey = 0;
     std::vector<FramePipelinePermutation> permutations;
+    std::vector<FrameDrawShaderVariant> drawShaderVariants;
     std::vector<MaterialTextureRequirement> materialTextures;
     std::vector<RenderObjectId> objectIds;
     std::vector<SampledTextureInput> sampledTextures;

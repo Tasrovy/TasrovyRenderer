@@ -1,6 +1,7 @@
 #include "PBRPipeline.h"
 
 #include "Material.h"
+#include "MaterialTechnique.h"
 #include "Mesh.h"
 #include "Object.h"
 #include "PBRMaterialBindings.h"
@@ -110,6 +111,7 @@ void PBRPipeline::GenPass(std::shared_ptr<Scene> scene) {
     skyboxPass->setFragmentShader(Shader::create("res/Shaders/Source/sky.hlsl", ShaderType::Fragment));
     forwardPass->setVertexShader(Shader::create("res/Shaders/Source/testShader.hlsl", ShaderType::Vertex));
     forwardPass->setFragmentShader(Shader::create("res/Shaders/Source/testShader.hlsl", ShaderType::Fragment));
+    forwardPass->setMaterialTechniqueSlot(MaterialTechniqueSlots::Forward);
 
     addPass(skyboxPass);
     addPass(forwardPass);

@@ -25,6 +25,7 @@ struct DeferredPipelineConfig {
     bool motionBlur = false;
     bool outline = true;
     bool bloom = true;
+    bool dlssNeuralRendering = false;
 
     bool operator==(const DeferredPipelineConfig&) const = default;
 };

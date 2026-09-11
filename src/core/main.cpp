@@ -1,35 +1,29 @@
-#include <Logger.hpp>
-#include <SceneRenderer.h>
-#include <RenderAssetFactory.h>
-#include <Window.h>
+#include "SceneSerializer.h"
 
-#include "Camera.h"
 #include "DeferredPipeline.h"
-#include "AssetLoader.hpp"
-#include "Light.h"
-#include "Material.h"
-#include "MaterialDescriptor.h"
-#include "Mesh.h"
-#include "Object.h"
-#include "Primitive.h"
+#include "Logger.hpp"
 #include "Scene.h"
+#include "SceneRenderer.h"
+#include "Window.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
-#include <limits>
-#include <memory>
+#include <iostream>
+#include <optional>
+#include <ranges>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
-
-using namespace Tasrovy;
-using namespace Tasrovy::Render;
 
 namespace {
 
+namespace fs = std::filesystem;
+
 void setWorkingDirectoryToProjectRoot()
 {
-    namespace fs = std::filesystem;
-
     std::error_code ec;
     fs::path directory = fs::current_path(ec);
     if (ec) {
@@ -41,9 +35,13 @@ void setWorkingDirectoryToProjectRoot()
         if (fs::exists(directory / "res" / "Shaders", ec) && !ec) {
             fs::current_path(directory, ec);
             if (ec) {
-                LOG_WARN("Failed to switch working directory to '{}': {}", directory.string(), ec.message());
+                LOG_WARN(
+                    "Failed to switch working directory to '{}': {}",
+                    directory.string(), ec.message());
             } else {
-                LOG_INFO("Working directory set to project root '{}'", directory.string());
+                LOG_INFO(
+                    "Working directory set to project root '{}'",
+                    directory.string());
             }
             return;
         }
@@ -55,231 +53,162 @@ void setWorkingDirectoryToProjectRoot()
         directory = parent;
     }
 
-    LOG_WARN("Could not locate the project root from '{}'", fs::current_path().string());
+    LOG_WARN(
+        "Could not locate the project root from '{}'",
+        fs::current_path().string());
 }
 
-std::shared_ptr<Material> loadMaterial(const std::string& descriptorPath)
+bool isSceneFile(const fs::path& path)
 {
-    return Material::create(MaterialDescriptor::load(descriptorPath));
+    return path.filename().string().ends_with(".scene.json");
 }
 
-void placeModelOnFloor(
-    const std::shared_ptr<Object>& object,
-    const std::shared_ptr<Mesh>& mesh,
-    float targetHeight,
-    float centerZ)
+std::vector<Tasrovy::Core::SceneMetadata> discoverScenes(
+    const fs::path& resourceRoot)
 {
-    if (!object || !mesh || mesh->getVertices().empty()) {
-        return;
+    std::vector<Tasrovy::Core::SceneMetadata> scenes;
+    std::error_code ec;
+    if (!fs::is_directory(resourceRoot, ec) || ec) {
+        LOG_ERROR(
+            "Scene discovery root '{}' does not exist",
+            resourceRoot.string());
+        return scenes;
     }
 
-    TSVec3f minimum(std::numeric_limits<float>::max());
-    TSVec3f maximum(std::numeric_limits<float>::lowest());
-    for (const auto& vertex : mesh->getVertices()) {
-        minimum.x = std::min(minimum.x, vertex.position.x);
-        minimum.y = std::min(minimum.y, vertex.position.y);
-        minimum.z = std::min(minimum.z, vertex.position.z);
-        maximum.x = std::max(maximum.x, vertex.position.x);
-        maximum.y = std::max(maximum.y, vertex.position.y);
-        maximum.z = std::max(maximum.z, vertex.position.z);
-    }
-
-    const float sourceHeight = maximum.y - minimum.y;
-    const float uniformScale = sourceHeight > 0.0f ? targetHeight / sourceHeight : 1.0f;
-    const TSVec3f center = (minimum + maximum) * 0.5f;
-    object->setScale(TSVec3f(uniformScale));
-    object->setPosition(TSVec3f(
-        -center.x * uniformScale,
-        -minimum.y * uniformScale,
-        centerZ - center.z * uniformScale));
-
-    LOG_INFO(
-        "Placed Taffy bounds min ({:.3f}, {:.3f}, {:.3f}) max ({:.3f}, {:.3f}, {:.3f}) scale {:.5f}",
-        minimum.x,
-        minimum.y,
-        minimum.z,
-        maximum.x,
-        maximum.y,
-        maximum.z,
-        uniformScale);
-}
-
-template <typename PrimitiveType>
-std::shared_ptr<PrimitiveType> addPrimitive(
-    const std::shared_ptr<Scene>& scene,
-    const std::string& name,
-    const std::shared_ptr<Material>& material,
-    const TSVec3f& position,
-    const TSVec3f& rotation,
-    const TSVec3f& scale)
-{
-    auto object = PrimitiveType::create(name);
-    object->setMaterial(material);
-    object->setPosition(position);
-    object->setRotation(rotation);
-    object->setScale(scale);
-    scene->addObject(object);
-    return object;
-}
-
-std::shared_ptr<Scene> createCornellBoxScene(
-    float aspectRatio,
-    std::vector<std::shared_ptr<Material>>& sceneMaterials,
-    std::vector<std::shared_ptr<Mesh>>& sceneMeshes)
-{
-    auto scene = Scene::create("CornellBox");
-
-    auto camera = Camera::create(
-        TSVec3f(0.0f, 2.5f, 8.0f),
-        TSVec3f(0.0f),
-        42.0f,
-        aspectRatio,
-        0.1f,
-        100.0f,
-        "CornellCamera");
-    Camera* cameraPtr = camera.get();
-    scene->addCamera(std::move(camera));
-    scene->setPrimaryCamera(cameraPtr);
-
-    // Values are linear RGB because all lighting and G-buffer calculations
-    // remain in linear space. The final presentation pass performs encoding.
-    const auto floorMaterial =
-        loadMaterial("res/Materials/Cornell/Floor.material.json");
-    const auto ceilingMaterial =
-        loadMaterial("res/Materials/Cornell/Ceiling.material.json");
-    const auto backWallMaterial =
-        loadMaterial("res/Materials/Cornell/BackWall.material.json");
-    const auto leftWallMaterial =
-        loadMaterial("res/Materials/Cornell/LeftWall.material.json");
-    const auto rightWallMaterial =
-        loadMaterial("res/Materials/Cornell/RightWall.material.json");
-    const auto lightPanel =
-        loadMaterial("res/Materials/Cornell/AreaLightPanel.material.json");
-    sceneMaterials = {
-        floorMaterial,
-        ceilingMaterial,
-        backWallMaterial,
-        leftWallMaterial,
-        rightWallMaterial,
-        lightPanel
-    };
-
-    // Plane is authored in XZ with a +Y front face. Rotate each wall so the
-    // front face points into the room; normal back-face culling then works.
-    addPrimitive<Plane>(scene, "Floor", floorMaterial,
-        TSVec3f(0.0f, 0.0f, 0.0f), TSVec3f(0.0f), TSVec3f(5.0f, 1.0f, 5.0f));
-    addPrimitive<Plane>(scene, "Ceiling", ceilingMaterial,
-        TSVec3f(0.0f, 5.0f, 0.0f), TSVec3f(pi<float>(), 0.0f, 0.0f), TSVec3f(5.0f, 1.0f, 5.0f));
-    addPrimitive<Plane>(scene, "BackWall", backWallMaterial,
-        TSVec3f(0.0f, 2.5f, -2.5f), TSVec3f(pi<float>() * 0.5f, 0.0f, 0.0f), TSVec3f(5.0f, 1.0f, 5.0f));
-    addPrimitive<Plane>(scene, "LeftWall", leftWallMaterial,
-        TSVec3f(-2.5f, 2.5f, 0.0f), TSVec3f(0.0f, 0.0f, -pi<float>() * 0.5f), TSVec3f(5.0f, 1.0f, 5.0f));
-    addPrimitive<Plane>(scene, "RightWall", rightWallMaterial,
-        TSVec3f(2.5f, 2.5f, 0.0f), TSVec3f(0.0f, 0.0f, pi<float>() * 0.5f), TSVec3f(5.0f, 1.0f, 5.0f));
-
-    addPrimitive<Plane>(scene, "AreaLightPanel", lightPanel,
-        TSVec3f(0.0f, 4.96f, -0.25f), TSVec3f(pi<float>(), 0.0f, 0.0f), TSVec3f(1.5f, 1.0f, 1.0f));
-
-    Tasrovy::FS::AssetLoader assetLoader;
-    const auto taffyModel = assetLoader.LoadModel("res/Models/Taffy/Taffy.obj");
-    if (taffyModel) {
-        auto taffyMesh =
-            Tasrovy::Assets::RenderAssetFactory::meshFromModel(*taffyModel);
-        taffyMesh->setSourcePath("res/Models/Taffy/Taffy.obj");
-        auto taffy = Object::create("Taffy");
-        const auto bodyMaterial =
-            loadMaterial("res/Materials/Taffy/Body.material.json");
-        const auto faceMaterial =
-            loadMaterial("res/Materials/Taffy/Face.material.json");
-        const auto hairMaterial =
-            loadMaterial("res/Materials/Taffy/Hair.material.json");
-
-        sceneMaterials.push_back(bodyMaterial);
-        sceneMaterials.push_back(faceMaterial);
-        sceneMaterials.push_back(hairMaterial);
-        for (size_t submeshIndex = 0;
-             submeshIndex < taffyMesh->getSubmeshes().size();
-             ++submeshIndex) {
-            const auto& materialName =
-                taffyMesh->getSubmeshes()[submeshIndex].getMaterialName();
-            if (materialName.find("Face") != std::string::npos) {
-                taffyMesh->setSubmeshMaterial(submeshIndex, faceMaterial);
-            } else if (materialName.find("Hair") != std::string::npos) {
-                taffyMesh->setSubmeshMaterial(submeshIndex, hairMaterial);
-            } else {
-                taffyMesh->setSubmeshMaterial(submeshIndex, bodyMaterial);
+    fs::recursive_directory_iterator iterator(
+        resourceRoot,
+        fs::directory_options::skip_permission_denied,
+        ec);
+    const fs::recursive_directory_iterator end;
+    while (!ec && iterator != end) {
+        if (iterator->is_regular_file(ec) && !ec &&
+            isSceneFile(iterator->path())) {
+            Tasrovy::Core::SceneMetadata metadata;
+            if (Tasrovy::Core::SceneSerializer::inspect(
+                    iterator->path(), metadata)) {
+                scenes.push_back(std::move(metadata));
             }
         }
-
-        taffy->setMesh(taffyMesh);
-        taffy->setMaterial(bodyMaterial);
-        placeModelOnFloor(taffy, taffyMesh, 3.7f, 0.15f);
-        sceneMeshes.push_back(taffyMesh);
-        scene->addObject(taffy);
-    } else {
-        LOG_ERROR("Failed to load the Cornell Box Taffy model");
+        iterator.increment(ec);
+    }
+    if (ec) {
+        LOG_WARN("Scene discovery stopped early: {}", ec.message());
     }
 
-    // The renderer supports all three common light categories. The area light
-    // is the principal Cornell-box emitter; point and directional lights are
-    // deliberately subtle fills and can be tuned live in Scene Inspector.
-    scene->addLight(AreaLight::create(
-        TSVec3f(0.0f, 4.85f, -0.25f),
-        TSVec3f(0.0f, -1.0f, 0.0f),
-        TSVec3f(1.0f, 0.95f, 0.86f),
-        34.0f,
-        1.5f,
-        1.0f,
-        false,
-        "CeilingAreaLight"));
-    scene->addLight(PointLight::create(
-        TSVec3f(0.0f, 2.2f, 1.8f),
-        TSVec3f(1.0f, 0.78f, 0.58f),
-        0.8f,
-        1.0f,
-        0.22f,
-        0.20f,
-        "WarmFillPoint"));
-    scene->addLight(DirectionalLight::create(
-        TSVec3f(-0.35f, -1.0f, -0.25f),
-        TSVec3f(0.62f, 0.72f, 1.0f),
-        0.08f,
-        "CoolFillDirectional"));
+    std::ranges::sort(scenes, {}, [](const auto& scene) {
+        return scene.path.generic_string();
+    });
+    return scenes;
+}
 
-    return scene;
+std::optional<fs::path> selectScene(
+    const std::vector<Tasrovy::Core::SceneMetadata>& scenes,
+    int argc,
+    char* argv[])
+{
+    if (scenes.empty()) {
+        LOG_ERROR("No '*.scene.json' files were found under 'res'");
+        return std::nullopt;
+    }
+
+    if (argc > 1) {
+        const fs::path requested = fs::path(argv[1]).lexically_normal();
+        const auto found = std::ranges::find_if(
+            scenes,
+            [&requested](const auto& candidate) {
+                return candidate.path == requested ||
+                    candidate.path.filename() == requested ||
+                    candidate.path.stem() == requested ||
+                    candidate.name == requested.string();
+            });
+        if (found == scenes.end()) {
+            LOG_ERROR(
+                "Requested scene '{}' is not present in the res scene catalog",
+                requested.string());
+            return std::nullopt;
+        }
+        return found->path;
+    }
+
+    if (scenes.size() == 1) {
+        LOG_INFO(
+            "Discovered one scene: '{}' ({})",
+            scenes.front().name, scenes.front().path.string());
+        return scenes.front().path;
+    }
+
+    std::cout << "Available scenes:\n";
+    for (size_t index = 0; index < scenes.size(); ++index) {
+        std::cout << "  " << index + 1 << ". "
+                  << scenes[index].name << "  ["
+                  << scenes[index].path.generic_string() << "]\n";
+    }
+    std::cout << "Select a scene [1-" << scenes.size() << "]: "
+              << std::flush;
+
+    std::string input;
+    if (!std::getline(std::cin, input)) {
+        LOG_ERROR(
+            "No scene was selected; pass a catalog path on the command line");
+        return std::nullopt;
+    }
+    try {
+        size_t parsedCharacters = 0;
+        const size_t selection = std::stoull(input, &parsedCharacters);
+        if (parsedCharacters != input.size() ||
+            selection == 0 || selection > scenes.size()) {
+            throw std::out_of_range("scene selection");
+        }
+        return scenes[selection - 1].path;
+    } catch (const std::exception&) {
+        LOG_ERROR("Invalid scene selection '{}'", input);
+        return std::nullopt;
+    }
 }
 
 } // namespace
 
-int main()
+int main(int argc, char* argv[])
 {
     Tasrovy::Log::Logger::Init();
     setWorkingDirectoryToProjectRoot();
 
-    Tasrovy::Windowing::Window window(1280, 800, "TasrovyRenderer - Cornell Box");
-    const float cameraAspect =
-        static_cast<float>(window.getWidth()) / static_cast<float>(window.getHeight());
+    const auto scenePath = selectScene(discoverScenes("res"), argc, argv);
+    if (!scenePath) {
+        return EXIT_FAILURE;
+    }
 
-    // Scene objects intentionally keep weak references to render resources.
-    // These containers own the code-defined resources for the application lifetime.
-    std::vector<std::shared_ptr<Material>> sceneMaterials;
-    std::vector<std::shared_ptr<Mesh>> sceneMeshes;
-    auto scene = createCornellBoxScene(
-        cameraAspect, sceneMaterials, sceneMeshes);
-    auto pipeline = DeferredPipeline::create();
-    pipeline->GenPass(scene);
+    Tasrovy::Windowing::Window window(1280, 800, "TasrovyRenderer");
+    const float cameraAspect =
+        static_cast<float>(window.getWidth()) /
+        static_cast<float>(window.getHeight());
+
+    Tasrovy::Core::SceneArchive sceneArchive;
+    if (!Tasrovy::Core::SceneSerializer::load(
+            *scenePath, cameraAspect, sceneArchive) ||
+        !sceneArchive.scene) {
+        LOG_ERROR(
+            "Application startup aborted: scene '{}' could not be loaded",
+            scenePath->string());
+        return EXIT_FAILURE;
+    }
+
+    auto pipeline = Tasrovy::Render::DeferredPipeline::create();
+    pipeline->GenPass(sceneArchive.scene);
 
     Tasrovy::Renderer::SceneRenderer renderer(window, 4);
-    renderer.setScene(scene);
+    renderer.setScene(sceneArchive.scene);
     renderer.setPipeline(pipeline);
     renderer.start();
 
-    LOG_INFO("Cornell Box submitted to the deferred renderer");
+    LOG_INFO(
+        "Scene '{}' loaded from '{}' and submitted to the renderer",
+        sceneArchive.scene->getName(), scenePath->string());
     while (!window.shouldClose()) {
         window.pollEvents();
     }
 
     renderer.stop();
     LOG_INFO("Application exiting");
-    return 0;
+    return EXIT_SUCCESS;
 }

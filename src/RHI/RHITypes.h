@@ -12,18 +12,86 @@ enum class GraphicsAPI : uint8_t {
 
 enum class Format : uint8_t {
     Unknown,
+    R8Unorm,
+    RG8Unorm,
     RGBA8Unorm,
     RGBA8Srgb,
     BGRA8Unorm,
     BGRA8Srgb,
-    RGBA16Float,
+    R8Uint,
+    R16Uint,
+    R32Uint,
+    RG16Uint,
+    R16Float,
     RG16Float,
+    RGBA16Float,
+    R32Float,
     RG32Float,
     RGB32Float,
     RGBA32Float,
+    R11G11B10Float,
+    RGB10A2Unorm,
+    Depth16Unorm,
+    Depth24UnormStencil8,
     Depth32Float,
     Depth32FloatStencil8
 };
+
+constexpr bool isDepthFormat(Format format) {
+    return format == Format::Depth16Unorm ||
+        format == Format::Depth24UnormStencil8 ||
+        format == Format::Depth32Float ||
+        format == Format::Depth32FloatStencil8;
+}
+
+constexpr bool hasStencilComponent(Format format) {
+    return format == Format::Depth24UnormStencil8 ||
+        format == Format::Depth32FloatStencil8;
+}
+
+constexpr bool isUnsignedIntegerFormat(Format format) {
+    return format == Format::R8Uint ||
+        format == Format::R16Uint ||
+        format == Format::R32Uint ||
+        format == Format::RG16Uint;
+}
+
+constexpr uint32_t formatBytesPerTexel(Format format) {
+    switch (format) {
+    case Format::R8Unorm:
+    case Format::R8Uint:
+        return 1;
+    case Format::RG8Unorm:
+    case Format::R16Uint:
+    case Format::R16Float:
+    case Format::Depth16Unorm:
+        return 2;
+    case Format::RGBA8Unorm:
+    case Format::RGBA8Srgb:
+    case Format::BGRA8Unorm:
+    case Format::BGRA8Srgb:
+    case Format::R32Uint:
+    case Format::RG16Uint:
+    case Format::RG16Float:
+    case Format::R32Float:
+    case Format::R11G11B10Float:
+    case Format::RGB10A2Unorm:
+    case Format::Depth24UnormStencil8:
+    case Format::Depth32Float:
+        return 4;
+    case Format::RGBA16Float:
+    case Format::RG32Float:
+    case Format::Depth32FloatStencil8:
+        return 8;
+    case Format::RGB32Float:
+        return 12;
+    case Format::RGBA32Float:
+        return 16;
+    case Format::Unknown:
+        return 0;
+    }
+    return 0;
+}
 
 enum class ShaderStage : uint8_t {
     Vertex,

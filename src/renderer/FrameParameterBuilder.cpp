@@ -95,7 +95,8 @@ FrameResolutionParameters FrameParameterBuilder::buildResolution(
     uint32_t internalHeight,
     uint32_t displayWidth,
     uint32_t displayHeight,
-    int temporalMode) {
+    int temporalMode,
+    float temporalMipBiasAdjustment) {
     FrameResolutionParameters result{};
     result.internalToDisplayScale = std::min(
         static_cast<float>(internalWidth) /
@@ -106,8 +107,11 @@ FrameResolutionParameters FrameParameterBuilder::buildResolution(
         ? std::clamp(
               std::log2(std::max(result.internalToDisplayScale, 0.25f)),
               -2.0f,
-              0.0f)
+              0.0f) +
+              std::clamp(temporalMipBiasAdjustment, -2.0f, 2.0f)
         : 0.0f;
+    result.temporalMipBias =
+        std::clamp(result.temporalMipBias, -2.0f, 0.0f);
     return result;
 }
 
@@ -145,7 +149,10 @@ void FrameParameterBuilder::populateMaterialAndLighting(
         environmentLightingEnabled ? 1.0f : 0.0f,
         0.0f,
         0.0f);
-    uniform.lights = lighting.gpuLights;
+    std::copy_n(
+        lighting.gpuLights.begin(),
+        std::min<size_t>(lighting.gpuLightCount, MaxLegacyUniformLights),
+        uniform.lights.begin());
     uniform.lightViewProj = transpose(shadowViews.viewProjections[0]);
     uniform.shadowParams = TSVec4f(
         settings.shadowSlopeBias,

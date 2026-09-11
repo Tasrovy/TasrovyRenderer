@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "TasrovyRenderer 渲染 Pass 数据流",
+    "locale": "zh-CN",
+    "output": "docs/render-pass-flow.architecture.html",
+    "viewBox": [1080, 520],
+    "quality_profile": "showcase"
+  },
+  "stages": [
+    { "label": "阴影与几何" },
+    { "label": "屏幕空间准备" },
+    { "label": "HDR 光照" },
+    { "label": "时域与效果" },
+    { "label": "合成与呈现" }
+  ],
+  "nodes": [
+    {
+      "id": "geometry_stage",
+      "type": "backend",
+      "label": "阴影 + GBuffer",
+      "sublabel": "深度与材质附件",
+      "stage": 0,
+      "row": 1,
+      "width": 150,
+      "height": 72,
+      "tag": "Mesh passes"
+    },
+    {
+      "id": "screen_stage",
+      "type": "database",
+      "label": "HBAO + Hi-Z",
+      "sublabel": "AO 与深度层级",
+      "stage": 1,
+      "row": 1,
+      "width": 150,
+      "height": 72,
+      "tag": "Optional fullscreen"
+    },
+    {
+      "id": "lighting_stage",
+      "type": "backend",
+      "label": "HDR 光照",
+      "sublabel": "Lighting / Transparent / SSR",
+      "stage": 2,
+      "row": 1,
+      "width": 168,
+      "height": 72,
+      "tag": "HDR SceneColor"
+    },
+    {
+      "id": "effects_stage",
+      "type": "backend",
+      "label": "时域与效果",
+      "sublabel": "DOF / TAA(U) / MB / Outline / Bloom",
+      "stage": 3,
+      "row": 1,
+      "width": 190,
+      "height": 72,
+      "tag": "Optional chain"
+    },
+    {
+      "id": "output_stage",
+      "type": "frontend",
+      "label": "合成与呈现",
+      "sublabel": "Post / UI / Present",
+      "stage": 4,
+      "row": 1,
+      "width": 160,
+      "height": 72,
+      "tag": "FinalColor"
+    }
+  ],
+  "flows": [
+    {
+      "from": "geometry_stage",
+      "to": "screen_stage",
+      "label": "Depth / Normal / WorldPos",
+      "classification": "sampled attachments",
+      "variant": "emphasis",
+      "route": "straight",
+      "labelDy": -52
+    },
+    {
+      "from": "screen_stage",
+      "to": "lighting_stage",
+      "label": "GBuffer / AO / Hi-Z / Shadow",
+      "classification": "RenderGraph resources",
+      "variant": "emphasis",
+      "route": "straight",
+      "labelDy": 60
+    },
+    {
+      "from": "lighting_stage",
+      "to": "effects_stage",
+      "label": "SceneColor / SSR",
+      "classification": "RGBA16F HDR",
+      "variant": "emphasis",
+      "route": "straight",
+      "labelDy": -52
+    },
+    {
+      "from": "effects_stage",
+      "to": "output_stage",
+      "label": "HDR / Bloom / Outline",
+      "classification": "composite inputs",
+      "variant": "emphasis",
+      "route": "straight",
+      "labelDy": 60
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "实际 Pass 顺序",
+      "items": [
+        "ShadowCascade* / VirtualShadowPage* → GBuffer → HBAO → HiZHalf / Quarter / Eighth / Sixteenth",
+        "Lighting → Transparent → SSR → DepthOfField → TemporalAA | TemporalUpscale → MotionBlur",
+        "OutlineTemporal；BloomDownHalf / Quarter / Eighth / Sixteenth → BloomUpEighth / Quarter / Half → PostProcessing"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "资源与提交关系",
+      "items": [
+        "ShadowMap / Atlas + GBuffer + SceneDepth → AO、SSR、光照及时域重投影",
+        "SceneColor、BloomLowRes、OutlineHistory → PostProcessing → FinalColor",
+        "RenderGraph 生成依赖与 Barrier；Scene/UI CommandBuffer 同次 Queue Submit 后 Present"
+      ]
+    }
+  ]
+}

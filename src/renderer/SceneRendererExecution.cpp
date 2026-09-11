@@ -234,7 +234,6 @@ void SceneRendererExecution::renderLoop() {
         }
         if (update.rebuildRequired) {
             rebuildRenderGraph(scene);
-            sceneUpdates_.acknowledge(update);
         }
 
         const auto framebuffer = window_.getFramebufferState();
@@ -359,6 +358,8 @@ void SceneRendererExecution::applySceneUpdates(
         }
     }
     state.environmentLightingEnabled = false;
+    state.sceneResources.prepareGlobalTextures(
+        device, state.rhi.persistentResourceScope);
     state.sceneResources.prepareSkyboxVariants(
         device, state.rhi.persistentResourceScope, preferredSkyboxPath);
     if (state.sceneResources.skyCubemap()) {
@@ -426,6 +427,9 @@ void SceneRendererExecution::rebuildRenderGraph(
     // submitted before a pipeline/scene switch may still reference them, so
     // complete all in-flight work before destroying those resources.
     frameScheduler.waitForInFlightFrames();
+    if (state.rhi.externalFeatureExecutor) {
+        state.rhi.externalFeatureExecutor->invalidateResources();
+    }
 
     state.rhi.frameExecutor.reset();
     state.sceneResources.resetScene();
@@ -515,6 +519,9 @@ void SceneRendererExecution::rebuildDisplayResources(PipelineBase& pipeline) {
     // window extent. Internal GBuffer resources remain alive when the aspect
     // ratio (and therefore the fixed-height internal extent) is unchanged.
     frameScheduler.waitForInFlightFrames();
+    if (state.rhi.externalFeatureExecutor) {
+        state.rhi.externalFeatureExecutor->invalidateResources();
+    }
     (void)pipeline;
     device.resetResourceScope(state.rhi.displayResourceScope);
 
@@ -743,6 +750,8 @@ void SceneRendererExecution::renderFrame(Scene& scene) {
                 context.commandList = &commandList;
                 context.swapchainTarget = &swapchainTarget;
                 context.bindings = &submission.bindings;
+                context.externalFeatureExecutor =
+                    rhiState.rhi.externalFeatureExecutor.get();
                 context.frameIndex = frameIndex;
                 context.timestampQueryPool = timestampQueryPool;
                 context.timestampQueryCapacity = timestampCapacity;

@@ -75,6 +75,13 @@ void ensureBuiltinImportedProviders() {
                 }
                 return binding;
             });
+        importedProviders().emplace(
+            ImportedResourceHandles::ColorGradingLut,
+            [](Device&, SceneGPUResources& resources) {
+                FrameImportedImageBinding binding;
+                binding.image = resources.colorGradingLut();
+                return binding;
+            });
     });
 }
 

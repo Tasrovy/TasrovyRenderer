@@ -1,5 +1,6 @@
 {
   "name": "CornellCeiling",
+  "technique": "res/MaterialTechniques/Scene.technique.json",
   "properties": [
     {"name": "baseColorFactor", "type": "float4", "value": [0.73, 0.73, 0.73, 1.0]},
     {"name": "metallic", "type": "float", "value": 0.0},

@@ -6,6 +6,7 @@
 #include "Logger.hpp"
 #include "Material.h"
 #include "MaterialDescriptor.h"
+#include "MaterialTechnique.h"
 #include "Mesh.h"
 #include "Object.h"
 #include "Primitive.h"
@@ -18,6 +19,7 @@
 #include <fstream>
 #include <cmath>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <string>
 
 namespace Tasrovy::Core {
@@ -98,6 +100,10 @@ json serializeMaterial(const std::shared_ptr<Material>& material) {
     if (const auto descriptor = material->getDescriptor()) {
         data["descriptor"] = descriptor->getSourcePath().generic_string();
     }
+    if (const auto technique = material->getTechnique();
+        technique && !technique->getSourcePath().empty()) {
+        data["technique"] = technique->getSourcePath().generic_string();
+    }
     for (const auto& [name, value] : material->getFloatParams()) {
         data["floats"][name] = finiteOr(value);
     }
@@ -113,15 +119,32 @@ json serializeMaterial(const std::shared_ptr<Material>& material) {
             {"path", binding.path},
             {"uvMode", static_cast<uint32_t>(binding.uvSampling.mode)},
             {"uvScale", vec2ToJson(binding.uvSampling.scale)},
-            {"uvOffset", vec2ToJson(binding.uvSampling.offset)}
+            {"uvOffset", vec2ToJson(binding.uvSampling.offset)},
+            {"mipmaps", binding.generateMipmaps}
         });
     }
     return data;
 }
 
 std::shared_ptr<Material> deserializeMaterial(const json& data, SceneArchive& archive) {
-    if (data.is_null() || !data.is_object()) {
+    if (data.is_null()) {
         return nullptr;
+    }
+
+    if (data.is_string()) {
+        const auto descriptorPath = data.get<std::string>();
+        if (descriptorPath.empty()) {
+            throw std::runtime_error(
+                "scene material descriptor path must not be empty");
+        }
+        auto material = Material::create(
+            MaterialDescriptor::load(descriptorPath));
+        archive.materials.push_back(material);
+        return material;
+    }
+    if (!data.is_object()) {
+        throw std::runtime_error(
+            "scene material must be a descriptor path or an object");
     }
     std::shared_ptr<Material> material;
     const auto descriptorPath = data.value("descriptor", std::string());
@@ -129,6 +152,10 @@ std::shared_ptr<Material> deserializeMaterial(const json& data, SceneArchive& ar
         material = Material::create(MaterialDescriptor::load(descriptorPath));
     } else {
         material = Material::create();
+    }
+    const auto techniquePath = data.value("technique", std::string());
+    if (!techniquePath.empty()) {
+        material->setTechnique(MaterialTechnique::load(techniquePath));
     }
     material->setSurface(static_cast<MaterialSurface>(data.value("surface", 0)));
     material->setAlphaCutoff(jsonMemberFloat(data, "alphaCutoff", 0.5f));
@@ -157,6 +184,9 @@ std::shared_ptr<Material> deserializeMaterial(const json& data, SceneArchive& ar
             jsonToVec2(
                 texture.value("uvOffset", json::array()), TSVec2f(0.0f))
         });
+        material->setTextureMipmaps(
+            slot,
+            texture.value("mipmaps", true));
     }
     archive.materials.push_back(material);
     return material;
@@ -254,10 +284,14 @@ std::shared_ptr<Object> deserializeObject(
         object = skybox;
     } else if (type == "model") {
         const std::string modelPath = data.value("model", std::string());
+        if (modelPath.empty()) {
+            throw std::runtime_error(
+                "model object '" + name + "' has no model path");
+        }
         const auto model = loader.LoadModel(modelPath);
         if (!model) {
-            LOG_ERROR("SceneSerializer: failed to load model '{}'", modelPath);
-            return nullptr;
+            throw std::runtime_error(
+                "failed to load model '" + modelPath + "'");
         }
         auto mesh =
             Tasrovy::Assets::RenderAssetFactory::meshFromModel(*model);
@@ -265,8 +299,11 @@ std::shared_ptr<Object> deserializeObject(
         archive.meshes.push_back(mesh);
         object = Object::create(name);
         object->setMesh(mesh);
-    } else {
+    } else if (type == "object" || type == "empty") {
         object = Object::create(name);
+    } else {
+        throw std::runtime_error(
+            "unsupported scene object type '" + type + "'");
     }
 
     object->setActive(data.value("active", true));
@@ -279,6 +316,11 @@ std::shared_ptr<Object> deserializeObject(
     if (const auto mesh = object->getMesh()) {
         for (const auto& entry : data.value("submeshMaterials", json::array())) {
             const size_t index = entry.value("index", static_cast<size_t>(0));
+            if (index >= mesh->getSubmeshes().size()) {
+                throw std::runtime_error(
+                    "submesh material index is out of range for object '" +
+                    name + "'");
+            }
             mesh->setSubmeshMaterial(
                 index,
                 deserializeMaterial(
@@ -348,10 +390,49 @@ std::unique_ptr<Light> deserializeLight(const json& data) {
             jsonToVec3(data.value("position", json::array())), direction, color, intensity,
             jsonMemberFloat(data, "cutoff", 12.5f), name);
     }
-    return DirectionalLight::create(direction, color, intensity, name);
+    if (type == "directional") {
+        return DirectionalLight::create(direction, color, intensity, name);
+    }
+    throw std::runtime_error("unsupported scene light type '" + type + "'");
 }
 
 } // namespace
+
+bool SceneSerializer::inspect(
+    const std::filesystem::path& path,
+    SceneMetadata& metadata) {
+    try {
+        std::ifstream input(path);
+        if (!input) {
+            LOG_ERROR("SceneSerializer: cannot open scene '{}'", path.string());
+            return false;
+        }
+        json root;
+        input >> root;
+        if (root.value("format", std::string()) != "TasrovyScene" ||
+            root.value("version", 0u) != 1u) {
+            LOG_ERROR(
+                "SceneSerializer: unsupported scene format '{}'",
+                path.string());
+            return false;
+        }
+
+        SceneMetadata inspected;
+        inspected.path = path.lexically_normal();
+        inspected.name = root.value("name", path.stem().string());
+        inspected.version = root.value("version", 0u);
+        if (inspected.name.empty()) {
+            inspected.name = path.stem().string();
+        }
+        metadata = std::move(inspected);
+        return true;
+    } catch (const std::exception& error) {
+        LOG_ERROR(
+            "SceneSerializer: inspection failed '{}': {}",
+            path.string(), error.what());
+        return false;
+    }
+}
 
 bool SceneSerializer::save(
     const std::filesystem::path& path,
@@ -409,7 +490,10 @@ bool SceneSerializer::load(
     SceneArchive& archive) {
     try {
         std::ifstream input(path);
-        if (!input) return false;
+        if (!input) {
+            LOG_ERROR("SceneSerializer: cannot open scene '{}'", path.string());
+            return false;
+        }
         json root;
         input >> root;
         if (root.value("format", std::string()) != "TasrovyScene" ||
@@ -444,6 +528,15 @@ bool SceneSerializer::load(
         }
         if (!loaded.scene->getPrimaryCamera() && !loaded.scene->getCameras().empty()) {
             loaded.scene->setPrimaryCamera(loaded.scene->getCameras().front().get());
+        }
+        if (!loaded.scene->getPrimaryCamera()) {
+            throw std::runtime_error(
+                "scene must define at least one camera");
+        }
+        if (!primaryCamera.empty() &&
+            loaded.scene->getPrimaryCamera()->getName() != primaryCamera) {
+            throw std::runtime_error(
+                "primary camera '" + primaryCamera + "' was not found");
         }
 
         for (const auto& lightData : root.value("lights", json::array())) {

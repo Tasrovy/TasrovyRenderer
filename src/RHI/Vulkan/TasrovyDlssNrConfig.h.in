@@ -1,0 +1,4 @@
+#pragma once
+
+#define TASROVY_DLSS_NR_RUNTIME_DIR "@TASROVY_DLSS_NR_RUNTIME_DIR_NORMALIZED@"
+#define TASROVY_DLSS_NR_BRIDGE_NAME "nvngx.dll_dlssnr_vulkan.dll"

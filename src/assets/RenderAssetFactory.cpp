@@ -1,4 +1,5 @@
 #include "RenderAssetFactory.h"
+#include "MeshLODGenerator.h"
 
 #include "../filesystem/Model.hpp"
 #include "../filesystem/Image.hpp"
@@ -40,10 +41,12 @@ RenderAssetFactory::meshFromModel(const Tasrovy::FS::Model& model) {
             submesh.indexCount);
     }
 
-    return Tasrovy::Render::Mesh::create(
+    auto mesh = Tasrovy::Render::Mesh::create(
         std::move(vertices),
         model.GetIndices(),
         std::move(submeshes));
+    MeshLODGenerator::generate(mesh);
+    return mesh;
 }
 
 DecodedImage RenderAssetFactory::decodeTexture(

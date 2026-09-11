@@ -34,6 +34,11 @@ enum class PipelinePassExecution {
     UI
 };
 
+enum class PipelineExternalFeature : uint8_t {
+    None,
+    DlssNeuralRendering
+};
+
 enum class PipelineVertexFormat : uint8_t {
     Float2,
     Float3,
@@ -56,6 +61,7 @@ inline constexpr const char* Skybox = "scene.skybox";
 inline constexpr const char* IblIrradiance = "scene.ibl.irradiance";
 inline constexpr const char* IblPrefiltered = "scene.ibl.prefiltered";
 inline constexpr const char* IblBrdfLut = "scene.ibl.brdf_lut";
+inline constexpr const char* ColorGradingLut = "renderer.color_grading_lut";
 }
 
 using ImportedResourceHandle = std::string;
@@ -85,6 +91,10 @@ inline constexpr const char* SSAO = "builtin.ssao";
 inline constexpr const char* DepthOfField = "builtin.depth_of_field";
 inline constexpr const char* MotionBlur = "builtin.motion_blur";
 inline constexpr const char* FinalComposite = "builtin.final_composite";
+inline constexpr const char* ColorGrading = "builtin.color_grading";
+inline constexpr const char* DlssNrPrepare = "builtin.dlss_nr.prepare";
+inline constexpr const char* DlssNr = "builtin.dlss_nr.evaluate";
+inline constexpr const char* DlssNrPresent = "builtin.dlss_nr.present";
 }
 
 struct VirtualShadowPage {
@@ -103,9 +113,15 @@ struct PipelineShaderPermutation {
 };
 
 struct PipelineDispatchCommand {
+    enum class Extent : uint8_t {
+        Fixed,
+        Internal
+    };
+
     uint32_t groupCountX = 1;
     uint32_t groupCountY = 1;
     uint32_t groupCountZ = 1;
+    Extent extent = Extent::Fixed;
 };
 
 struct PipelineCopyCommand {
@@ -167,6 +183,8 @@ public:
     PipelinePassExecution getExecution() const;
     void setParameterProvider(std::string providerId);
     const std::string& getParameterProvider() const;
+    void setExternalFeature(PipelineExternalFeature feature);
+    PipelineExternalFeature getExternalFeature() const;
     void setViewIndex(uint32_t viewIndex);
     uint32_t getViewIndex() const;
     void setVirtualShadowPage(const VirtualShadowPage& page);
@@ -182,6 +200,14 @@ public:
     std::shared_ptr<Shader> getFragmentShader() const;
     void setComputeShader(std::shared_ptr<Shader> shader);
     std::shared_ptr<Shader> getComputeShader() const;
+    // When enabled, mesh draws may replace this pass's VS/PS with the
+    // shaders carried by their material. Attachments, fixed-function state
+    // and descriptor bindings remain owned by the pass, so every override
+    // must implement the same descriptor/output ABI.
+    void setAllowMaterialShaderOverrides(bool allow);
+    bool allowsMaterialShaderOverrides() const;
+    void setMaterialTechniqueSlot(std::string slot);
+    const std::string& getMaterialTechniqueSlot() const;
     void addShaderPermutation(PipelineShaderPermutation permutation);
     const std::vector<PipelineShaderPermutation>& getShaderPermutations() const;
     void setSelectedPermutationKey(uint64_t key);
@@ -196,6 +222,12 @@ public:
         getImportedTextures() const;
     void setDispatch(uint32_t groupCountX, uint32_t groupCountY = 1,
         uint32_t groupCountZ = 1);
+    // Resolves group counts from the current internal render extent every
+    // frame. Arguments are compute shader thread-group dimensions.
+    void setDispatchForInternalExtent(
+        uint32_t threadGroupSizeX,
+        uint32_t threadGroupSizeY,
+        uint32_t threadGroupSizeZ = 1);
     const PipelineDispatchCommand* getDispatch() const;
     void addCopyCommand(PipelineCopyCommand command);
     const std::vector<PipelineCopyCommand>& getCopyCommands() const;
@@ -280,6 +312,7 @@ private:
     PipelinePassType type_ = PipelinePassType::Generic;
     PipelinePassExecution execution_ = PipelinePassExecution::Mesh;
     std::string parameterProvider_ = ParameterProviders::Standard;
+    PipelineExternalFeature externalFeature_ = PipelineExternalFeature::None;
     uint32_t viewIndex_ = 0;
     std::unique_ptr<VirtualShadowPage> virtualShadowPage_;
     PassState state_;
@@ -291,6 +324,8 @@ private:
     std::shared_ptr<Shader> vertexShader_;
     std::shared_ptr<Shader> fragmentShader_;
     std::shared_ptr<Shader> computeShader_;
+    bool allowMaterialShaderOverrides_ = false;
+    std::string materialTechniqueSlot_;
     std::vector<PipelineShaderPermutation> shaderPermutations_;
     uint64_t selectedPermutationKey_ = 0;
     PipelineVertexLayout vertexLayout_;

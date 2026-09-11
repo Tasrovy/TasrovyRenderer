@@ -28,6 +28,14 @@ void PipelinePass::setParameterProvider(std::string providerId) {
 const std::string& PipelinePass::getParameterProvider() const {
     return parameterProvider_;
 }
+
+void PipelinePass::setExternalFeature(PipelineExternalFeature feature) {
+    externalFeature_ = feature;
+}
+
+PipelineExternalFeature PipelinePass::getExternalFeature() const {
+    return externalFeature_;
+}
 void PipelinePass::setViewIndex(uint32_t viewIndex) { viewIndex_ = viewIndex; }
 uint32_t PipelinePass::getViewIndex() const { return viewIndex_; }
 void PipelinePass::setVirtualShadowPage(const VirtualShadowPage& page) {
@@ -61,6 +69,25 @@ void PipelinePass::setComputeShader(std::shared_ptr<Shader> shader) {
 }
 std::shared_ptr<Shader> PipelinePass::getComputeShader() const {
     return computeShader_;
+}
+
+void PipelinePass::setAllowMaterialShaderOverrides(bool allow) {
+    allowMaterialShaderOverrides_ = allow;
+}
+
+bool PipelinePass::allowsMaterialShaderOverrides() const {
+    return allowMaterialShaderOverrides_;
+}
+
+void PipelinePass::setMaterialTechniqueSlot(std::string slot) {
+    materialTechniqueSlot_ = std::move(slot);
+    if (!materialTechniqueSlot_.empty()) {
+        allowMaterialShaderOverrides_ = true;
+    }
+}
+
+const std::string& PipelinePass::getMaterialTechniqueSlot() const {
+    return materialTechniqueSlot_;
 }
 
 void PipelinePass::addShaderPermutation(
@@ -120,9 +147,23 @@ void PipelinePass::setDispatch(
     uint32_t groupCountZ) {
     dispatch_ = std::make_unique<PipelineDispatchCommand>(
         PipelineDispatchCommand{
-            std::max(1u, groupCountX),
-            std::max(1u, groupCountY),
-            std::max(1u, groupCountZ)
+            groupCountX,
+            groupCountY,
+            groupCountZ,
+            PipelineDispatchCommand::Extent::Fixed
+        });
+}
+
+void PipelinePass::setDispatchForInternalExtent(
+    uint32_t threadGroupSizeX,
+    uint32_t threadGroupSizeY,
+    uint32_t threadGroupSizeZ) {
+    dispatch_ = std::make_unique<PipelineDispatchCommand>(
+        PipelineDispatchCommand{
+            threadGroupSizeX,
+            threadGroupSizeY,
+            threadGroupSizeZ,
+            PipelineDispatchCommand::Extent::Internal
         });
 }
 

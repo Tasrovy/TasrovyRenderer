@@ -31,6 +31,10 @@ public:
     std::shared_ptr<Tasrovy::RHI::Device> device;
     std::shared_ptr<Tasrovy::RHI::CommandList> commandList;
     Tasrovy::RHI::FrameExecutor frameExecutor;
+    // Installed by an optional SDK adapter. Null keeps external-feature passes
+    // on their deterministic shader fallback path.
+    std::unique_ptr<Tasrovy::RHI::IExternalFeatureExecutor>
+        externalFeatureExecutor;
     Tasrovy::RHI::Device::ResourceScope persistentResourceScope = 0;
     Tasrovy::RHI::Device::ResourceScope sceneResourceScope = 0;
     Tasrovy::RHI::Device::ResourceScope displayResourceScope = 0;

@@ -1,6 +1,7 @@
 #include "DeferredPipeline.h"
 
 #include "Material.h"
+#include "MaterialTechnique.h"
 #include "Mesh.h"
 #include "Object.h"
 #include "PBRMaterialBindings.h"
@@ -142,6 +143,9 @@ bool DeferredPipeline::applyConfiguration(
         PipelineConfigKeys::Outline, next.outline);
     next.bloom = configuration.get<bool>(
         PipelineConfigKeys::Bloom, next.bloom);
+    next.dlssNeuralRendering = configuration.get<bool>(
+        PipelineConfigKeys::DlssNeuralRendering,
+        next.dlssNeuralRendering);
     if (next == config_) return false;
     config_ = next;
     commitConfiguration(configuration);
@@ -156,6 +160,27 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     constexpr uint32_t ShadowCascadeCount = 4;
     constexpr uint32_t VirtualShadowPageSize = 2048;
     constexpr uint32_t VirtualShadowAtlasSize = 4096;
+    constexpr uint32_t LightCullMaximumInternalExtent = 8192;
+    constexpr uint32_t LightCullTileSize = 32;
+    constexpr uint32_t LightCullMaskWords = 8;
+    constexpr uint32_t LightCullDepthSlices = 1024;
+    constexpr uint64_t LightCullMaximumTileCount =
+        (LightCullMaximumInternalExtent / LightCullTileSize) *
+        (LightCullMaximumInternalExtent / LightCullTileSize);
+    declareBuffer({
+        "LightCullXYMasks",
+        LightCullMaximumTileCount * LightCullMaskWords * sizeof(uint32_t),
+        PipelineBufferUsageStorage,
+        false,
+        false
+    });
+    declareBuffer({
+        "LightCullZMasks",
+        LightCullDepthSlices * LightCullMaskWords * sizeof(uint32_t),
+        PipelineBufferUsageStorage,
+        false,
+        false
+    });
     if (config_.shadowTechnique == DeferredShadowTechnique::VirtualShadowMap) {
         declareTexture({
             "VirtualShadowAtlas",
@@ -280,6 +305,40 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
         });
     }
     declareTexture({
+        "PostProcessedHDRColor", PipelineTextureFormat::RGBA16Float,
+        PipelineTextureExtent::DisplayRelative, 1.0f, 1.0f
+    });
+    if (config_.dlssNeuralRendering) {
+        declareTexture({
+            "DLSSNRColorGradedLinear", PipelineTextureFormat::RGBA16Float,
+            PipelineTextureExtent::DisplayRelative, 1.0f, 1.0f
+        });
+        PipelineTextureDesc dlssNrInput{
+            "DLSSNRInputColor", PipelineTextureFormat::RGBA16Float,
+            PipelineTextureExtent::DisplayRelative, 1.0f, 1.0f
+        };
+        dlssNrInput.storageCapable = true;
+        declareTexture(std::move(dlssNrInput));
+        PipelineTextureDesc dlssNrMotion{
+            "DLSSNRMotionVectors", PipelineTextureFormat::RG16Float,
+            PipelineTextureExtent::DisplayRelative, 1.0f, 1.0f
+        };
+        dlssNrMotion.storageCapable = true;
+        declareTexture(std::move(dlssNrMotion));
+        PipelineTextureDesc dlssNrDepth{
+            "DLSSNRDepth", PipelineTextureFormat::R32Float,
+            PipelineTextureExtent::DisplayRelative, 1.0f, 1.0f
+        };
+        dlssNrDepth.storageCapable = true;
+        declareTexture(std::move(dlssNrDepth));
+        PipelineTextureDesc dlssNrOutput{
+            "DLSSNROutputColor", PipelineTextureFormat::RGBA16Float,
+            PipelineTextureExtent::DisplayRelative, 1.0f, 1.0f
+        };
+        dlssNrOutput.storageCapable = true;
+        declareTexture(std::move(dlssNrOutput));
+    }
+    declareTexture({
         "FinalColor", PipelineTextureFormat::Swapchain,
         PipelineTextureExtent::DisplayRelative, 1.0f, 1.0f, 0, 0, true
     });
@@ -387,10 +446,56 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
         "PostProcessing", PipelinePassType::PostProcess, PipelinePassExecution::Fullscreen,
         // Fullscreen triangles must not depend on model winding.
         CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
+    auto lightCullXYPass = createDeferredPass(
+        "LightCullXY", PipelinePassType::Generic,
+        PipelinePassExecution::Compute,
+        CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
+    auto lightCullZPass = createDeferredPass(
+        "LightCullZ", PipelinePassType::Generic,
+        PipelinePassExecution::Compute,
+        CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
+    auto colorGradingPass = createDeferredPass(
+        "ColorGradingLUT", PipelinePassType::PostProcess,
+        PipelinePassExecution::Fullscreen,
+        CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
+    auto dlssNrPreparePass = createDeferredPass(
+        "DLSSNRPrepare", PipelinePassType::PostProcess,
+        PipelinePassExecution::Fullscreen,
+        CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
+    auto dlssNrPass = createDeferredPass(
+        "DLSSNeuralRendering", PipelinePassType::PostProcess,
+        PipelinePassExecution::Fullscreen,
+        CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
+    dlssNrPass->setExternalFeature(
+        PipelineExternalFeature::DlssNeuralRendering);
+    auto dlssNrPresentPass = createDeferredPass(
+        "DLSSNRPresent", PipelinePassType::PostProcess,
+        PipelinePassExecution::Fullscreen,
+        CullMode::None, false, false, DepthTestMode::Less, BlendMode::Off);
 
     lightingPass->setParameterProvider(ParameterProviders::Lighting);
     lightingPass->setUniformByteSize(
         480u, PipelineShaderStageFragment);
+    lightCullXYPass->setUniformByteSize(0u, 0u);
+    lightCullXYPass->setComputeShader(Shader::create(
+        "res/Shaders/Source/deferred_light_cull_xy.hlsl",
+        ShaderType::Compute));
+    // One compute thread represents one 32x32 lighting tile. The runtime
+    // converts the internal pixel extent to 8x8-thread dispatch groups.
+    lightCullXYPass->setDispatchForInternalExtent(
+        LightCullTileSize * 8u, LightCullTileSize * 8u, 1u);
+    lightCullXYPass->addStorageBuffer(
+        "lightCullXYMasks", "LightCullXYMasks", 1u,
+        PipelineResourceAccess::BufferStorageWrite);
+    lightCullZPass->setUniformByteSize(0u, 0u);
+    lightCullZPass->setComputeShader(Shader::create(
+        "res/Shaders/Source/deferred_light_cull_z.hlsl",
+        ShaderType::Compute));
+    lightCullZPass->setDispatch(
+        LightCullDepthSlices / 64u, 1u, 1u);
+    lightCullZPass->addStorageBuffer(
+        "lightCullZMasks", "LightCullZMasks", 1u,
+        PipelineResourceAccess::BufferStorageWrite);
     hbaoPass->setParameterProvider(ParameterProviders::SSAO);
     hbaoPass->setUniformByteSize(
         16u, PipelineShaderStageFragment);
@@ -421,17 +526,31 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     temporalAaPass->setParameterProvider(
         ParameterProviders::TemporalAA);
     temporalAaPass->setUniformByteSize(
-        16u, PipelineShaderStageFragment);
+        32u, PipelineShaderStageFragment);
     temporalUpscalePass->setParameterProvider(
         ParameterProviders::TemporalUpscale);
     temporalUpscalePass->setUniformByteSize(
-        16u, PipelineShaderStageFragment);
+        32u, PipelineShaderStageFragment);
     motionBlurPass->setParameterProvider(
         ParameterProviders::MotionBlur);
     outlineTemporalPass->setParameterProvider(
         ParameterProviders::OutlineTemporal);
     postProcessPass->setParameterProvider(
         ParameterProviders::FinalComposite);
+    colorGradingPass->setParameterProvider(
+        ParameterProviders::ColorGrading);
+    colorGradingPass->setUniformByteSize(
+        96u, PipelineShaderStageFragment);
+    dlssNrPreparePass->setParameterProvider(
+        ParameterProviders::DlssNrPrepare);
+    dlssNrPreparePass->setUniformByteSize(
+        16u, PipelineShaderStageFragment);
+    dlssNrPass->setParameterProvider(ParameterProviders::DlssNr);
+    dlssNrPass->setUniformByteSize(
+        32u, PipelineShaderStageFragment);
+    dlssNrPresentPass->setParameterProvider(
+        ParameterProviders::DlssNrPresent);
+    dlssNrPresentPass->setUniformByteSize(0u, 0u);
 
     for (uint32_t cascade = 0; cascade < ShadowCascadeCount; ++cascade) {
         shadowPasses[cascade]->setDepthAttachment(
@@ -508,6 +627,12 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     lightingPass->addSampledTexture("gBufferEffects", "GBufferEffects", 5);
     lightingPass->addSampledTexture("gBufferWorldPos", "GBufferWorldPos", 6);
     lightingPass->addSampledTexture("sceneDepth", "SceneDepth", 7);
+    lightingPass->addStorageBuffer(
+        "lightCullXYMasks", "LightCullXYMasks", 16u,
+        PipelineResourceAccess::BufferStorageRead);
+    lightingPass->addStorageBuffer(
+        "lightCullZMasks", "LightCullZMasks", 17u,
+        PipelineResourceAccess::BufferStorageRead);
     lightingPass->addSampledTexture(
         "hbaoTexture",
         config_.hbao ? "HBAO" : "GBufferMaterial",
@@ -647,12 +772,6 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
         "sceneColor", currentHdrResource, 1, false, currentHdrProducer);
     postProcessPass->addSampledTexture("gBufferNormal", "GBufferNormal", 2);
     postProcessPass->addSampledTexture(
-        "bloomLowRes",
-        config_.bloom ? "BloomLowRes" : currentHdrResource,
-        3,
-        false,
-        config_.bloom ? "BloomUpHalf" : currentHdrProducer);
-    postProcessPass->addSampledTexture(
         "outlineMask",
         config_.outline ? "OutlineHistory" : "GBufferNormal",
         4,
@@ -660,7 +779,59 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
         config_.outline ? "OutlineTemporal" : "GBuffer");
     postProcessPass->addSampledTexture(
         "gBufferWorldPos", "GBufferWorldPos", 5);
-    postProcessPass->addColorAttachment("FinalColor");
+    postProcessPass->addColorAttachment("PostProcessedHDRColor");
+
+    colorGradingPass->addSampledTexture(
+        "postProcessedHdrColor",
+        "PostProcessedHDRColor",
+        1u,
+        false,
+        "PostProcessing");
+    colorGradingPass->addSampledTexture(
+        "bloomLowRes",
+        config_.bloom ? "BloomLowRes" : "PostProcessedHDRColor",
+        2u,
+        false,
+        config_.bloom ? "BloomUpHalf" : "PostProcessing");
+    colorGradingPass->addImportedTexture({
+        3u,
+        ImportedResourceHandles::ColorGradingLut,
+        PipelineShaderStageFragment
+    });
+    colorGradingPass->addColorAttachment(
+        config_.dlssNeuralRendering
+            ? "DLSSNRColorGradedLinear"
+            : "FinalColor");
+
+    dlssNrPreparePass->addSampledTexture(
+        "colorGradedLinear", "DLSSNRColorGradedLinear", 1u, false,
+        "ColorGradingLUT");
+    dlssNrPreparePass->addSampledTexture(
+        "gBufferVelocity", "GBufferVelocity", 2u);
+    dlssNrPreparePass->addSampledTexture(
+        "sceneDepth", "SceneDepth", 3u);
+    dlssNrPreparePass->addColorAttachment("DLSSNRInputColor");
+    dlssNrPreparePass->addColorAttachment("DLSSNRMotionVectors");
+    dlssNrPreparePass->addColorAttachment("DLSSNRDepth");
+
+    // This is a color-preserving raster fallback until the Vulkan NGX
+    // runtime is supplied. The provider id and stable resource ABI allow the
+    // RHI executor to replace this draw with Feature 18 evaluation later.
+    dlssNrPass->addSampledTexture(
+        "dlssNrInputColor", "DLSSNRInputColor", 1u, false,
+        "DLSSNRPrepare");
+    dlssNrPass->addSampledTexture(
+        "dlssNrMotionVectors", "DLSSNRMotionVectors", 2u, false,
+        "DLSSNRPrepare");
+    dlssNrPass->addSampledTexture(
+        "dlssNrDepth", "DLSSNRDepth", 3u, false,
+        "DLSSNRPrepare");
+    dlssNrPass->addColorAttachment("DLSSNROutputColor");
+
+    dlssNrPresentPass->addSampledTexture(
+        "dlssNrOutputColor", "DLSSNROutputColor", 1u, false,
+        "DLSSNeuralRendering");
+    dlssNrPresentPass->addColorAttachment("FinalColor");
 
     addDeferredGBufferTextures(gBufferPass);
     addDeferredMaterialTextures(transparentPass);
@@ -683,12 +854,14 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     });
 
     for (auto& shadowPass : shadowPasses) {
+        shadowPass->setMaterialTechniqueSlot(MaterialTechniqueSlots::Shadow);
         shadowPass->setVertexShader(Shader::create(
             "res/Shaders/Source/deferred_shadow.hlsl", ShaderType::Vertex));
         shadowPass->setFragmentShader(Shader::create(
             "res/Shaders/Source/deferred_shadow.hlsl", ShaderType::Fragment));
     }
     for (auto& shadowPass : virtualShadowPasses) {
+        shadowPass->setMaterialTechniqueSlot(MaterialTechniqueSlots::Shadow);
         shadowPass->setVertexShader(Shader::create(
             "res/Shaders/Source/deferred_shadow.hlsl", ShaderType::Vertex));
         shadowPass->setFragmentShader(Shader::create(
@@ -696,6 +869,7 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     }
     gBufferPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_gbuffer.hlsl", ShaderType::Vertex));
     gBufferPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_gbuffer.hlsl", ShaderType::Fragment));
+    gBufferPass->setMaterialTechniqueSlot(MaterialTechniqueSlots::GBuffer);
     hbaoPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_hbao.hlsl", ShaderType::Vertex));
     hbaoPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_hbao.hlsl", ShaderType::Fragment));
     hiZInitPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_hiz_init.hlsl", ShaderType::Vertex));
@@ -710,6 +884,8 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
     lightingPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_lighting.hlsl", ShaderType::Fragment));
     transparentPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_transparent.hlsl", ShaderType::Vertex));
     transparentPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_transparent.hlsl", ShaderType::Fragment));
+    transparentPass->setMaterialTechniqueSlot(
+        MaterialTechniqueSlots::Transparent);
     for (const auto& bloomDownPass : {
              bloomDownHalfPass,
              bloomDownQuarterPass,
@@ -751,6 +927,30 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
         ShaderType::Fragment));
     postProcessPass->setVertexShader(Shader::create("res/Shaders/Source/deferred_postprocess.hlsl", ShaderType::Vertex));
     postProcessPass->setFragmentShader(Shader::create("res/Shaders/Source/deferred_postprocess.hlsl", ShaderType::Fragment));
+    colorGradingPass->setVertexShader(Shader::create(
+        "res/Shaders/Source/deferred_color_grading.hlsl",
+        ShaderType::Vertex));
+    colorGradingPass->setFragmentShader(Shader::create(
+        "res/Shaders/Source/deferred_color_grading.hlsl",
+        ShaderType::Fragment));
+    dlssNrPreparePass->setVertexShader(Shader::create(
+        "res/Shaders/Source/deferred_dlss_nr_prepare.hlsl",
+        ShaderType::Vertex));
+    dlssNrPreparePass->setFragmentShader(Shader::create(
+        "res/Shaders/Source/deferred_dlss_nr_prepare.hlsl",
+        ShaderType::Fragment));
+    dlssNrPass->setVertexShader(Shader::create(
+        "res/Shaders/Source/deferred_dlss_nr.hlsl",
+        ShaderType::Vertex));
+    dlssNrPass->setFragmentShader(Shader::create(
+        "res/Shaders/Source/deferred_dlss_nr.hlsl",
+        ShaderType::Fragment));
+    dlssNrPresentPass->setVertexShader(Shader::create(
+        "res/Shaders/Source/deferred_dlss_nr_present.hlsl",
+        ShaderType::Vertex));
+    dlssNrPresentPass->setFragmentShader(Shader::create(
+        "res/Shaders/Source/deferred_dlss_nr_present.hlsl",
+        ShaderType::Fragment));
     for (uint32_t permutation = 0; permutation < 8u; ++permutation) {
         postProcessPass->addShaderPermutation({
             permutation,
@@ -788,6 +988,8 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
         addPass(hiZEighthPass);
         addPass(hiZSixteenthPass);
     }
+    addPass(lightCullXYPass);
+    addPass(lightCullZPass);
     addPass(lightingPass);
     addPass(transparentPass);
     if (config_.ssr) {
@@ -817,6 +1019,12 @@ void DeferredPipeline::GenPass(std::shared_ptr<Scene> scene) {
         addPass(bloomUpHalfPass);
     }
     addPass(postProcessPass);
+    addPass(colorGradingPass);
+    if (config_.dlssNeuralRendering) {
+        addPass(dlssNrPreparePass);
+        addPass(dlssNrPass);
+        addPass(dlssNrPresentPass);
+    }
 
     if (!scene) {
         return;

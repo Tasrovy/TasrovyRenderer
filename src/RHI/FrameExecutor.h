@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FrameExecutionTypes.h"
+#include "ExternalFeatureExecutor.h"
 #include "CompiledRenderPipeline.h"
 #include "RenderFramePlan.h"
 #include "CommandList.h"
@@ -60,6 +61,7 @@ struct FrameExecuteContext {
     CommandList* commandList = nullptr;
     const SwapchainRenderTarget* swapchainTarget = nullptr;
     const FrameExecutionBindings* bindings = nullptr;
+    IExternalFeatureExecutor* externalFeatureExecutor = nullptr;
     uint32_t frameIndex = 0;
     uint64_t timestampQueryPool = 0;
     uint32_t timestampQueryCapacity = 0;

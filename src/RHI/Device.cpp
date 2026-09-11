@@ -138,10 +138,28 @@ std::shared_ptr<Image> Device::createVirtualShadowMap(
 }
 Format Device::resolveRenderTextureFormat(RenderTextureFormat format) const {
     switch (format) {
+    case RenderTextureFormat::R8Unorm: return Format::R8Unorm;
+    case RenderTextureFormat::RG8Unorm: return Format::RG8Unorm;
     case RenderTextureFormat::RGBA8Unorm: return Format::RGBA8Unorm;
-    case RenderTextureFormat::RGBA16Float: return Format::RGBA16Float;
+    case RenderTextureFormat::RGBA8Srgb: return Format::RGBA8Srgb;
+    case RenderTextureFormat::R8Uint: return Format::R8Uint;
+    case RenderTextureFormat::R16Uint: return Format::R16Uint;
+    case RenderTextureFormat::R32Uint: return Format::R32Uint;
+    case RenderTextureFormat::RG16Uint: return Format::RG16Uint;
+    case RenderTextureFormat::R16Float: return Format::R16Float;
     case RenderTextureFormat::RG16Float: return Format::RG16Float;
+    case RenderTextureFormat::RGBA16Float: return Format::RGBA16Float;
+    case RenderTextureFormat::R32Float: return Format::R32Float;
+    case RenderTextureFormat::RG32Float: return Format::RG32Float;
+    case RenderTextureFormat::RGBA32Float: return Format::RGBA32Float;
+    case RenderTextureFormat::R11G11B10Float: return Format::R11G11B10Float;
+    case RenderTextureFormat::RGB10A2Unorm: return Format::RGB10A2Unorm;
+    case RenderTextureFormat::Depth16Unorm: return Format::Depth16Unorm;
+    case RenderTextureFormat::Depth24UnormStencil8:
+        return Format::Depth24UnormStencil8;
     case RenderTextureFormat::Depth32Float: return Format::Depth32Float;
+    case RenderTextureFormat::Depth32FloatStencil8:
+        return Format::Depth32FloatStencil8;
     case RenderTextureFormat::Swapchain:
         return impl_->frameScheduler->getColorFormat();
     }

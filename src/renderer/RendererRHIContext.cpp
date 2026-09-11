@@ -23,6 +23,8 @@ RendererRHIContext::RendererRHIContext(
     commandList = device->retainResource(
         persistentResourceScope,
         device->createCommandList());
+    externalFeatureExecutor =
+        Tasrovy::RHI::createExternalFeatureExecutor(*device);
 }
 
 RendererRHIContext::~RendererRHIContext() {
@@ -30,6 +32,10 @@ RendererRHIContext::~RendererRHIContext() {
         return;
     }
     device->getFrameScheduler().waitForInFlightFrames();
+    if (externalFeatureExecutor) {
+        externalFeatureExecutor->invalidateResources();
+        externalFeatureExecutor.reset();
+    }
     device->destroyResourceScope(displayResourceScope);
     device->destroyResourceScope(sceneResourceScope);
     device->destroyResourceScope(persistentResourceScope);

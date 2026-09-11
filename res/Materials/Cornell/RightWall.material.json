@@ -1,5 +1,6 @@
 {
   "name": "CornellRightWall",
+  "technique": "res/MaterialTechniques/Scene.technique.json",
   "properties": [
     {"name": "baseColorFactor", "type": "float4", "value": [0.14, 0.45, 0.091, 1.0]},
     {"name": "metallic", "type": "float", "value": 0.0},

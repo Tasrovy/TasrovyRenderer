@@ -8,6 +8,17 @@
 #include <vector>
 #include <Logger.hpp>
 
+namespace {
+
+bool isUnsignedIntegerFormat(VkFormat format) {
+    return format == VK_FORMAT_R8_UINT ||
+        format == VK_FORMAT_R16_UINT ||
+        format == VK_FORMAT_R32_UINT ||
+        format == VK_FORMAT_R16G16_UINT;
+}
+
+} // namespace
+
 // --- 统一的私有构造函数 ---
 VulkanImage::VulkanImage(VulkanContext& context, VkExtent2D extent, VkFormat format, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkImageCreateFlags createFlags, uint32_t arrayLayers)
     : _context(&context), _format(format), _extent(extent), _layout(VK_IMAGE_LAYOUT_UNDEFINED), _mipLevels(mipLevels), _msaaCount(numSamples), _imageCreateFlags(createFlags)
@@ -146,10 +157,17 @@ std::unique_ptr<VulkanImage> VulkanImage::createSolidTexture(
         textureImage->recordTransitionLayout(
             cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         VkClearColorValue clear{};
-        clear.float32[0] = color[0];
-        clear.float32[1] = color[1];
-        clear.float32[2] = color[2];
-        clear.float32[3] = color[3];
+        if (isUnsignedIntegerFormat(format)) {
+            clear.uint32[0] = static_cast<uint32_t>(color[0]);
+            clear.uint32[1] = static_cast<uint32_t>(color[1]);
+            clear.uint32[2] = static_cast<uint32_t>(color[2]);
+            clear.uint32[3] = static_cast<uint32_t>(color[3]);
+        } else {
+            clear.float32[0] = color[0];
+            clear.float32[1] = color[1];
+            clear.float32[2] = color[2];
+            clear.float32[3] = color[3];
+        }
         VkImageSubresourceRange range{};
         range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         range.baseMipLevel = 0;

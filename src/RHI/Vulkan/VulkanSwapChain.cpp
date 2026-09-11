@@ -3,7 +3,6 @@
 #include <stdexcept>
 #include <algorithm>
 #include <array>
-#include <limits>
 #include <utility>
 #include <Logger.hpp>
 
@@ -133,7 +132,18 @@ void VulkanSwapchain::recreate() {
 }
 
 VkResult VulkanSwapchain::acquireNextImage(VkSemaphore imageAvailableSemaphore, uint32_t* imageIndex) {
-    return vkAcquireNextImageKHR(_context.getDevice(), _swapchain, std::numeric_limits<uint64_t>::max(), imageAvailableSemaphore, VK_NULL_HANDLE, imageIndex);
+    // An infinite acquire can deadlock resize recovery on platforms where the
+    // presentation engine temporarily stops releasing images during an
+    // interactive window resize. A bounded wait lets the RHI task finish so
+    // the render thread can drain queued frames and recreate the swapchain.
+    constexpr uint64_t AcquireTimeoutNanoseconds = 50'000'000ull;
+    return vkAcquireNextImageKHR(
+        _context.getDevice(),
+        _swapchain,
+        AcquireTimeoutNanoseconds,
+        imageAvailableSemaphore,
+        VK_NULL_HANDLE,
+        imageIndex);
 }
 
 VkResult VulkanSwapchain::present(VkQueue presentQueue, VkSemaphore waitSemaphore, uint32_t imageIndex) {

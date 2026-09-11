@@ -118,7 +118,8 @@ void GPUScene::buildUploads(
     };
     const auto resolution = FrameParameterBuilder::buildResolution(
         internalWidth, internalHeight, displayWidth, displayHeight,
-        settings.temporalAAMode);
+        settings.temporalAAMode,
+        settings.temporalMipBiasAdjustment);
     ViewUniform view{};
     view.view = transpose(viewFrame.view);
     view.projection = transpose(viewFrame.flippedProjection);

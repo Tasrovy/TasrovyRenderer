@@ -207,9 +207,20 @@ void VulkanCommandListBackend::beginRenderPass(Pass& pass) {
         value.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         value.loadOp = toVkLoadOp(attachment.load);
         value.storeOp = toVkStoreOp(attachment.store);
-        value.clearValue.color = {{attachment.clearColor.x,
-            attachment.clearColor.y, attachment.clearColor.z,
-            attachment.clearColor.w}};
+        if (isUnsignedIntegerFormat(attachment.image->getFormat())) {
+            value.clearValue.color.uint32[0] =
+                static_cast<uint32_t>(attachment.clearColor.x);
+            value.clearValue.color.uint32[1] =
+                static_cast<uint32_t>(attachment.clearColor.y);
+            value.clearValue.color.uint32[2] =
+                static_cast<uint32_t>(attachment.clearColor.z);
+            value.clearValue.color.uint32[3] =
+                static_cast<uint32_t>(attachment.clearColor.w);
+        } else {
+            value.clearValue.color = {{attachment.clearColor.x,
+                attachment.clearColor.y, attachment.clearColor.z,
+                attachment.clearColor.w}};
+        }
         colors.push_back(value);
     }
     VkRenderingAttachmentInfo depth{};
@@ -454,9 +465,8 @@ void VulkanCommandListBackend::bufferMemoryBarrier(
 void VulkanCommandListBackend::transitionImage(
     Image& image, ImageLayout oldLayout, ImageLayout newLayout,
     uint32_t aspectMask) {
-    const bool depth = image.getFormat() == Format::Depth32Float ||
-        image.getFormat() == Format::Depth32FloatStencil8;
-    const bool stencil = image.getFormat() == Format::Depth32FloatStencil8;
+    const bool depth = isDepthFormat(image.getFormat());
+    const bool stencil = hasStencilComponent(image.getFormat());
     const auto aspect = aspectMask != 0
         ? static_cast<VkImageAspectFlags>(aspectMask)
         : depth ? static_cast<VkImageAspectFlags>(VK_IMAGE_ASPECT_DEPTH_BIT |

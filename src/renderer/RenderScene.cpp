@@ -23,8 +23,8 @@ RenderScene::LockedState::pipeline() {
     return owner_.pipeline_;
 }
 
-void RenderScene::LockedState::markDirty() {
-    owner_.markDirtyLocked();
+void RenderScene::LockedState::markChanged(SceneChange changes) {
+    owner_.markChangedLocked(changes);
 }
 
 void RenderScene::submitScene(
@@ -32,7 +32,7 @@ void RenderScene::submitScene(
     std::lock_guard<std::mutex> guard(mutex_);
     scene_ = scene ? scene->clone() : nullptr;
     rebuildProxiesLocked();
-    markDirtyLocked();
+    markChangedLocked(SceneChange::AllScene);
 }
 
 void RenderScene::addPrimitive(
@@ -45,16 +45,41 @@ void RenderScene::addPrimitive(
     const auto proxy = PrimitiveSceneProxy::fromObject(*clone);
     scene_->addObject(std::move(clone));
     proxies_[proxy.id] = proxy;
-    markDirtyLocked();
+    markChangedLocked(SceneChange::Structural);
 }
 
 void RenderScene::updatePrimitive(
     const Tasrovy::Render::Object& object) {
     std::lock_guard<std::mutex> guard(mutex_);
     const auto proxy = PrimitiveSceneProxy::fromObject(object);
+    SceneChange changes = SceneChange::None;
+    const auto previous = proxies_.find(proxy.id);
+    if (previous == proxies_.end() ||
+        previous->second.mesh != proxy.mesh ||
+        previous->second.active != proxy.active) {
+        changes |= SceneChange::Structural;
+    }
+    if (previous == proxies_.end() ||
+        previous->second.position != proxy.position ||
+        previous->second.rotation != proxy.rotation ||
+        previous->second.scale != proxy.scale ||
+        previous->second.flipProjectionY != proxy.flipProjectionY) {
+        changes |= SceneChange::Transform;
+    }
+    if (previous == proxies_.end() ||
+        previous->second.material != proxy.material ||
+        previous->second.submeshMaterials != proxy.submeshMaterials) {
+        // Replacing a material can change descriptor resources, shader
+        // permutations and surface routing. Parameter-only edits use the
+        // Material generation without Structural.
+        changes |= SceneChange::Material | SceneChange::Structural;
+    }
+    if (changes == SceneChange::None) {
+        return;
+    }
     proxies_[proxy.id] = proxy;
     applyProxyLocked(proxy);
-    markDirtyLocked();
+    markChangedLocked(changes);
 }
 
 void RenderScene::removePrimitive(const std::string& name) {
@@ -69,14 +94,14 @@ void RenderScene::removePrimitive(const std::string& name) {
     const auto id = PrimitiveSceneProxy::fromObject(*found).id;
     scene_->removeObject(found);
     proxies_.erase(id);
-    markDirtyLocked();
+    markChangedLocked(SceneChange::Structural);
 }
 
 void RenderScene::submitPipeline(
     std::shared_ptr<Tasrovy::Render::PipelineBase> pipeline) {
     std::lock_guard<std::mutex> guard(mutex_);
     pipeline_ = std::move(pipeline);
-    markDirtyLocked();
+    markChangedLocked(SceneChange::Pipeline);
 }
 
 RenderScene::Snapshot RenderScene::snapshot() const {
@@ -84,8 +109,7 @@ RenderScene::Snapshot RenderScene::snapshot() const {
     return {
         publishedScene_,
         pipeline_,
-        dirty_,
-        version_
+        versions_
     };
 }
 
@@ -93,25 +117,30 @@ RenderScene::LockedState RenderScene::lock() {
     return LockedState(*this);
 }
 
-void RenderScene::acknowledge(uint64_t version) {
-    std::lock_guard<std::mutex> guard(mutex_);
-    if (version_ == version) {
-        dirty_ = false;
-    }
-}
-
 void RenderScene::adoptPipelineIfEmpty(
     const std::shared_ptr<Tasrovy::Render::PipelineBase>& pipeline) {
     std::lock_guard<std::mutex> guard(mutex_);
     if (!pipeline_) {
         pipeline_ = pipeline;
+        ++versions_.pipeline;
     }
 }
 
-void RenderScene::markDirtyLocked() {
-    publishSceneLocked();
-    dirty_ = true;
-    ++version_;
+void RenderScene::markChangedLocked(SceneChange changes) {
+    if (changes == SceneChange::None) {
+        return;
+    }
+    if (hasSceneChange(changes, SceneChange::Structural) ||
+        hasSceneChange(changes, SceneChange::Transform) ||
+        hasSceneChange(changes, SceneChange::Material) ||
+        hasSceneChange(changes, SceneChange::Lighting)) {
+        publishSceneLocked();
+    }
+    if (hasSceneChange(changes, SceneChange::Structural)) ++versions_.structural;
+    if (hasSceneChange(changes, SceneChange::Transform)) ++versions_.transform;
+    if (hasSceneChange(changes, SceneChange::Material)) ++versions_.material;
+    if (hasSceneChange(changes, SceneChange::Lighting)) ++versions_.lighting;
+    if (hasSceneChange(changes, SceneChange::Pipeline)) ++versions_.pipeline;
 }
 
 void RenderScene::publishSceneLocked() {

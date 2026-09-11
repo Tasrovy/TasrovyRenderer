@@ -6,10 +6,26 @@
 namespace Tasrovy::Render {
 
 enum class PipelineTextureFormat {
+    R8Unorm,
+    RG8Unorm,
     RGBA8Unorm,
-    RGBA16Float,
+    RGBA8Srgb,
+    R8Uint,
+    R16Uint,
+    R32Uint,
+    RG16Uint,
+    R16Float,
     RG16Float,
+    RGBA16Float,
+    R32Float,
+    RG32Float,
+    RGBA32Float,
+    R11G11B10Float,
+    RGB10A2Unorm,
+    Depth16Unorm,
+    Depth24UnormStencil8,
     Depth32Float,
+    Depth32FloatStencil8,
     Swapchain
 };
 
@@ -28,6 +44,9 @@ struct PipelineTextureDesc {
     uint32_t width = 0;
     uint32_t height = 0;
     bool external = false;
+    // Requests storage/UAV capability even when the RenderGraph fallback uses
+    // this texture only as a color attachment.
+    bool storageCapable = false;
 };
 
 enum class AttachmentLoad {

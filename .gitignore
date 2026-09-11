@@ -40,3 +40,15 @@ Thumbs.db
 .DS_Store
 imgui.ini
 AGENTS.md
+
+# Local RenderDoc captures and reverse-engineering notes
+*.rdc
+/docs/111-*
+/docs/renderdoc-*-work/
+/docs/renderdoc-work/
+/docs/终末地*.docx
+/tools/renderdoc/
+
+# Generated documentation previews and editor lock files
+/docs/*.visual-check.*
+/docs/~$*.docx

@@ -49,6 +49,8 @@ inline constexpr const char* TemporalMode = "render.temporal.mode";
 inline constexpr const char* MotionBlur = "render.motion_blur.enabled";
 inline constexpr const char* Outline = "render.outline.enabled";
 inline constexpr const char* Bloom = "render.bloom.enabled";
+inline constexpr const char* DlssNeuralRendering =
+    "render.dlss_neural_rendering.enabled";
 }
 
 class PipelineBase : public std::enable_shared_from_this<PipelineBase> {

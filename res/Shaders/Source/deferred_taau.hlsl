@@ -3,6 +3,8 @@ cbuffer TemporalPassConstants : register(b0, space0)
     // x: enabled and history valid, y: base history weight,
     // zw: internal-resolution / display-resolution scale.
     float4 taaParams;
+    // xy: current-minus-previous projection jitter in screen UV units.
+    float4 jitterParams;
 };
 
 struct VSOutput
@@ -170,16 +172,13 @@ PSOutput PSMain(VSOutput input)
         return MakeTemporalOutput(
             currentColor, currentEncodedNormal, currentDepth);
     }
-    if (currentDepth >= 0.999999f) {
-        return MakeTemporalOutput(
-            currentColor, currentEncodedNormal, currentDepth);
-    }
 
     // Dilate foreground velocity into geometric edges by choosing the closest
     // depth in a 3x3 neighborhood. Bilinear velocity at silhouettes mixes
     // unrelated foreground/background motion and is a major source of trails.
     float closestDepth = currentDepth;
     float2 closestUv = uv;
+    uint foregroundSampleCount = currentDepth < 0.999999f ? 1u : 0u;
     const float2 internalTexelSize = rcp(internalSize);
     [unroll]
     for (int velocityY = -1; velocityY <= 1; ++velocityY) {
@@ -189,14 +188,38 @@ PSOutput PSMain(VSOutput input)
                 float2(velocityX, velocityY) * internalTexelSize;
             const float candidateDepth = sceneDepth.SampleLevel(
                 sceneDepthSampler, candidateUv, 0.0f).r;
+            if ((velocityX != 0 || velocityY != 0) &&
+                candidateDepth < 0.999999f) {
+                ++foregroundSampleCount;
+            }
             if (candidateDepth < closestDepth) {
                 closestDepth = candidateDepth;
                 closestUv = candidateUv;
             }
         }
     }
+    // A footprint containing both scene geometry and the far plane is a
+    // likely sub-pixel silhouette. Projection jitter can make its center
+    // alternate between foreground and background even at native resolution.
+    const bool mixedGeometryCoverage =
+        foregroundSampleCount > 0u && foregroundSampleCount < 9u;
+    const bool recoverForegroundCoverage =
+        currentDepth >= 0.999999f && mixedGeometryCoverage;
+    const float validationDepth = recoverForegroundCoverage
+        ? closestDepth
+        : currentDepth;
+    const float2 validationUv = recoverForegroundCoverage
+        ? closestUv
+        : uv;
+    const float3 validationEncodedNormal = recoverForegroundCoverage
+        ? gBufferNormal.SampleLevel(
+            gBufferNormalSampler, closestUv, 0.0f).xyz
+        : currentEncodedNormal;
+    // GBuffer velocity contains projection jitter. Temporal history has
+    // already been resolved onto the stable output grid, so reproject it with
+    // physical camera/object motion only.
     const float2 velocity = gBufferVelocity.SampleLevel(
-        gBufferVelocitySampler, closestUv, 0.0f).xy;
+        gBufferVelocitySampler, closestUv, 0.0f).xy - jitterParams.xy;
     const float2 historyUv = uv - velocity;
     if (any(historyUv <= 0.0f.xx) || any(historyUv >= 1.0f.xx)) {
         return MakeTemporalOutput(
@@ -206,17 +229,21 @@ PSOutput PSMain(VSOutput input)
     const float4 historyData = taaHistoryData.SampleLevel(
         taaHistoryDataSampler, historyUv, 0.0f);
     const float historyDepth = historyData.w;
-    const float depthThreshold = max(0.0015f, abs(closestDepth) * 0.01f);
-    if (abs(closestDepth - historyDepth) > depthThreshold) {
+    const float depthThreshold = max(
+        recoverForegroundCoverage ? 0.003f : 0.0015f,
+        abs(validationDepth) *
+            (recoverForegroundCoverage ? 0.02f : 0.01f));
+    if (abs(validationDepth - historyDepth) > depthThreshold) {
         return MakeTemporalOutput(
             currentColor, currentEncodedNormal, currentDepth);
     }
 
     const float3 currentNormal = normalize(
-        currentEncodedNormal * 2.0f - 1.0f);
+        validationEncodedNormal * 2.0f - 1.0f);
     const float3 historyNormal = normalize(
         historyData.xyz * 2.0f - 1.0f);
-    if (dot(currentNormal, historyNormal) < 0.75f) {
+    const float normalThreshold = recoverForegroundCoverage ? 0.55f : 0.75f;
+    if (dot(currentNormal, historyNormal) < normalThreshold) {
         return MakeTemporalOutput(
             currentColor, currentEncodedNormal, currentDepth);
     }
@@ -245,15 +272,22 @@ PSOutput PSMain(VSOutput input)
     const float3 neighborhoodSigma = sqrt(max(
         neighborhoodMoment2 - neighborhoodMean * neighborhoodMean,
         0.0f.xxx));
-    const float3 varianceMin = neighborhoodMean - 1.75f * neighborhoodSigma;
-    const float3 varianceMax = neighborhoodMean + 1.75f * neighborhoodSigma;
+    // A binary foreground/background footprint naturally has high variance.
+    // Give valid reprojected foreground a wider clamp only for that footprint;
+    // ordinary surfaces retain the sharper clamp used before.
+    const float varianceGamma = recoverForegroundCoverage ? 2.5f : 1.75f;
+    const float3 varianceMin =
+        neighborhoodMean - varianceGamma * neighborhoodSigma;
+    const float3 varianceMax =
+        neighborhoodMean + varianceGamma * neighborhoodSigma;
     const float3 neighborhoodExtent =
         max(neighborhoodMax - neighborhoodMin, 0.001f.xxx);
+    const float clampPadding = recoverForegroundCoverage ? 0.15f : 0.05f;
     neighborhoodMin = max(
-        neighborhoodMin - neighborhoodExtent * 0.05f,
+        neighborhoodMin - neighborhoodExtent * clampPadding,
         varianceMin);
     neighborhoodMax = min(
-        neighborhoodMax + neighborhoodExtent * 0.05f,
+        neighborhoodMax + neighborhoodExtent * clampPadding,
         varianceMax);
 
     uint historyWidth;
@@ -281,14 +315,25 @@ PSOutput PSMain(VSOutput input)
         1.0f - abs(currentLuminance - historyLuminance) /
         (luminanceScale * 1.5f));
     const float reactiveMask = gBufferMaterial.SampleLevel(
-        gBufferMaterialSampler, uv, 0.0f).a > (0.5f / 255.0f)
+        gBufferMaterialSampler, validationUv, 0.0f).a > (0.5f / 255.0f)
         ? 1.0f
         : 0.0f;
+    // Once depth, normal and reprojection agree, a foreground/background
+    // luminance jump is expected for a missed sub-pixel sample. Retaining a
+    // bounded amount of history turns the binary per-frame coverage into a
+    // stable temporal coverage without relaxing rejection across the image.
+    const float stableLuminanceConfidence = recoverForegroundCoverage
+        ? max(luminanceConfidence, 0.65f)
+        : luminanceConfidence;
     const float historyWeight =
         saturate(taaParams.y) * motionConfidence *
-        luminanceConfidence * (1.0f - reactiveMask);
+        stableLuminanceConfidence * (1.0f - reactiveMask);
+    const bool retainForegroundMetadata =
+        recoverForegroundCoverage && historyWeight > 0.05f;
     return MakeTemporalOutput(
         lerp(currentColor, historyColor, historyWeight),
-        currentEncodedNormal,
-        currentDepth);
+        retainForegroundMetadata
+            ? validationEncodedNormal
+            : currentEncodedNormal,
+        retainForegroundMetadata ? validationDepth : currentDepth);
 }

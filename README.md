@@ -14,8 +14,13 @@ TasrovyRenderer 是一个使用 C++20、HLSL 和 Vulkan 构建的实验性实时
 - Deferred PBR、IBL 和透明物体渲染
 - Shadow Map、CSM、PCF / PCSS 和实验性 Virtual Shadow Map
 - HBAO、Hi-Z、SSR、TAA / TAAU、Bloom、Motion Blur 与 DOF
+- Graphics / Compute Pass 统一调度，支持最多 256 光源的分区光源剔除
 - GPUScene 场景数据组织
+- 基于 meshoptimizer 的导入时自动 LOD 生成与屏幕覆盖率选择
 - 每纹理独立 UV 采样变换
+- JSON 场景加载与运行时场景选择
+- 延迟 PBR 与实验性风格化 PBR 管线切换
+- 可选 DLSS-NR 外部降噪 Pass，失败时自动回退到原生管线
 - Main、Render、RHI 三线程职责分离
 - ImGui 调试界面、资源监控和 GPU Timestamp
 
@@ -82,6 +87,7 @@ cmake --build cmake-build-debug --config Debug
 - IBL 预计算默认停用，相关后端实现仍被保留
 - GPU Driven GBuffer 实验代码暂未接入当前运行时执行链
 - Render/RHI 使用 `maxFramesInFlight` 有界窗口并行生产、消费不可变帧提交
+- DLSS-NR 依赖用户本地提供的 NVIDIA NGX 运行时，二进制文件不随仓库分发
 
 ## 文档
 

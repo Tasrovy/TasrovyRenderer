@@ -35,7 +35,7 @@ cbuffer UBO : register(b0, space0)
     matrix previousView;
     matrix previousProj;
     matrix previousModel;
-    // x history valid/enabled, y history weight.
+    // x history valid/enabled, y history weight, zw projection jitter delta.
     float4 taaParams;
 };
 
@@ -87,7 +87,7 @@ float2 PSMain(VSOutput input) : SV_Target
 
     // Reuse the GBuffer UV velocity convention used by TAA.
     const float2 velocity = gBufferVelocity.SampleLevel(
-        gBufferVelocitySampler, uv, 0.0f).xy;
+        gBufferVelocitySampler, uv, 0.0f).xy - taaParams.zw;
     const float2 historyUv = uv - velocity;
     if (any(historyUv <= displayTexel) ||
         any(historyUv >= 1.0f.xx - displayTexel)) {

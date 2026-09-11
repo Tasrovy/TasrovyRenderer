@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "TasrovyRenderer 多线程多帧并行架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/Tasrovy/TasrovyRenderer",
+      "revision": "c934c2d6a2b7f0d3f66a6e4525db65f1c8600a64"
+    },
+    "viewBox": [1080, 600],
+    "views": [
+      {
+        "id": "cpu-pipeline",
+        "label": "CPU 三线程",
+        "focus": ["main-thread", "scene-publication", "render-thread", "frame-queue", "rhi-thread"],
+        "note": "主线程发布场景，Render 线程生产帧提交，RHI 线程录制与提交。"
+      },
+      {
+        "id": "frame-overlap",
+        "label": "多帧重叠",
+        "focus": ["render-thread", "frame-queue", "rhi-thread", "frame-slots", "gpu-present"],
+        "note": "稳态下 Render N、RHI N-1 与 GPU N-2 可以同时前进。"
+      },
+      {
+        "id": "command-submit",
+        "label": "录制与提交",
+        "focus": ["rhi-thread", "frame-scheduler", "command-buffers", "submit-batch", "gpu-present"],
+        "note": "场景与 UI 分别录制 CommandBuffer，随后组成同一次队列提交。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "main-thread", "type": "frontend", "label": "Main Thread", "sublabel": "Window Events · Scene Edits", "tag": "Frame N+1 input", "pos": [20, 230], "size": [160, 72],
+      "sources": [{ "path": "src/core/main.cpp", "label": "事件循环与渲染入口" }]
+    },
+    {
+      "id": "scene-publication", "type": "messagebus", "label": "RenderScene Publication", "sublabel": "Snapshot · Dirty · Version", "pos": [205, 230], "size": [165, 72],
+      "sources": [
+        { "path": "src/renderer/RenderScene.cpp", "line": 82, "label": "快照发布" },
+        { "path": "src/renderer/SceneUpdateCoordinator.cpp", "line": 13, "label": "快照消费" }
+      ]
+    },
+    {
+      "id": "render-thread", "type": "backend", "label": "Render Thread", "sublabel": "Prepare RenderFrameSubmission", "tag": "Render N", "pos": [395, 230], "size": [165, 72],
+      "sources": [
+        { "path": "src/renderer/SceneRendererRuntime.cpp", "line": 50, "label": "线程启动" },
+        { "path": "src/renderer/SceneRendererExecution.cpp", "line": 656, "label": "帧提交生产" }
+      ]
+    },
+    {
+      "id": "frame-queue", "type": "messagebus", "label": "Bounded Frame Queue", "sublabel": "maximumOutstandingTasks", "tag": "maxFramesInFlight", "pos": [585, 230], "size": [165, 72],
+      "sources": [
+        { "path": "src/renderer/RenderFrameSubmission.h", "label": "不可变帧契约" },
+        { "path": "src/renderer/RHIThread.cpp", "line": 52, "label": "有界提交队列" }
+      ]
+    },
+    {
+      "id": "rhi-thread", "type": "backend", "label": "RHI Thread", "sublabel": "Upload · Record · Submit", "tag": "RHI N-1", "pos": [775, 230], "size": [165, 72],
+      "sources": [
+        { "path": "src/renderer/RHIThread.cpp", "line": 85, "label": "单消费者循环" },
+        { "path": "src/renderer/SceneRendererExecution.cpp", "line": 667, "label": "RHI 任务" }
+      ]
+    },
+    {
+      "id": "frame-slots", "type": "database", "label": "Per-frame Slots", "sublabel": "Buffers · Fence · Query Pool", "pos": [585, 65], "size": [165, 72],
+      "sources": [
+        { "path": "src/renderer/GPUScene.cpp", "line": 71, "label": "分帧 GPUScene Buffer" },
+        { "path": "src/RHI/Vulkan/Renderer.cpp", "line": 52, "label": "分帧 CommandBuffer" }
+      ]
+    },
+    {
+      "id": "frame-scheduler", "type": "backend", "label": "FrameScheduler", "sublabel": "Acquire · Wait Fence · Present", "pos": [775, 65], "size": [165, 72],
+      "sources": [
+        { "path": "src/RHI/FrameSchedulerBackend.h", "label": "调度后端接口" },
+        { "path": "src/RHI/Vulkan/Renderer.cpp", "line": 133, "label": "Fence 与 Acquire" }
+      ]
+    },
+    {
+      "id": "command-buffers", "type": "backend", "label": "Two CommandBuffers", "sublabel": "Scene Cmd · UI Cmd", "pos": [585, 430], "size": [165, 72],
+      "sources": [
+        { "path": "src/RHI/Vulkan/Renderer.h", "line": 44, "label": "Scene / Overlay 数组" },
+        { "path": "src/RHI/Vulkan/Renderer.cpp", "line": 186, "label": "UI CommandBuffer 开始" }
+      ]
+    },
+    {
+      "id": "submit-batch", "type": "messagebus", "label": "Queue Submit Batch", "sublabel": "Scene Cmd + UI Cmd", "pos": [775, 430], "size": [165, 72],
+      "sources": [{ "path": "src/RHI/Vulkan/Renderer.cpp", "line": 235, "label": "同一 VkSubmitInfo" }]
+    },
+    {
+      "id": "gpu-present", "type": "external", "label": "GPU + Swapchain", "sublabel": "Execute N-2 · Present", "pos": [965, 430], "size": [105, 72],
+      "sources": [
+        { "path": "src/RHI/Vulkan/Renderer.cpp", "line": 248, "label": "vkQueueSubmit" },
+        { "path": "src/RHI/Vulkan/Renderer.cpp", "line": 260, "label": "Present" }
+      ]
+    }
+  ],
+  "connections": [
+    { "id": "main-publishes", "from": "main-thread", "to": "scene-publication", "label": "submit / edit", "variant": "emphasis", "labelAt": [193, 316] },
+    { "id": "snapshot-consume", "from": "scene-publication", "to": "render-thread", "label": "Snapshot vN", "variant": "emphasis", "labelAt": [383, 226] },
+    { "id": "render-enqueue", "from": "render-thread", "to": "frame-queue", "label": "RenderFrameSubmission N", "variant": "emphasis", "labelAt": [573, 316] },
+    { "id": "queue-consume", "from": "frame-queue", "to": "rhi-thread", "label": "consume N-1", "variant": "emphasis", "labelAt": [763, 226] },
+    { "id": "slots-scheduler", "from": "frame-slots", "to": "frame-scheduler", "label": "slot index", "labelAt": [763, 151] },
+    { "id": "rhi-scheduler", "from": "rhi-thread", "to": "frame-scheduler", "label": "begin / submit frame" },
+    { "id": "rhi-record", "from": "rhi-thread", "to": "command-buffers", "label": "record plan + overlay" },
+    { "id": "commands-to-batch", "from": "command-buffers", "to": "submit-batch", "label": "2 CommandBuffers", "labelAt": [763, 516] },
+    { "id": "batch-gpu", "from": "submit-batch", "to": "gpu-present", "label": "vkQueueSubmit + Present", "variant": "emphasis", "labelAt": [953, 426] }
+  ]
+}

@@ -50,7 +50,7 @@ struct GpuSceneLightData
     float4 meta;
     float4 primaryDirection;
     float4 primaryColor;
-    GpuSceneLight lights[8];
+    GpuSceneLight lights[256];
 };
 
 cbuffer ViewUniform : register(b20, space0)

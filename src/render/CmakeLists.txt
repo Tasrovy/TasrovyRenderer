@@ -7,6 +7,9 @@ add_library(TasrovyRender STATIC
         Material.h
         MaterialDescriptor.cpp
         MaterialDescriptor.h
+        MaterialShader.h
+        MaterialTechnique.cpp
+        MaterialTechnique.h
         MaterialTexture.h
         PBRMaterialBindings.h
         Object.cpp
@@ -17,6 +20,8 @@ add_library(TasrovyRender STATIC
         Camera.h
         Shader.cpp
         Shader.h
+        StylizedPBRPipeline.cpp
+        StylizedPBRPipeline.h
         Scene.cpp
         Scene.h
         Transform.cpp

@@ -2,6 +2,7 @@
 
 #include "Camera.h"
 #include "Material.h"
+#include "MaterialTechnique.h"
 #include "Mesh.h"
 #include "Object.h"
 #include "Pipeline.h"
@@ -11,6 +12,7 @@
 #include "Shader.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <unordered_map>
 #include <unordered_set>
@@ -40,6 +42,44 @@ FrameShaderPacket shaderPacket(const std::shared_ptr<Shader>& shader) {
     };
 }
 
+bool sameShader(const FrameShaderPacket& lhs, const FrameShaderPacket& rhs) {
+    return lhs.sourcePath == rhs.sourcePath &&
+        lhs.entryPoint == rhs.entryPoint &&
+        lhs.stage == rhs.stage &&
+        lhs.permutation == rhs.permutation;
+}
+
+void hashShaderField(uint64_t& value, const std::string& field) {
+    for (const unsigned char character : field) {
+        value ^= character;
+        value *= 1099511628211ull;
+    }
+    // Keep adjacent fields unambiguous without constructing a temporary key.
+    value ^= 0xffu;
+    value *= 1099511628211ull;
+}
+
+uint64_t shaderVariantId(
+    const FrameShaderPacket& vertexShader,
+    const FrameShaderPacket& fragmentShader) {
+    uint64_t value = 1469598103934665603ull;
+    const auto hashPacket = [&](const FrameShaderPacket& shader) {
+        hashShaderField(value, shader.sourcePath);
+        hashShaderField(value, shader.entryPoint);
+        value ^= static_cast<uint64_t>(shader.stage);
+        value *= 1099511628211ull;
+        value ^= shader.permutation.has_value() ? 1ull : 0ull;
+        value *= 1099511628211ull;
+        if (shader.permutation) {
+            value ^= *shader.permutation;
+            value *= 1099511628211ull;
+        }
+    };
+    hashPacket(vertexShader);
+    hashPacket(fragmentShader);
+    return value == 0 ? 1 : value;
+}
+
 FrameResourceUse resourceUse(const PipelineResourceRef& resource) {
     return {
         hashResourceName(resource.resource),
@@ -49,6 +89,34 @@ FrameResourceUse resourceUse(const PipelineResourceRef& resource) {
         resource.access,
         resource.previousFrame
     };
+}
+
+size_t selectObjectLOD(
+    const Object& object,
+    const Mesh& mesh,
+    const Camera* camera) {
+    if (!camera || mesh.getLODCount() <= 1 || mesh.getBoundsRadius() <= 0.0f) {
+        return 0;
+    }
+
+    const auto model = object.getModelMatrix();
+    const auto localCenter = mesh.getBoundsCenter();
+    const auto worldCenter4 = model * TSVec4f(localCenter, 1.0f);
+    const TSVec3f worldCenter(
+        worldCenter4.x, worldCenter4.y, worldCenter4.z);
+    const auto objectScale = object.getScale();
+    const float maximumScale = std::max({
+        std::abs(objectScale.x),
+        std::abs(objectScale.y),
+        std::abs(objectScale.z)
+    });
+    const float radius = mesh.getBoundsRadius() * maximumScale;
+    const float distance = std::max(
+        length(worldCenter - camera->getPosition()), radius);
+    const float halfFov = radians(camera->getFOV()) * 0.5f;
+    const float screenCoverage = radius /
+        std::max(distance * std::tan(halfFov), 1e-4f);
+    return mesh.selectLOD(screenCoverage);
 }
 
 } // namespace
@@ -99,13 +167,14 @@ FramePacket FrameCompiler::compile(
         return frame;
     }
 
-    if (const auto* camera = scene.getPrimaryCamera()) {
+    const auto* primaryCamera = scene.getPrimaryCamera();
+    if (primaryCamera) {
         frame.camera.valid = true;
-        frame.camera.view = camera->getViewMatrix();
-        frame.camera.projection = camera->getProjectionMatrix();
-        frame.camera.position = camera->getPosition();
-        frame.camera.nearPlane = camera->getNearPlane();
-        frame.camera.farPlane = camera->getFarPlane();
+        frame.camera.view = primaryCamera->getViewMatrix();
+        frame.camera.projection = primaryCamera->getProjectionMatrix();
+        frame.camera.position = primaryCamera->getPosition();
+        frame.camera.nearPlane = primaryCamera->getNearPlane();
+        frame.camera.farPlane = primaryCamera->getFarPlane();
     } else {
         frame.diagnostics.emplace_back(
             "FrameCompiler requires a primary camera");
@@ -130,6 +199,7 @@ FramePacket FrameCompiler::compile(
 
     std::unordered_set<RenderMeshId> emittedMeshes;
     std::unordered_set<RenderMaterialId> emittedMaterials;
+    std::unordered_map<RenderObjectId, size_t> selectedObjectLODs;
     frame.passes.reserve(renderGraph.getNodes().size());
     for (const auto& node : renderGraph.getNodes()) {
         const auto& pass = node.pass;
@@ -144,6 +214,7 @@ FramePacket FrameCompiler::compile(
         packet.name = pass->getName();
         packet.type = pass->getType();
         packet.execution = pass->getExecution();
+        packet.externalFeature = pass->getExternalFeature();
         packet.parameterProvider = pass->getParameterProvider();
         packet.viewIndex = pass->getViewIndex();
         packet.state.topology = pass->getTopology();
@@ -435,6 +506,22 @@ FramePacket FrameCompiler::compile(
                 return lhs.binding < rhs.binding;
             });
         normalizeBindings(packet.parameters.resourceBindings);
+        auto passDrawVertexShader = packet.vertexShader;
+        auto passDrawFragmentShader = packet.fragmentShader;
+        if (const auto selected = std::find_if(
+                packet.permutations.begin(),
+                packet.permutations.end(),
+                [&](const auto& permutation) {
+                    return permutation.key == packet.selectedPermutationKey;
+                }); selected != packet.permutations.end()) {
+            if (!selected->vertexShader.empty()) {
+                passDrawVertexShader = selected->vertexShader;
+            }
+            if (!selected->fragmentShader.empty()) {
+                passDrawFragmentShader = selected->fragmentShader;
+            }
+        }
+        std::unordered_map<uint64_t, size_t> drawShaderVariantIndices;
         for (const auto& objectReference : pass->getObjects()) {
             const auto object = objectReference.lock();
             const auto mesh = object ? object->getMesh() : nullptr;
@@ -443,6 +530,14 @@ FramePacket FrameCompiler::compile(
             }
 
             const auto objectId = object->getRenderId();
+            const auto [lodEntry, insertedLOD] =
+                selectedObjectLODs.try_emplace(objectId, 0);
+            if (insertedLOD) {
+                lodEntry->second = selectObjectLOD(
+                    *object, *mesh, primaryCamera);
+            }
+            const size_t lodLevel = lodEntry->second;
+            const auto& meshLOD = mesh->getLOD(lodLevel);
             const auto meshId = idFor(mesh.get());
             if (emittedMeshes.insert(meshId).second) {
                 frame.meshes.push_back({meshId});
@@ -472,11 +567,91 @@ FramePacket FrameCompiler::compile(
                     objectIndex,
                     materialIndex,
                     submeshIndex,
+                    static_cast<uint32_t>(lodLevel),
                     firstIndex,
                     indexCount,
                     object->getFlipProjectionY()
                 });
                 auto& emittedDraw = packet.draws.back();
+                if (pass->allowsMaterialShaderOverrides() && material) {
+                    auto vertexShader = passDrawVertexShader;
+                    auto fragmentShader = passDrawFragmentShader;
+                    if (const auto technique = material->getTechnique();
+                        technique &&
+                        !pass->getMaterialTechniqueSlot().empty()) {
+                        if (const auto* techniqueShader =
+                                technique->findShader(
+                                    pass->getMaterialTechniqueSlot())) {
+                            if (techniqueShader->vertexShader) {
+                                vertexShader = shaderPacket(
+                                    techniqueShader->vertexShader);
+                            }
+                            if (techniqueShader->fragmentShader) {
+                                fragmentShader = shaderPacket(
+                                    techniqueShader->fragmentShader);
+                            }
+                        }
+                    }
+                    if (const auto materialVertex =
+                            material->getVertexShader()) {
+                        if (materialVertex->getType() != ShaderType::Vertex) {
+                            frame.diagnostics.push_back(
+                                "Pass '" + packet.name +
+                                "' received a non-vertex material shader");
+                        } else {
+                            vertexShader = shaderPacket(materialVertex);
+                        }
+                    }
+                    if (const auto materialFragment =
+                            material->getFragmentShader()) {
+                        if (materialFragment->getType() !=
+                            ShaderType::Fragment) {
+                            frame.diagnostics.push_back(
+                                "Pass '" + packet.name +
+                                "' received a non-fragment material shader");
+                        } else {
+                            fragmentShader = shaderPacket(materialFragment);
+                        }
+                    }
+                    const bool usesOverride =
+                        !sameShader(vertexShader, passDrawVertexShader) ||
+                        !sameShader(fragmentShader, passDrawFragmentShader);
+                    if (usesOverride) {
+                        if (vertexShader.empty() || fragmentShader.empty()) {
+                            frame.diagnostics.push_back(
+                                "Pass '" + packet.name +
+                                "' cannot build an incomplete material shader variant");
+                        } else {
+                            const uint64_t variantId = shaderVariantId(
+                                vertexShader, fragmentShader);
+                            const auto [found, inserted] =
+                                drawShaderVariantIndices.try_emplace(
+                                    variantId,
+                                    packet.drawShaderVariants.size());
+                            if (inserted) {
+                                packet.drawShaderVariants.push_back({
+                                    variantId,
+                                    std::move(vertexShader),
+                                    std::move(fragmentShader)
+                                });
+                            } else {
+                                const auto& existing =
+                                    packet.drawShaderVariants[found->second];
+                                if (!sameShader(
+                                        existing.vertexShader,
+                                        vertexShader) ||
+                                    !sameShader(
+                                        existing.fragmentShader,
+                                        fragmentShader)) {
+                                    frame.diagnostics.push_back(
+                                        "Pass '" + packet.name +
+                                        "' encountered a material shader variant hash collision");
+                                }
+                            }
+                            emittedDraw.shaderVariantId = variantId;
+                        }
+                    }
+                }
                 emittedDraw.descriptorWrites = packet.descriptorWrites;
                 for (auto& descriptorWrite : emittedDraw.descriptorWrites) {
                     if (descriptorWrite.source ==
@@ -497,12 +672,12 @@ FramePacket FrameCompiler::compile(
                 });
             };
 
-            const auto& submeshes = mesh->getSubmeshes();
+            const auto& submeshes = meshLOD.submeshes;
             if (submeshes.empty()) {
                 emitDraw(
                     0,
-                    0,
-                    static_cast<uint32_t>(mesh->getIndexCount()),
+                    meshLOD.indexOffset,
+                    meshLOD.indexCount,
                     object->getMaterial());
             } else {
                 for (uint32_t index = 0;
@@ -542,6 +717,9 @@ FramePacket FrameCompiler::compile(
                 command.groupCountX = dispatch->groupCountX;
                 command.groupCountY = dispatch->groupCountY;
                 command.groupCountZ = dispatch->groupCountZ;
+                command.dispatchUsesInternalExtent =
+                    dispatch->extent ==
+                    PipelineDispatchCommand::Extent::Internal;
                 packet.commands.push_back(command);
             }
         }

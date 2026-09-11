@@ -15,6 +15,7 @@ The deferred renderer is the default pipeline, with a smaller forward PBR path r
 - Shadow maps, CSM, PCF / PCSS, and an experimental Virtual Shadow Map
 - HBAO, Hi-Z, SSR, TAA / TAAU, Bloom, Motion Blur, and DOF
 - GPUScene-based scene data organization
+- Automatic import-time LOD generation and screen-coverage selection with meshoptimizer
 - Independent UV sampling transforms per texture
 - Separate main, render, and RHI thread responsibilities
 - ImGui debugging, resource monitoring, and GPU timestamps

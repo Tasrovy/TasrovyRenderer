@@ -20,14 +20,46 @@ RenderTextureFormat toRHIFormat(
     FrameTextureFormat format) {
     using Format = FrameTextureFormat;
     switch (format) {
+    case Format::R8Unorm:
+        return RenderTextureFormat::R8Unorm;
+    case Format::RG8Unorm:
+        return RenderTextureFormat::RG8Unorm;
     case Format::RGBA8Unorm:
         return RenderTextureFormat::RGBA8Unorm;
-    case Format::RGBA16Float:
-        return RenderTextureFormat::RGBA16Float;
+    case Format::RGBA8Srgb:
+        return RenderTextureFormat::RGBA8Srgb;
+    case Format::R8Uint:
+        return RenderTextureFormat::R8Uint;
+    case Format::R16Uint:
+        return RenderTextureFormat::R16Uint;
+    case Format::R32Uint:
+        return RenderTextureFormat::R32Uint;
+    case Format::RG16Uint:
+        return RenderTextureFormat::RG16Uint;
+    case Format::R16Float:
+        return RenderTextureFormat::R16Float;
     case Format::RG16Float:
         return RenderTextureFormat::RG16Float;
+    case Format::RGBA16Float:
+        return RenderTextureFormat::RGBA16Float;
+    case Format::R32Float:
+        return RenderTextureFormat::R32Float;
+    case Format::RG32Float:
+        return RenderTextureFormat::RG32Float;
+    case Format::RGBA32Float:
+        return RenderTextureFormat::RGBA32Float;
+    case Format::R11G11B10Float:
+        return RenderTextureFormat::R11G11B10Float;
+    case Format::RGB10A2Unorm:
+        return RenderTextureFormat::RGB10A2Unorm;
+    case Format::Depth16Unorm:
+        return RenderTextureFormat::Depth16Unorm;
+    case Format::Depth24UnormStencil8:
+        return RenderTextureFormat::Depth24UnormStencil8;
     case Format::Depth32Float:
         return RenderTextureFormat::Depth32Float;
+    case Format::Depth32FloatStencil8:
+        return RenderTextureFormat::Depth32FloatStencil8;
     case Format::Swapchain:
         return RenderTextureFormat::Swapchain;
     }
@@ -53,16 +85,35 @@ uint32_t resolveExtent(
 
 uint32_t bytesPerPixel(RenderTextureFormat format) {
     switch (format) {
-    case RenderTextureFormat::RGBA16Float:
-        return 8;
-    case RenderTextureFormat::RG16Float:
-        return 4;
-    case RenderTextureFormat::Depth32Float:
-        return 4;
-    case RenderTextureFormat::RGBA8Unorm:
-        return 4;
     case RenderTextureFormat::Swapchain:
         return 0;
+    default:
+        break;
+    }
+    switch (format) {
+    case RenderTextureFormat::R8Unorm: return formatBytesPerTexel(Format::R8Unorm);
+    case RenderTextureFormat::RG8Unorm: return formatBytesPerTexel(Format::RG8Unorm);
+    case RenderTextureFormat::RGBA8Unorm: return formatBytesPerTexel(Format::RGBA8Unorm);
+    case RenderTextureFormat::RGBA8Srgb: return formatBytesPerTexel(Format::RGBA8Srgb);
+    case RenderTextureFormat::R8Uint: return formatBytesPerTexel(Format::R8Uint);
+    case RenderTextureFormat::R16Uint: return formatBytesPerTexel(Format::R16Uint);
+    case RenderTextureFormat::R32Uint: return formatBytesPerTexel(Format::R32Uint);
+    case RenderTextureFormat::RG16Uint: return formatBytesPerTexel(Format::RG16Uint);
+    case RenderTextureFormat::R16Float: return formatBytesPerTexel(Format::R16Float);
+    case RenderTextureFormat::RG16Float: return formatBytesPerTexel(Format::RG16Float);
+    case RenderTextureFormat::RGBA16Float: return formatBytesPerTexel(Format::RGBA16Float);
+    case RenderTextureFormat::R32Float: return formatBytesPerTexel(Format::R32Float);
+    case RenderTextureFormat::RG32Float: return formatBytesPerTexel(Format::RG32Float);
+    case RenderTextureFormat::RGBA32Float: return formatBytesPerTexel(Format::RGBA32Float);
+    case RenderTextureFormat::R11G11B10Float: return formatBytesPerTexel(Format::R11G11B10Float);
+    case RenderTextureFormat::RGB10A2Unorm: return formatBytesPerTexel(Format::RGB10A2Unorm);
+    case RenderTextureFormat::Depth16Unorm: return formatBytesPerTexel(Format::Depth16Unorm);
+    case RenderTextureFormat::Depth24UnormStencil8:
+        return formatBytesPerTexel(Format::Depth24UnormStencil8);
+    case RenderTextureFormat::Depth32Float: return formatBytesPerTexel(Format::Depth32Float);
+    case RenderTextureFormat::Depth32FloatStencil8:
+        return formatBytesPerTexel(Format::Depth32FloatStencil8);
+    case RenderTextureFormat::Swapchain: return 0;
     }
     return 0;
 }
@@ -490,6 +541,36 @@ void VulkanFrameExecutor::compileExecution(
                         device.createGraphicsPipeline(
                             buildGraphicsDesc(&permutation))));
             }
+            for (const auto& variant : pipelinePlan.drawShaderVariants) {
+                PipelineDesc variantDesc = buildGraphicsDesc(nullptr);
+                variantDesc.vertexShader.sourcePath =
+                    variant.vertexShaderSource;
+                variantDesc.fragmentShader.sourcePath =
+                    variant.fragmentShaderSource;
+                variantDesc.vertexShader.entryPoint =
+                    variant.vertexEntryPoint.empty()
+                        ? "VSMain"
+                        : variant.vertexEntryPoint;
+                variantDesc.fragmentShader.entryPoint =
+                    variant.fragmentEntryPoint.empty()
+                        ? "PSMain"
+                        : variant.fragmentEntryPoint;
+                if (variant.vertexPermutation) {
+                    variantDesc.vertexShader.permutation =
+                        *variant.vertexPermutation;
+                    variantDesc.vertexShader.hasPermutation = true;
+                }
+                if (variant.fragmentPermutation) {
+                    variantDesc.fragmentShader.permutation =
+                        *variant.fragmentPermutation;
+                    variantDesc.fragmentShader.hasPermutation = true;
+                }
+                compiled.drawShaderVariants.emplace(
+                    variant.id,
+                    device.retainResource(
+                        config.sceneScope,
+                        device.createGraphicsPipeline(variantDesc)));
+            }
         }
         compiledPipeline_.add(std::move(compiled));
     }
@@ -677,7 +758,71 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
         const auto& passDesc = rhiPass.getDesc();
 
         executePreBarriers(commandList, passPlan, frameIndex);
-        const bool hasRasterCommands = std::any_of(
+
+        const bool recordTimestamp = context.timestampQueryPool != 0 &&
+            result.timestampQueryCount + 1u <
+                context.timestampQueryCapacity;
+        if (recordTimestamp) {
+            commandList.writeTimestamp(
+                context.timestampQueryPool,
+                result.timestampQueryCount++, true);
+            result.timestampPassNames.push_back(packetPass.name);
+        }
+
+        bool externalExecuted = false;
+        if (passPlan.externalFeature != 0 &&
+            context.externalFeatureExecutor) {
+            if (swapchainPassOpen && context.swapchainTarget) {
+                commandList.endSwapchainRenderPass(*context.swapchainTarget);
+                swapchainPassOpen = false;
+            }
+
+            const auto resolveInput = [&] (const std::string& slot) {
+                const auto input = std::find_if(
+                    packetPass.sampledTextures.begin(),
+                    packetPass.sampledTextures.end(),
+                    [&] (const auto& sampled) {
+                        return sampled.slot == slot;
+                    });
+                return input == packetPass.sampledTextures.end()
+                    ? std::shared_ptr<Image>{}
+                    : resolve(
+                        input->resource,
+                        frameIndex,
+                        input->previousFrame);
+            };
+
+            ExternalFeatureExecuteContext externalContext;
+            externalContext.feature = passPlan.externalFeature;
+            externalContext.frameNumber = plan.frameNumber;
+            externalContext.frameIndex = frameIndex;
+            externalContext.width = passDesc.width;
+            externalContext.height = passDesc.height;
+            externalContext.commandList = &commandList;
+            externalContext.inputColor = resolveInput("dlssNrInputColor");
+            externalContext.motionVectors = resolveInput(
+                "dlssNrMotionVectors");
+            externalContext.depth = resolveInput("dlssNrDepth");
+            if (!packetPass.colorAttachments.empty()) {
+                externalContext.outputColor = resolve(
+                    packetPass.colorAttachments.front().resourceName,
+                    frameIndex);
+            }
+            externalContext.parameters = std::span<const std::byte>(
+                packetPass.parameters.uniformData.data(),
+                packetPass.parameters.uniformData.size());
+
+            if (externalContext.inputColor &&
+                externalContext.motionVectors &&
+                externalContext.depth &&
+                externalContext.outputColor) {
+                externalExecuted =
+                    context.externalFeatureExecutor->tryExecute(
+                        externalContext);
+            }
+        }
+
+        const bool hasRasterCommands = !externalExecuted && std::any_of(
             packetPass.commands.begin(), packetPass.commands.end(),
             [](const Tasrovy::Render::FrameCommandPacket& command) {
                 using Type = Tasrovy::Render::FrameCommandType;
@@ -728,24 +873,16 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
             permutation != compiled->permutations.end()) {
             pipeline = permutation->second;
         }
-        if (pipeline) {
+        if (pipeline && !externalExecuted) {
             commandList.bindPipeline(
                 *pipeline,
                 packetPass.execution ==
                     Tasrovy::Render::PipelinePassExecution::Compute);
         }
+        std::shared_ptr<Pipeline> boundPipeline = pipeline;
 
-        const bool recordTimestamp = context.timestampQueryPool != 0 &&
-            result.timestampQueryCount + 1u <
-                context.timestampQueryCapacity;
-        if (recordTimestamp) {
-            commandList.writeTimestamp(
-                context.timestampQueryPool,
-                result.timestampQueryCount++, true);
-            result.timestampPassNames.push_back(packetPass.name);
-        }
-
-        for (const auto& command : packetPass.commands) {
+        if (!externalExecuted) {
+            for (const auto& command : packetPass.commands) {
             using Type = Tasrovy::Render::FrameCommandType;
             switch (command.type) {
             case Type::Draw:
@@ -783,10 +920,27 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
                 commandList.drawIndexed(bindings.skyboxIndexCount);
                 break;
             case Type::DrawIndexed: {
-                if (!pipeline || command.drawIndex >= packetPass.draws.size()) {
+                if (command.drawIndex >= packetPass.draws.size()) {
                     break;
                 }
                 const auto& draw = packetPass.draws[command.drawIndex];
+                std::shared_ptr<Pipeline> drawPipeline = pipeline;
+                if (draw.shaderVariantId != 0) {
+                    const auto variant = compiled->drawShaderVariants.find(
+                        draw.shaderVariantId);
+                    if (variant == compiled->drawShaderVariants.end()) {
+                        throw std::invalid_argument(
+                            "Indexed draw references an uncompiled shader variant");
+                    }
+                    drawPipeline = variant->second;
+                }
+                if (!drawPipeline) {
+                    break;
+                }
+                if (boundPipeline != drawPipeline) {
+                    commandList.bindPipeline(*drawPipeline, false);
+                    boundPipeline = drawPipeline;
+                }
                 const auto mesh = bindings.meshes.find(draw.meshId);
                 if (mesh == bindings.meshes.end() ||
                     !mesh->second.vertexBuffer || !mesh->second.indexBuffer) {
@@ -823,6 +977,12 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
             }
             case Type::Dispatch:
                 if (!pipeline) break;
+                if (!packetPass.parameters.uniformData.empty() &&
+                    frameIndex < compiled->uniformBuffers.size()) {
+                    compiled->uniformBuffers[frameIndex]->setData(
+                        packetPass.parameters.uniformData.data(),
+                        packetPass.parameters.uniformData.size());
+                }
                 descriptorWrites(*compiled, packetPass, frameIndex, 0);
                 if (frameIndex < compiled->descriptorSets.size()) {
                     commandList.bindDescriptorSet(
@@ -844,6 +1004,7 @@ FrameExecuteResult VulkanFrameExecutor::executeFrame(
                 commandList.copyBuffer(
                     *source, *destination, command.byteSize);
                 break;
+            }
             }
             }
         }
@@ -1159,11 +1320,8 @@ void VulkanFrameExecutor::transition(
     const auto source = translateResourceState(current);
     const auto destination = translateResourceState(desired);
 
-    const bool depth =
-        image.getFormat() == Format::Depth32Float ||
-        image.getFormat() == Format::Depth32FloatStencil8;
-    const bool stencil =
-        image.getFormat() == Format::Depth32FloatStencil8;
+    const bool depth = isDepthFormat(image.getFormat());
+    const bool stencil = hasStencilComponent(image.getFormat());
 
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;

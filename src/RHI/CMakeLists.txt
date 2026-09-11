@@ -23,6 +23,7 @@ add_library(TasrovyRHI STATIC
         FrameScheduler.h
         FrameExecutionTypes.h
         FrameExecutor.h
+        ExternalFeatureExecutor.h
         FrameExecutorBackend.h
         FrameSchedulerBackend.h
         Image.cpp

@@ -21,3 +21,12 @@ target_link_libraries(TasrovyCore PUBLIC
         imgui
         nlohmann_json::nlohmann_json
 )
+
+if(TARGET TasrovyDlssNrVulkanBridge)
+    add_dependencies(TasrovyCore TasrovyDlssNrVulkanBridge)
+    add_custom_command(TARGET TasrovyCore POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:TasrovyDlssNrVulkanBridge>
+            $<TARGET_FILE_DIR:TasrovyCore>
+        VERBATIM)
+endif()

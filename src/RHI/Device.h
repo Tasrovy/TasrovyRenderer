@@ -38,10 +38,26 @@ struct ImageDesc {
 };
 
 enum class RenderTextureFormat : uint32_t {
+    R8Unorm,
+    RG8Unorm,
     RGBA8Unorm,
-    RGBA16Float,
+    RGBA8Srgb,
+    R8Uint,
+    R16Uint,
+    R32Uint,
+    RG16Uint,
+    R16Float,
     RG16Float,
+    RGBA16Float,
+    R32Float,
+    RG32Float,
+    RGBA32Float,
+    R11G11B10Float,
+    RGB10A2Unorm,
+    Depth16Unorm,
+    Depth24UnormStencil8,
     Depth32Float,
+    Depth32FloatStencil8,
     Swapchain
 };
 

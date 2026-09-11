@@ -1,5 +1,8 @@
 #pragma once
 
+#include "TSVector.h"
+
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -40,6 +43,12 @@ private:
         uint64_t uniformResidentBytes = 0;
         std::vector<PassSnapshot> passes;
     } executionSnapshot_;
+
+    bool taffyRotationEnabled_ = false;
+    Tasrovy::Base::TSVec3f taffyBaseRotation_ =
+        Tasrovy::Base::TSVec3f(0.0f);
+    float taffyYawOffset_ = 0.0f;
+    std::chrono::steady_clock::time_point lastTaffyRotationTime_{};
 
     RenderScene& renderScene_;
     SceneRendererComponents& components_;

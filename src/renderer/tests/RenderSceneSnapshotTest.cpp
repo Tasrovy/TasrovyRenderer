@@ -2,12 +2,14 @@
 #include "../SceneUpdateCoordinator.h"
 #include "../../render/Scene.h"
 #include "../../render/Object.h"
+#include "../../render/Light.h"
 
 #include <iostream>
 
 int main() {
     using Tasrovy::Render::Scene;
     using Tasrovy::Renderer::RenderScene;
+    using Tasrovy::Renderer::SceneChange;
     using Tasrovy::Renderer::SceneUpdateCoordinator;
 
     RenderScene renderScene;
@@ -39,7 +41,7 @@ int main() {
     {
         auto state = renderScene.lock();
         state.scene()->setName("Published B");
-        state.markDirty();
+        state.markChanged(SceneChange::Structural);
     }
 
     const auto second = renderScene.snapshot();
@@ -52,8 +54,8 @@ int main() {
         std::cerr << "A later edit mutated the previous snapshot\n";
         return 4;
     }
-    if (second.version <= first.version || !second.dirty) {
-        std::cerr << "Published snapshot version was not advanced\n";
+    if (second.versions.structural <= first.versions.structural) {
+        std::cerr << "Structural scene generation was not advanced\n";
         return 5;
     }
     if (!second.scene->getObject(0) ||
@@ -66,21 +68,62 @@ int main() {
     const auto update = coordinator.synchronize(
         [](const auto&) { return false; });
     if (!update.scene || !update.rebuildRequired ||
-        !update.acknowledgesDirtyVersion ||
+        !update.structuralChanged ||
         update.scene->getName() != "Published B") {
-        std::cerr << "Coordinator did not consume the dirty snapshot\n";
+        std::cerr << "Coordinator did not consume the structural update\n";
         return 8;
-    }
-    coordinator.acknowledge(update);
-    if (renderScene.snapshot().dirty) {
-        std::cerr << "Coordinator did not acknowledge the consumed version\n";
-        return 9;
     }
     const auto stable = coordinator.synchronize(
         [](const auto&) { return false; });
-    if (stable.rebuildRequired || stable.scene != update.scene) {
+    if (stable.rebuildRequired || stable.scene != update.scene ||
+        stable.structuralChanged || stable.transformChanged ||
+        stable.materialChanged || stable.lightingChanged ||
+        stable.pipelineChanged) {
         std::cerr << "Coordinator rebuilt an unchanged scene\n";
         return 10;
+    }
+
+    auto transformSource = sourceObject->clone();
+    transformSource->setPosition(Tasrovy::Base::TSVec3f(1.0f, 2.0f, 3.0f));
+    const auto beforeTransform = renderScene.snapshot().versions;
+    renderScene.updatePrimitive(*transformSource);
+    const auto afterTransform = renderScene.snapshot().versions;
+    if (afterTransform.transform <= beforeTransform.transform ||
+        afterTransform.structural != beforeTransform.structural ||
+        afterTransform.material != beforeTransform.material ||
+        afterTransform.lighting != beforeTransform.lighting) {
+        std::cerr << "Transform update advanced unrelated generations\n";
+        return 11;
+    }
+    const auto transformUpdate = coordinator.synchronize(
+        [](const auto&) { return false; });
+    if (!transformUpdate.transformChanged ||
+        transformUpdate.structuralChanged ||
+        transformUpdate.rebuildRequired ||
+        transformUpdate.scene != update.scene ||
+        !transformUpdate.scene->getObject(0) ||
+        transformUpdate.scene->getObject(0)->getPosition() !=
+            Tasrovy::Base::TSVec3f(1.0f, 2.0f, 3.0f)) {
+        std::cerr << "Transform update was not applied incrementally\n";
+        return 12;
+    }
+
+    {
+        auto state = renderScene.lock();
+        state.scene()->addLight(Tasrovy::Render::DirectionalLight::create(
+            Tasrovy::Base::TSVec3f(0.0f, -1.0f, 0.0f),
+            Tasrovy::Base::TSVec3f(1.0f), 2.0f, "Test Light"));
+        state.markChanged(SceneChange::Lighting);
+    }
+    const auto lightingUpdate = coordinator.synchronize(
+        [](const auto&) { return false; });
+    if (!lightingUpdate.lightingChanged ||
+        lightingUpdate.structuralChanged ||
+        lightingUpdate.rebuildRequired ||
+        lightingUpdate.scene != transformUpdate.scene ||
+        lightingUpdate.scene->getLightCount() != 1) {
+        std::cerr << "Lighting update was not applied incrementally\n";
+        return 13;
     }
     return 0;
 }

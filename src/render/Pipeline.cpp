@@ -1,6 +1,7 @@
 #include "Pipeline.h"
 #include "PipelinePass.h"
 #include "RenderGraph.h"
+#include "Shader.h"
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
@@ -226,6 +227,59 @@ std::vector<std::string> PipelineBase::validatePassDependencies() const {
         }
 
         const auto& passName = pass->getName();
+        const bool computePass =
+            pass->getExecution() == PipelinePassExecution::Compute;
+        if (computePass) {
+            const auto computeShader = pass->getComputeShader();
+            if (!computeShader) {
+                errors.push_back(
+                    "Compute pass '" + passName +
+                    "' has no compute shader");
+            } else if (computeShader->getType() != ShaderType::Compute) {
+                errors.push_back(
+                    "Compute pass '" + passName +
+                    "' uses a non-compute shader");
+            }
+            if (pass->getVertexShader() || pass->getFragmentShader()) {
+                errors.push_back(
+                    "Compute pass '" + passName +
+                    "' cannot declare graphics shaders");
+            }
+            if (!pass->getColorAttachments().empty() ||
+                pass->getDepthAttachment()) {
+                errors.push_back(
+                    "Compute pass '" + passName +
+                    "' cannot declare raster attachments");
+            }
+            if (!pass->getObjects().empty()) {
+                errors.push_back(
+                    "Compute pass '" + passName +
+                    "' cannot contain mesh draw objects");
+            }
+            const auto* dispatch = pass->getDispatch();
+            if (!dispatch) {
+                errors.push_back(
+                    "Compute pass '" + passName +
+                    "' has no dispatch dimensions");
+            } else if (dispatch->groupCountX == 0 ||
+                       dispatch->groupCountY == 0 ||
+                       dispatch->groupCountZ == 0) {
+                errors.push_back(
+                    "Compute pass '" + passName +
+                    "' has an empty dispatch dimension");
+            }
+        } else {
+            if (pass->getComputeShader()) {
+                errors.push_back(
+                    "Non-compute pass '" + passName +
+                    "' cannot declare a compute shader");
+            }
+            if (pass->getDispatch()) {
+                errors.push_back(
+                    "Non-compute pass '" + passName +
+                    "' cannot declare dispatch dimensions");
+            }
+        }
         std::unordered_set<std::string> materialSlots;
         std::unordered_set<uint32_t> materialBindings;
         std::unordered_set<uint32_t> sampledBindings;

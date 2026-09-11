@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace Tasrovy::Render {
 
@@ -14,6 +15,8 @@ std::shared_ptr<Mesh> Mesh::create(
     mesh->vertices_ = std::move(vertices);
     mesh->indices_ = std::move(indices);
     mesh->submeshes_ = std::move(submeshes);
+    mesh->resetLOD0();
+    mesh->updateBounds();
     return mesh;
 }
 
@@ -116,13 +119,44 @@ std::shared_ptr<Mesh> Mesh::createSphere(
     return create(std::move(vertices), std::move(indices));
 }
 
-void Mesh::setVertices(std::vector<MeshVertex> vertices) { vertices_ = std::move(vertices); }
-void Mesh::setIndices(std::vector<uint32_t> indices) { indices_ = std::move(indices); }
-void Mesh::setSubmeshes(std::vector<Submesh> submeshes) { submeshes_ = std::move(submeshes); }
+void Mesh::setVertices(std::vector<MeshVertex> vertices) {
+    vertices_ = std::move(vertices);
+    updateBounds();
+}
+void Mesh::setIndices(std::vector<uint32_t> indices) {
+    indices_ = std::move(indices);
+    resetLOD0();
+}
+void Mesh::setSubmeshes(std::vector<Submesh> submeshes) {
+    submeshes_ = std::move(submeshes);
+    resetLOD0();
+}
+
+void Mesh::setLODChain(
+    std::vector<uint32_t> combinedIndices,
+    std::vector<MeshLOD> lods) {
+    if (lods.empty() || lods.front().indexOffset != 0) {
+        throw std::invalid_argument("Mesh LOD chain requires LOD0 at index offset zero");
+    }
+    for (const auto& lod : lods) {
+        const uint64_t end = static_cast<uint64_t>(lod.indexOffset) + lod.indexCount;
+        if (end > combinedIndices.size()) {
+            throw std::out_of_range("Mesh LOD range exceeds the combined index buffer");
+        }
+    }
+    indices_ = std::move(combinedIndices);
+    lods_ = std::move(lods);
+    submeshes_ = lods_.front().submeshes;
+}
 
 void Mesh::setSubmeshMaterial(size_t submeshIndex, std::shared_ptr<Material> material) {
     if (submeshIndex < submeshes_.size()) {
-        submeshes_[submeshIndex].setMaterial(std::move(material));
+        submeshes_[submeshIndex].setMaterial(material);
+        for (auto& lod : lods_) {
+            if (submeshIndex < lod.submeshes.size()) {
+                lod.submeshes[submeshIndex].setMaterial(material);
+            }
+        }
     }
 }
 
@@ -139,12 +173,68 @@ std::shared_ptr<Material> Mesh::getSubmeshMaterial(size_t submeshIndex) const {
 }
 
 size_t Mesh::getVertexCount() const { return vertices_.size(); }
-size_t Mesh::getIndexCount() const { return indices_.size(); }
+size_t Mesh::getIndexCount() const {
+    return lods_.empty() ? indices_.size() : lods_.front().indexCount;
+}
+TSVec3f Mesh::getBoundsCenter() const { return boundsCenter_; }
+float Mesh::getBoundsRadius() const { return boundsRadius_; }
+const MeshLOD& Mesh::getLOD(size_t lodIndex) const {
+    if (lodIndex >= lods_.size()) {
+        throw std::out_of_range("Mesh LOD index is out of range");
+    }
+    return lods_[lodIndex];
+}
+size_t Mesh::getLODCount() const { return lods_.size(); }
+size_t Mesh::selectLOD(float screenCoverage) const {
+    if (lods_.empty()) return 0;
+    for (size_t index = 0; index < lods_.size(); ++index) {
+        if (screenCoverage >= lods_[index].minimumScreenCoverage) {
+            return index;
+        }
+    }
+    return lods_.size() - 1;
+}
 void Mesh::setSourcePath(std::string sourcePath) { sourcePath_ = std::move(sourcePath); }
 const std::string& Mesh::getSourcePath() const { return sourcePath_; }
 
+void Mesh::resetLOD0() {
+    lods_.clear();
+    lods_.push_back({
+        0,
+        static_cast<uint32_t>(indices_.size()),
+        0.0f,
+        0.0f,
+        submeshes_
+    });
+}
+
+void Mesh::updateBounds() {
+    if (vertices_.empty()) {
+        boundsCenter_ = TSVec3f(0.0f);
+        boundsRadius_ = 0.0f;
+        return;
+    }
+    TSVec3f minimum = vertices_.front().position;
+    TSVec3f maximum = minimum;
+    for (const auto& vertex : vertices_) {
+        minimum.x = std::min(minimum.x, vertex.position.x);
+        minimum.y = std::min(minimum.y, vertex.position.y);
+        minimum.z = std::min(minimum.z, vertex.position.z);
+        maximum.x = std::max(maximum.x, vertex.position.x);
+        maximum.y = std::max(maximum.y, vertex.position.y);
+        maximum.z = std::max(maximum.z, vertex.position.z);
+    }
+    boundsCenter_ = (minimum + maximum) * 0.5f;
+    boundsRadius_ = 0.0f;
+    for (const auto& vertex : vertices_) {
+        boundsRadius_ = std::max(
+            boundsRadius_, length(vertex.position - boundsCenter_));
+    }
+}
+
 void Mesh::calculateTangents() {
-    for (size_t i = 0; i < indices_.size(); i += 3) {
+    const size_t lod0IndexCount = getIndexCount();
+    for (size_t i = 0; i + 2 < lod0IndexCount; i += 3) {
         MeshVertex& v0 = vertices_[indices_[i + 0]];
         MeshVertex& v1 = vertices_[indices_[i + 1]];
         MeshVertex& v2 = vertices_[indices_[i + 2]];

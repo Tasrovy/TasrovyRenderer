@@ -33,6 +33,9 @@ Render::PipelineConfiguration RendererFeaturePolicy::configuration(
             settings.debugOutputSemantic ==
                 DebugTextureSemantic::OutlineBlackLines);
     config.values.emplace(PipelineConfigKeys::Bloom, settings.bloomEnabled);
+    config.values.emplace(
+        PipelineConfigKeys::DlssNeuralRendering,
+        settings.dlssNeuralRenderingEnabled);
     return config;
 }
 

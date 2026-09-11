@@ -87,8 +87,8 @@ std::shared_ptr<Material> Object::getSubmeshMaterial(size_t submeshIndex) const 
 
 void Object::clearSubmeshMaterials() {
     if (auto mesh = getMesh()) {
-        for (auto& submesh : mesh->getSubmeshes()) {
-            submesh.setMaterial(nullptr);
+        for (size_t index = 0; index < mesh->getSubmeshes().size(); ++index) {
+            mesh->setSubmeshMaterial(index, nullptr);
         }
     }
 }

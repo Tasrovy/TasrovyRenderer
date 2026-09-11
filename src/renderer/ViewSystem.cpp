@@ -76,8 +76,11 @@ ViewFrameData ViewSystem::beginFrame(
         frame.jitterUv = TSVec2f(
             jitterX / static_cast<float>(std::max(internalWidth, 1u)),
             jitterY / static_cast<float>(std::max(internalHeight, 1u)));
-        frame.unflippedProjection[2][0] += frame.jitterUv.x * 2.0f;
-        frame.unflippedProjection[2][1] += frame.jitterUv.y * 2.0f;
+        // Projection[2][0/1] contributes with the opposite sign after the
+        // perspective divide. Subtract here so jitterUv consistently means
+        // the actual screen-UV displacement used by velocity consumers.
+        frame.unflippedProjection[2][0] -= frame.jitterUv.x * 2.0f;
+        frame.unflippedProjection[2][1] -= frame.jitterUv.y * 2.0f;
     }
 
     frame.jitterDeltaUv = state.temporalHistoryValid

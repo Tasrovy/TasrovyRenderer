@@ -16,6 +16,40 @@ class Scene;
 
 namespace Tasrovy::Renderer {
 
+struct SceneVersions {
+    uint64_t structural = 0;
+    uint64_t transform = 0;
+    uint64_t material = 0;
+    uint64_t lighting = 0;
+    uint64_t pipeline = 0;
+
+    bool operator==(const SceneVersions&) const = default;
+};
+
+enum class SceneChange : uint32_t {
+    None = 0,
+    Structural = 1u << 0u,
+    Transform = 1u << 1u,
+    Material = 1u << 2u,
+    Lighting = 1u << 3u,
+    Pipeline = 1u << 4u,
+    AllScene = (1u << 0u) | (1u << 1u) | (1u << 2u) | (1u << 3u)
+};
+
+constexpr SceneChange operator|(SceneChange lhs, SceneChange rhs) {
+    return static_cast<SceneChange>(
+        static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+constexpr SceneChange& operator|=(SceneChange& lhs, SceneChange rhs) {
+    lhs = lhs | rhs;
+    return lhs;
+}
+
+constexpr bool hasSceneChange(SceneChange changes, SceneChange change) {
+    return (static_cast<uint32_t>(changes) & static_cast<uint32_t>(change)) != 0;
+}
+
 // Thread-safe publication boundary. Writers edit scene_, while readers only
 // receive an immutable clone whose lifetime is independent from later edits.
 class RenderScene {
@@ -23,15 +57,14 @@ public:
     struct Snapshot {
         std::shared_ptr<const Tasrovy::Render::Scene> scene;
         std::shared_ptr<Tasrovy::Render::PipelineBase> pipeline;
-        bool dirty = false;
-        uint64_t version = 0;
+        SceneVersions versions;
     };
 
     class LockedState {
     public:
         std::shared_ptr<Tasrovy::Render::Scene>& scene();
         std::shared_ptr<Tasrovy::Render::PipelineBase>& pipeline();
-        void markDirty();
+        void markChanged(SceneChange changes);
 
     private:
         friend class RenderScene;
@@ -50,12 +83,11 @@ public:
 
     Snapshot snapshot() const;
     LockedState lock();
-    void acknowledge(uint64_t version);
     void adoptPipelineIfEmpty(
         const std::shared_ptr<Tasrovy::Render::PipelineBase>& pipeline);
 
 private:
-    void markDirtyLocked();
+    void markChangedLocked(SceneChange changes);
     void publishSceneLocked();
     void rebuildProxiesLocked();
     void applyProxyLocked(const PrimitiveSceneProxy& proxy);
@@ -64,8 +96,7 @@ private:
     std::shared_ptr<Tasrovy::Render::Scene> scene_;
     std::shared_ptr<const Tasrovy::Render::Scene> publishedScene_;
     std::shared_ptr<Tasrovy::Render::PipelineBase> pipeline_;
-    bool dirty_ = true;
-    uint64_t version_ = 0;
+    SceneVersions versions_;
     std::unordered_map<uint64_t, PrimitiveSceneProxy> proxies_;
 };
 

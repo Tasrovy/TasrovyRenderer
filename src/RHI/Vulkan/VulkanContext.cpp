@@ -15,11 +15,6 @@
 // 将这些常量和全局函数放在cpp文件中，避免多重定义问题
 
 const std::vector<const char*> validationLayers = { "VK_LAYER_KHRONOS_validation" };
-const std::vector<const char*> deviceExtensions = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-    VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
-};
-
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
 #else
@@ -61,9 +56,12 @@ bool hasStencilComponent(VkFormat format) {
 
 VulkanContext::VulkanContext(const char* appName,
                              const std::vector<const char*>& instanceExtensions,
+                             std::vector<std::string> deviceExtensions,
                              SurfaceCreator surfaceCreator,
                              int fbWidth, int fbHeight)
-    : _appName(appName), _surfaceCreator(std::move(surfaceCreator)),
+    : _appName(appName),
+      _deviceExtensions(std::move(deviceExtensions)),
+      _surfaceCreator(std::move(surfaceCreator)),
       _fbWidth(fbWidth), _fbHeight(fbHeight)
 {
     if (volkInitialize() != VK_SUCCESS) {
@@ -298,8 +296,13 @@ void VulkanContext::createLogicalDevice() {
     createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
     createInfo.pEnabledFeatures = &deviceFeatures;
-    createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
-    createInfo.ppEnabledExtensionNames = deviceExtensions.data();
+    std::vector<const char*> deviceExtensionNames;
+    deviceExtensionNames.reserve(_deviceExtensions.size());
+    for (const auto& extension : _deviceExtensions)
+        deviceExtensionNames.push_back(extension.c_str());
+    createInfo.enabledExtensionCount =
+        static_cast<uint32_t>(deviceExtensionNames.size());
+    createInfo.ppEnabledExtensionNames = deviceExtensionNames.data();
 
     if (enableValidationLayers) {
         createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
@@ -371,7 +374,8 @@ bool VulkanContext::checkDeviceExtensionSupport(VkPhysicalDevice device) {
     vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr);
     std::vector<VkExtensionProperties> availableExtensions(extensionCount);
     vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, availableExtensions.data());
-    std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
+    std::set<std::string> requiredExtensions(
+        _deviceExtensions.begin(), _deviceExtensions.end());
     for (const auto& extension : availableExtensions) {
         requiredExtensions.erase(extension.extensionName);
     }

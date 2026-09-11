@@ -85,6 +85,9 @@ public:
         Tasrovy::RHI::Device& device,
         Tasrovy::RHI::Device::ResourceScope persistentScope,
         const std::string& preferredPath);
+    void prepareGlobalTextures(
+        Tasrovy::RHI::Device& device,
+        Tasrovy::RHI::Device::ResourceScope persistentScope);
     bool selectSkybox(int index);
 
     const std::shared_ptr<Tasrovy::RHI::Buffer>& skyboxVertexBuffer() const;
@@ -92,6 +95,7 @@ public:
     const std::shared_ptr<Tasrovy::RHI::Image>& skyCubemap() const;
     const std::shared_ptr<Tasrovy::RHI::Image>& iblFallbackCubemap() const;
     const std::shared_ptr<Tasrovy::RHI::Image>& iblFallbackLut() const;
+    const std::shared_ptr<Tasrovy::RHI::Image>& colorGradingLut() const;
     const std::vector<SkyboxVariant>& skyboxVariants() const;
     const std::string& activeSkyboxName() const;
     int selectedSkyboxIndex() const;
@@ -107,7 +111,8 @@ private:
         Tasrovy::Render::MaterialTextureColorSpace colorSpace);
     static std::string materialTextureCacheKey(
         const std::string& path,
-        Tasrovy::Render::MaterialTextureColorSpace colorSpace);
+        Tasrovy::Render::MaterialTextureColorSpace colorSpace,
+        bool generateMipmaps);
     static std::string defaultMaterialTextureCacheKey(
         const Tasrovy::Render::MaterialTextureRequirement& requirement);
     static void uploadBuffer(
@@ -130,6 +135,7 @@ private:
     std::shared_ptr<Tasrovy::RHI::Image> skyCubemap_;
     std::shared_ptr<Tasrovy::RHI::Image> iblFallbackCubemap_;
     std::shared_ptr<Tasrovy::RHI::Image> iblFallbackLut_;
+    std::shared_ptr<Tasrovy::RHI::Image> colorGradingLut_;
     std::string activeSkyboxName_;
     int selectedSkyboxIndex_ = 0;
 };

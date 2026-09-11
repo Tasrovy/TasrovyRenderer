@@ -37,6 +37,7 @@ public:
 
     VulkanContext(const char* appName,
                   const std::vector<const char*>& instanceExtensions,
+                  std::vector<std::string> deviceExtensions,
                   SurfaceCreator surfaceCreator,
                   int fbWidth, int fbHeight);
     ~VulkanContext();
@@ -139,6 +140,7 @@ private:
         void* pUserData);
 
     std::string _appName;
+    std::vector<std::string> _deviceExtensions;
     SurfaceCreator _surfaceCreator;
     int _fbWidth = 0;
     int _fbHeight = 0;

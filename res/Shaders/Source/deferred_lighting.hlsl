@@ -2,17 +2,13 @@
 
 cbuffer LightingPassConstants : register(b0, space0)
 {
+    // Keep this block byte-for-byte compatible with the C++
+    // Renderer::LightingPassConstants structure. Camera, object, material and
+    // light-array data live in GPUScene buffers and must not be inserted here.
     matrix lightViewProj;
     float4 shadowParams;
     float4 advancedLightingParams;
     float4 pcssParams;
-    float4 ssaoParams;
-    float4 postEffectParams;
-    float4 ssrParams;
-    matrix previousView;
-    matrix previousProj;
-    matrix previousModel;
-    float4 taaParams;
     matrix csmLightViewProj[4];
     float4 csmSplits;
     // x cascade count, y transition fraction, z maximum shadow distance.
@@ -73,6 +69,9 @@ struct VSOutput
 
 [[vk::combinedImageSampler]] Texture2D virtualShadowAtlas : register(t15, space0);
 [[vk::combinedImageSampler]] SamplerState virtualShadowSampler : register(s15, space0);
+
+StructuredBuffer<uint> lightCullXYMasks : register(t16, space0);
+StructuredBuffer<uint> lightCullZMasks : register(t17, space0);
 
 #define PI 3.14159265359f
 
@@ -384,61 +383,92 @@ float4 PSMain(VSOutput input) : SV_Target
 
     float3 F0 = lerp(0.04f.xxx, albedo, metallic);
     float3 direct = 0.0f.xxx;
-    uint lightCount = min((uint)round(sceneLighting.meta.x), 8u);
-    for (uint lightIndex = 0; lightIndex < lightCount; ++lightIndex) {
-        GpuSceneLight light = sceneLighting.lights[lightIndex];
-        uint lightType = (uint)round(light.positionAndType.w);
-        float3 L = 0.0f.xxx;
-        float attenuation = 1.0f;
+    static const uint lightTileSize = 32u;
+    static const uint lightMaskWords = 8u;
+    static const uint lightDepthSlices = 1024u;
+    uint2 renderExtent = max((uint2)gpuRenderSizeAndFar.xy, uint2(1u, 1u));
+    uint2 tileCount = (renderExtent + lightTileSize - 1u) / lightTileSize;
+    uint2 pixel = min((uint2)input.position.xy, renderExtent - 1u);
+    uint2 tile = min(pixel / lightTileSize, tileCount - 1u);
+    uint tileIndex = tile.y * tileCount.x + tile.x;
+    float viewDepth = max(
+        -mul(float4(worldPos, 1.0f), gpuView).z,
+        gpuCameraPositionAndNear.w);
+    float normalizedDepth = saturate(
+        (viewDepth - gpuCameraPositionAndNear.w) /
+        max(gpuRenderSizeAndFar.w - gpuCameraPositionAndNear.w, 0.0001f));
+    uint depthSlice = min(
+        (uint)(normalizedDepth * lightDepthSlices), lightDepthSlices - 1u);
+    uint lightCount = min((uint)round(sceneLighting.meta.x), 256u);
 
-        if (lightType == 0u) {
-            L = normalize(-light.directionAndRange.xyz);
-        } else {
-            float3 toLight = light.positionAndType.xyz - worldPos;
-            float distanceToLight = max(length(toLight), 0.001f);
-            L = toLight / distanceToLight;
-            if (lightType == 1u) {
-                float constantAttenuation = max(light.parameters.x, 0.0001f);
-                attenuation = rcp(max(
-                    constantAttenuation +
-                    light.parameters.y * distanceToLight +
-                    light.parameters.z * distanceToLight * distanceToLight,
-                    0.0001f));
-            } else {
-                float area = max(light.parameters.x * light.parameters.y, 0.0001f);
-                float emitterFacing = dot(
-                    normalize(light.directionAndRange.xyz),
-                    normalize(worldPos - light.positionAndType.xyz));
-                if (light.parameters.z > 0.5f) {
-                    emitterFacing = abs(emitterFacing);
-                } else {
-                    emitterFacing = saturate(emitterFacing);
-                }
-                attenuation = emitterFacing * area / (distanceToLight * distanceToLight + area);
+    [unroll]
+    for (uint maskWord = 0u; maskWord < lightMaskWords; ++maskWord) {
+        uint candidates =
+            lightCullXYMasks[tileIndex * lightMaskWords + maskWord] &
+            lightCullZMasks[depthSlice * lightMaskWords + maskWord];
+        while (candidates != 0u) {
+            uint lightBit = (uint)firstbitlow(candidates);
+            candidates &= candidates - 1u;
+            uint lightIndex = maskWord * 32u + lightBit;
+            if (lightIndex >= lightCount) {
+                continue;
             }
-        }
+            GpuSceneLight light = sceneLighting.lights[lightIndex];
+            uint lightType = (uint)round(light.positionAndType.w);
+            float3 L = 0.0f.xxx;
+            float attenuation = 1.0f;
 
-        float NdotL = saturate(dot(normal, L));
-        if (NdotL <= 0.0f || attenuation <= 0.0f) {
-            continue;
-        }
+            if (lightType == 0u) {
+                L = normalize(-light.directionAndRange.xyz);
+            } else {
+                float3 toLight = light.positionAndType.xyz - worldPos;
+                float distanceToLight = max(length(toLight), 0.001f);
+                L = toLight / distanceToLight;
+                if (lightType == 1u) {
+                    float constantAttenuation = max(light.parameters.x, 0.0001f);
+                    attenuation = rcp(max(
+                        constantAttenuation +
+                        light.parameters.y * distanceToLight +
+                        light.parameters.z * distanceToLight * distanceToLight,
+                        0.0001f));
+                } else {
+                    float area = max(light.parameters.x * light.parameters.y, 0.0001f);
+                    float emitterFacing = dot(
+                        normalize(light.directionAndRange.xyz),
+                        normalize(worldPos - light.positionAndType.xyz));
+                    if (light.parameters.z > 0.5f) {
+                        emitterFacing = abs(emitterFacing);
+                    } else {
+                        emitterFacing = saturate(emitterFacing);
+                    }
+                    attenuation = emitterFacing * area /
+                        (distanceToLight * distanceToLight + area);
+                }
+            }
 
-        float3 H = normalize(L + V);
-        float D = DistributionGGX(normal, H, roughness);
-        float G = GeometrySmith(normal, V, L, roughness);
-        float3 F = FresnelSchlick(max(dot(H, V), 0.0f), F0);
-        float3 numerator = D * G * F;
-        float denominator = 4.0f * max(NdotV, 0.001f) * max(NdotL, 0.001f);
-        float3 specularDirect = numerator / max(denominator, 0.001f);
-        float3 kDDirect = (1.0f.xxx - F) * (1.0f - metallic);
-        float3 diffuseDirect = kDDirect * albedo / PI;
-        float3 radiance =
-            light.colorAndIntensity.rgb * light.colorAndIntensity.w * attenuation * NdotL;
-        if (abs((float)lightIndex - shadowParams.z) < 0.5f) {
-            float shadow = CalculateShadow(worldPos, normal, L);
-            radiance *= 1.0f - shadow * saturate(shadowParams.w);
+            float NdotL = saturate(dot(normal, L));
+            if (NdotL <= 0.0f || attenuation <= 0.0f) {
+                continue;
+            }
+
+            float3 H = normalize(L + V);
+            float D = DistributionGGX(normal, H, roughness);
+            float G = GeometrySmith(normal, V, L, roughness);
+            float3 F = FresnelSchlick(max(dot(H, V), 0.0f), F0);
+            float3 numerator = D * G * F;
+            float denominator =
+                4.0f * max(NdotV, 0.001f) * max(NdotL, 0.001f);
+            float3 specularDirect = numerator / max(denominator, 0.001f);
+            float3 kDDirect = (1.0f.xxx - F) * (1.0f - metallic);
+            float3 diffuseDirect = kDDirect * albedo / PI;
+            float3 radiance = light.colorAndIntensity.rgb *
+                light.colorAndIntensity.w * attenuation * NdotL;
+            if (abs((float)lightIndex - shadowParams.z) < 0.5f) {
+                float shadow = CalculateShadow(worldPos, normal, L);
+                radiance *= 1.0f - shadow * saturate(shadowParams.w);
+            }
+            direct += (diffuseDirect + specularDirect) * radiance;
         }
-        direct += (diffuseDirect + specularDirect) * radiance;
     }
 
     const float MAX_REFLECTION_LOD = 7.0f;
