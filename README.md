@@ -100,6 +100,7 @@ cmake --build cmake-build-debug --config Debug
 - [项目架构与渲染流程](docs/PROJECT_OVERVIEW_CN.md)
 - [GPUScene 与 Uniform 架构](docs/GPU_SCENE_UNIFORM_ARCHITECTURE_CN.md)
 - [跨 API RHI 后端架构](docs/RHI_BACKEND_ARCHITECTURE_CN.md)
+- [多线程帧流水线与安全退出](docs/RUNTIME_THREADING_AND_SHUTDOWN_CN.md)
 
 ## 资源说明
 

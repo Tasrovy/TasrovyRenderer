@@ -99,6 +99,7 @@ The project is under active development:
 - [Architecture and rendering pipeline](PROJECT_OVERVIEW_CN.md)
 - [GPUScene and uniform architecture](GPU_SCENE_UNIFORM_ARCHITECTURE_CN.md)
 - [Cross-API RHI backend architecture](RHI_BACKEND_ARCHITECTURE_CN.md)
+- [Multithreaded frame pipeline and safe shutdown](RUNTIME_THREADING_AND_SHUTDOWN_CN.md)
 
 ## Asset Notice
 

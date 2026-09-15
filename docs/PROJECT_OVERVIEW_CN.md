@@ -69,32 +69,25 @@ Render 层不创建 Vulkan Buffer、Image 或 Pipeline，也不执行底层图�
 
 场景对象可以通过 Proxy 增量同步到 RenderScene，避免每帧完整重建渲染场景。
 
-当前 CPU 采用 Main/Game、Render、RHI 三线程职责拆分：Main Thread
-处理 GLFW 事件并通过 `RenderScene` 发布不可变 Scene Snapshot；Render
-Thread 消费快照，更新渲染线程私有 Scene，生成 FramePacket、RHI Execution
-Plan、Pass Constants 与 GPUScene 上传数据；RHI Thread 消费有界工作队列，在
-等待当前帧槽 Fence 后执行实际 Buffer 上传、CommandList 录制和 Vulkan Queue
-Submit。执行窗口扩大到 `maxFramesInFlight`：Render Thread 可以连续生产多个不可变
-`RenderFrameSubmission`，RHI Thread 按序消费，只有准备复用同一 Frame Slot 时才等待
-最老提交完成。每个提交使用预测帧槽，实际 Buffer 写入延迟到 RHI 等待该槽 Fence 之后。
-如果某帧获取交换链图像失败，RHI 会使后续投机帧失效并丢弃其 UI 快照，Render Thread
-排空窗口、重置时域历史，再执行交换链恢复。RenderGraph、Swapchain 和场景 GPU 资源的
-结构性重建通过同步 `invoke()`
-进入同一 RHI 队列，避免和已提交帧并发销毁资源。
+当前 CPU 采用 Main/Game、Render、RHI 三线程职责拆分。Main Thread 处理 GLFW、ImGui
+和场景写入；Render Thread 在帧边界消费 UI 命令与 Scene Snapshot，维护私有 RenderScene，
+并生成不可变的 `RenderFrameSubmission`；RHI Thread 按序消费有界队列，在对应 Frame Slot
+可复用后完成 Buffer 上传、CommandList 录制、Queue Submit 与 Present。
 
-`RenderFrameSubmission` 只携带按值复制的 FramePacket、Execution Plan、Bindings、
-资源 `shared_ptr` 和不可变上传字节，不携带可变 Scene 引用。关闭时先停止并 `join` Render Thread，
-再排空并停止 RHI Thread；如果录制在 Fence 重置后失败，FrameScheduler 会执行
-`abortFrame()` 恢复该帧槽，避免后续永久等待未触发的 Fence。
+队列容量与 `maxFramesInFlight` 对齐，使 Render N+1 可以与 RHI N 重叠，同时阻止 CPU
+无限领先 GPU。提交对象按值保存 FramePacket、Execution Plan、Bindings 和上传字节，资源通过
+`shared_ptr` 保活，不携带可变 Scene 引用。RenderGraph、Swapchain 和场景 GPU 资源重建统一
+进入 RHI 队列，并在结构性边界排空已有提交。
 
-场景与调试 UI 使用每帧独立的两个主 CommandBuffer。FrameExecutor 只录制 Scene
-CommandBuffer；场景结束并将交换链图像转换为 Present 状态后，FrameScheduler 切换到
-UI CommandBuffer，使用 `loadOp = LOAD` 的动态渲染在已解析的单采样交换链图像上叠加
-ImGui，再恢复 Present 状态。两个 CommandBuffer 以 `[Scene, UI]` 顺序放入同一次
-Graphics Queue Submit，帧 Fence 与 Render-Finished Semaphore 覆盖整个批次，Present
-只等待该批次完成。ImGui `DrawData` 使用 `CloneOutput()` 深拷贝为带 token 的逐帧快照，
-因此下一次 `NewFrame()` 不会覆盖 RHI 尚未录制的 UI；ImGui Vulkan Backend 的 NewFrame、
-快照回收和命令录制只通过一个短互斥区串行，场景帧编译不持有该锁。
+UI 与场景分别录制到两个 CommandBuffer，再按 `[Scene, UI]` 顺序放入同一次 Graphics
+Queue Submit。Main Thread 产生不可变 ImGui DrawData token；调试设置通过合并式命令邮箱送往
+Render Thread，运行状态通过双缓冲只读 Snapshot 返回 Main Thread，因此 UI 不直接访问渲染线程
+状态，也不在场景录制期间持有 UI 互斥锁。
+
+关闭流程会先停止新帧生产，取消尚未 Acquire 的排队任务，终止已录制但尚未 Submit 的帧，
+再排空已经提交的 GPU 工作。帧 Fence 使用有限超时并记录帧槽与阶段；所有工作线程停止后，
+后端执行一次设备级空闲等待，再销毁 NGX、交换链、Semaphore 和其他 Vulkan 对象。
+详细状态与所有权规则见 [多线程帧流水线与安全退出](RUNTIME_THREADING_AND_SHUTDOWN_CN.md)。
 
 #### RHI 与图形 API 后端
 
@@ -179,6 +172,10 @@ RHI 根据 FramePacket 编译 `RHI Execution Plan`，计算每个资源的：
 对于生命周期不重叠且格式、尺寸和用途兼容的纹理，RHI 会将其分配到相同的临时资源槽中。
 
 该机制能够减少多 Pass 渲染过程中重复创建的中间纹理数量，为后续实现更完整的显存别名和瞬态资源池提供基础。
+
+执行计划同时根据资源用途选择物理驻留方式：普通跨 Pass 资源默认共享；需要跨帧历史或并发写入的
+资源按 Frame Slot 保存；交换链等资源由外部持有；生命周期不重叠且描述兼容的瞬态资源允许复用
+分配槽。可选效果关闭时不创建其专属历史资源，例如关闭描边时不分配 `OutlineHistory`。
 
 #### 自动资源屏障
 
@@ -271,11 +268,19 @@ GBuffer 保存：
 - 将法线贴图转换到世界空间；
 - 参与 PBR 光照、阴影和屏幕空间效果计算。
 
+#### Compute 光源剔除
+
+光照前先按屏幕 Tile 与深度分片执行 Compute Pass。Shader 根据 Tile 视锥、深度范围和光源
+包围体相交关系，为最多 256 个动态光源生成位掩码；Lighting Pass 只遍历当前区域命中的 bit，
+避免每个像素扫描完整光源数组。光源数据保存在 Scene Light SSBO，剔除结果通过自动生成的
+Compute → Fragment Barrier 交给后续光照阶段。
+
 ### 6. 基于图像的光照
 
 #### 天空盒系统
 
-支持 Cubemap 天空盒与环境贴图，并通过 ImGui 在运行时切换不同环境资源。
+保留 Cubemap 天空盒与环境贴图实现。当前默认运行路径关闭天空盒发现、几何创建和 Cubemap
+驻留，只创建固定描述符布局需要的中性 IBL fallback，避免未使用环境资源长期占用显存。
 
 #### IBL 预计算
 
@@ -369,6 +374,10 @@ GBuffer 阶段根据当前帧和上一帧的变换矩阵计算运动向量，用
 - 根据深度和运动信息降低拖影；
 - 支持内部渲染分辨率到显示分辨率的时域放大。
 
+当前历史验证对亚像素边缘采用前景/背景双向判断；重投影深度和法线从邻域候选中选择更匹配的
+样本，历史颜色使用 `clip_aabb` 沿邻域中心方向裁剪。TAAU 在显示分辨率重建当前帧样本后再融合
+历史，以降低细小几何在抖动采样下交替接受和拒绝造成的闪烁。
+
 ### 10. 后处理流水线
 
 #### 多级 Bloom
@@ -404,7 +413,15 @@ Bloom 使用多级降采样和升采样，而不是单次大范围模糊：
 - Debug Output；
 - TAA/TAAU；
 - SSR 合成；
+- 3D LUT 校色；
 - 最终颜色输出。
+
+#### DLSS Neural Rendering（可选）
+
+管线可在最终阶段接入同分辨率 DLSS-NR 外部 Feature，输入线性颜色、深度和运动向量，并在
+Feature 不可用或执行失败时回退到原生后处理结果。NGX 运行时由用户在本地提供，不随仓库分发。
+同分辨率 RenderGraph 重建保留 Feature；只有分辨率变化、功能关闭或引擎退出时释放，强度、风格
+和局部色调等参数在 Evaluate 阶段更新，不触发重新创建。
 
 ### 11. GPU 驱动渲染实验代码（当前停用）
 
@@ -446,6 +463,9 @@ LOD 链。各级 LOD 共用顶点数据，并连续存放在同一个索引缓�
 主相机下的屏幕覆盖率选择 LOD，只改变 Draw Packet 的索引范围。所有几何 Pass 复用同一
 选择结果，以避免 GBuffer 与阴影之间使用不同层级。
 
+场景由 `res` 目录中的 JSON 描述驱动加载，运行时枚举可用场景并进行选择。模型、材质、Transform、
+光源和管线配置由场景文件建立，不要求在 `main()` 中硬编码演示对象。
+
 #### 材质描述
 
 材质系统支持：
@@ -458,6 +478,10 @@ LOD 链。各级 LOD 共用顶点数据，并连续存放在同一个索引缓�
 - 阴影投射开关；
 - 材质表面类型；
 - 外部材质描述文件加载。
+
+`MaterialTechnique` 描述材质参与的渲染阶段及其 Shader Variant；FrameCompiler 根据场景、植被、
+角色或特殊表面类型，为同一 Pass 中的不同 Draw 选择对应 Variant。Variant 由 HLSL Source、Entry
+Point 和 Permutation Key 标识，上层不保存 SPIR-V 路径或 Vulkan Pipeline 句柄。
 
 Shader 使用 HLSL 编写，并通过 DXC 编译为 SPIR-V。
 
@@ -508,6 +532,8 @@ Shader 使用 HLSL 编写，并通过 DXC 编译为 SPIR-V。
 
 - 跟踪 Buffer 与 Image；
 - 显示资源尺寸和用途；
+- 记录资源创建、销毁、驻留类型、分配槽和估算显存；
+- 统计进程内存、已跟踪 GPU 内存及增长趋势；
 - 记录不同 Pass 的 GPU 时间；
 - 显示当前 CPU Draw Packet 路径的 Pass 性能；
 - 辅助分析资源生命周期和 Pass 性能。
@@ -545,12 +571,16 @@ Shader 使用 HLSL 编写，并通过 DXC 编译为 SPIR-V。
 - RenderGraph 资源依赖分析；
 - FramePacket 帧数据边界；
 - GPU 资源生命周期管理；
+- Shared、Frame-buffered、External 与 Aliased 驻留策略；
 - 自动资源屏障；
 - Deferred PBR 与 IBL；
 - SM、CSM 和基础 Virtual Shadow Map；
 - Hi-Z 与 SSR；
 - TAA/TAAU；
 - 多级 Bloom 与时域后处理；
+- Main、Render、RHI 三线程有界帧流水线；
+- 独立 UI CommandBuffer、UI 命令邮箱与双缓冲调试快照；
+- 可诊断、可取消的 Vulkan 安全退出流程；
 - GPU Driven 数据结构与 Shader 实验代码（当前停用）；
 - 可视化调试和资源监控。
 

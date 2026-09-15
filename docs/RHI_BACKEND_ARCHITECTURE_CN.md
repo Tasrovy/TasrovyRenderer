@@ -30,6 +30,28 @@ Vulkan Backend
 
 `FrameScheduler` 负责帧获取、Fence、提交、Present 与交换链重建，其实现委托给 `IFrameSchedulerBackend`。`FrameExecutor` 负责资源解析、Pipeline 编译、Barrier 与 Pass 执行，其实现委托给 `IFrameExecutorBackend`。
 
+场景与 UI 使用独立 CommandList/CommandBuffer。FrameExecutor 只生成场景工作；UI 后端在场景结果上
+以 `loadOp = LOAD` 追加 ImGui，两个 CommandBuffer 由 FrameScheduler 放入同一次提交。这样 UI
+录制与场景 Pass 保持模块边界，同时由同一个 Render-Finished Semaphore 和帧 Fence 覆盖。
+
+## 帧同步与退出边界
+
+帧 Fence 只证明引用该 Fence 的 Queue Submit 已完成，不能单独证明 Present Engine 或未绑定该
+Fence 的外部工作已经停止。因此 RHI 区分两级同步：
+
+- 帧级同步：复用 Frame Slot 前等待 Fence；只有确定即将 Queue Submit 时才 Reset Fence；
+- 设备级同步：所有生产者与 RHI Worker 停止后调用 `Device::waitIdleForShutdown()`，再析构后端对象。
+
+关闭请求到达后，不再接受新的帧生产。尚未 Acquire 的排队提交可以直接取消；已 Acquire 或已录制
+但尚未 Submit 的帧通过 `abortFrame()` 回收本帧状态；已经 Submit 的帧必须等待完成。Fence 等待采用
+有限超时，并附带 Frame Slot、提交序号和处理阶段日志，避免退出时出现无诊断的永久阻塞。
+
+`waitIdleForShutdown()` 属于 `IDeviceBackend`，公共层不依赖 `vkDeviceWaitIdle`。Vulkan 实现负责将
+设备丢失转换为诊断信息，并保证 NGX 等外部 GPU Feature 在设备和其资源销毁前完成释放。
+
+完整的线程所有权和退出状态见
+[多线程帧流水线与安全退出](RUNTIME_THREADING_AND_SHUTDOWN_CN.md)。
+
 ## Shader 资产
 
 Render 层的 Shader 描述由以下信息组成：
