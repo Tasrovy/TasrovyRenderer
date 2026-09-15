@@ -249,8 +249,8 @@ void ensureBuiltinProviders() {
             constants.jitter = TSVec4f(
                 context.viewFrame.jitterDeltaUv.x,
                 context.viewFrame.jitterDeltaUv.y,
-                0.0f,
-                0.0f);
+                context.viewFrame.jitterUv.x,
+                context.viewFrame.jitterUv.y);
             storePacketBytes(context.output, constants);
             context.outputOverridden = true;
         };

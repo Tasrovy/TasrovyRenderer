@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <cmath>
 #include <algorithm>
+#include <cstdint>
 #include <vector>
 #include <Logger.hpp>
 
@@ -21,7 +22,7 @@ bool isUnsignedIntegerFormat(VkFormat format) {
 
 // --- 统一的私有构造函数 ---
 VulkanImage::VulkanImage(VulkanContext& context, VkExtent2D extent, VkFormat format, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkImageCreateFlags createFlags, uint32_t arrayLayers)
-    : _context(&context), _format(format), _extent(extent), _layout(VK_IMAGE_LAYOUT_UNDEFINED), _mipLevels(mipLevels), _msaaCount(numSamples), _imageCreateFlags(createFlags)
+    : _context(&context), _format(format), _extent(extent), _layout(VK_IMAGE_LAYOUT_UNDEFINED), _mipLevels(mipLevels), _msaaCount(numSamples), _imageCreateFlags(createFlags), _usage(usage), _arrayLayers(arrayLayers)
 {
     if (_msaaCount > VK_SAMPLE_COUNT_1_BIT && _mipLevels > 1) {
         throw std::runtime_error("VulkanImage Error: Multisampled images cannot have more than 1 mip level.");
@@ -40,6 +41,26 @@ VulkanImage::VulkanImage(VulkanContext& context, VkExtent2D extent, VkFormat for
     Tasrovy::RHI::ResourceTracker::created(
         Tasrovy::RHI::TrackedResourceKind::Image,
         static_cast<uint64_t>(_allocationSize));
+    const auto tracker = Tasrovy::RHI::ResourceTracker::snapshot();
+    const auto& imageStats = tracker.resources[static_cast<size_t>(
+        Tasrovy::RHI::TrackedResourceKind::Image)];
+    LOG_GPU_MEMORY(
+        "[ALLOC] type=Image image=0x{:x} memory=0x{:x} extent={}x{} "
+        "format={} mipLevels={} layers={} samples={} usage=0x{:x} "
+        "bytes={} imageLiveBytes={} imagePeakBytes={} totalLiveBytes={}",
+        reinterpret_cast<uintptr_t>(_image),
+        reinterpret_cast<uintptr_t>(_memory),
+        _extent.width,
+        _extent.height,
+        static_cast<int32_t>(_format),
+        _mipLevels,
+        _arrayLayers,
+        static_cast<uint32_t>(_msaaCount),
+        static_cast<uint32_t>(_usage),
+        static_cast<uint64_t>(_allocationSize),
+        imageStats.liveBytes,
+        imageStats.peakBytes,
+        tracker.totalLiveBytes);
 }
 
 VulkanImage::~VulkanImage() {
@@ -50,13 +71,29 @@ VulkanImage::~VulkanImage() {
     VkImage image = _image;
     VkDeviceMemory memory = _memory;
     const VkDeviceSize allocationSize = _allocationSize;
+    const VkExtent2D extent = _extent;
+    const VkFormat format = _format;
+    const uint32_t mipLevels = _mipLevels;
+    const uint32_t arrayLayers = _arrayLayers;
+    LOG_GPU_MEMORY(
+        "[RETIRE] type=Image image=0x{:x} memory=0x{:x} extent={}x{} "
+        "format={} mipLevels={} layers={} bytes={}",
+        reinterpret_cast<uintptr_t>(image),
+        reinterpret_cast<uintptr_t>(memory),
+        extent.width,
+        extent.height,
+        static_cast<int32_t>(format),
+        mipLevels,
+        arrayLayers,
+        static_cast<uint64_t>(allocationSize));
     _sampler = VK_NULL_HANDLE;
     _view = VK_NULL_HANDLE;
     _image = VK_NULL_HANDLE;
     _memory = VK_NULL_HANDLE;
     _allocationSize = 0;
 
-    _context->deferDelete([sampler, view, image, memory, allocationSize](VkDevice device) {
+    _context->deferDelete([sampler, view, image, memory, allocationSize,
+                           extent, format, mipLevels, arrayLayers](VkDevice device) {
         if (sampler != VK_NULL_HANDLE) vkDestroySampler(device, sampler, nullptr);
         if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, nullptr);
         if (image != VK_NULL_HANDLE) vkDestroyImage(device, image, nullptr);
@@ -65,6 +102,24 @@ VulkanImage::~VulkanImage() {
             Tasrovy::RHI::ResourceTracker::destroyed(
                 Tasrovy::RHI::TrackedResourceKind::Image,
                 static_cast<uint64_t>(allocationSize));
+            const auto tracker = Tasrovy::RHI::ResourceTracker::snapshot();
+            const auto& imageStats = tracker.resources[static_cast<size_t>(
+                Tasrovy::RHI::TrackedResourceKind::Image)];
+            LOG_GPU_MEMORY(
+                "[FREE] type=Image image=0x{:x} memory=0x{:x} extent={}x{} "
+                "format={} mipLevels={} layers={} bytes={} imageLiveBytes={} "
+                "imagePeakBytes={} totalLiveBytes={}",
+                reinterpret_cast<uintptr_t>(image),
+                reinterpret_cast<uintptr_t>(memory),
+                extent.width,
+                extent.height,
+                static_cast<int32_t>(format),
+                mipLevels,
+                arrayLayers,
+                static_cast<uint64_t>(allocationSize),
+                imageStats.liveBytes,
+                imageStats.peakBytes,
+                tracker.totalLiveBytes);
         }
     });
 }

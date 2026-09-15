@@ -22,6 +22,8 @@ public:
     ~VulkanDlssNrExecutor() override;
 
     void invalidateResources() noexcept override;
+    void prepareForExtent(
+        uint32_t width, uint32_t height) noexcept override;
     bool tryExecute(
         const ExternalFeatureExecuteContext& context) noexcept override;
 

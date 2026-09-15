@@ -39,6 +39,7 @@ bin/
 Thumbs.db
 .DS_Store
 imgui.ini
+logs/
 AGENTS.md
 
 # Local RenderDoc captures and reverse-engineering notes

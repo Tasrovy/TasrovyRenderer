@@ -43,6 +43,7 @@ public:
     virtual DescriptorImageInfo getIBLDescriptorInfo(
         IBLMapType mapType, const std::string& name) const = 0;
     virtual void createIBLMaps(IImageBackend& skybox, const std::string& name) = 0;
+    virtual void waitIdleForShutdown() = 0;
     virtual Format depthFormat() const = 0;
     virtual size_t deferredDeletionCount() const = 0;
     virtual BackendInteropContext interopContext() const = 0;

@@ -36,6 +36,7 @@ public:
     void removePrimitive(const std::string& name);
 
     void start();
+    void buildUIFrame();
     void stop();
     bool isRunning() const;
 

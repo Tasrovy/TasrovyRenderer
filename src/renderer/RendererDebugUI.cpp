@@ -644,20 +644,148 @@ void RendererDebugUI::refreshExecutionSnapshot() {
         }
         snapshot.passes.push_back(std::move(value));
     }
-    executionSnapshot_ = std::move(snapshot);
+    executionSnapshotSource_ = std::move(snapshot);
+}
+
+void RendererDebugUI::publishRuntimeSnapshot() {
+    RuntimeSnapshot snapshot;
+    const auto& state = components_;
+    snapshot.settings = state.settings;
+    snapshot.execution = executionSnapshotSource_;
+    snapshot.deferredDeletionCount = state.rhi.device
+        ? state.rhi.device->getDeferredDeletionCount()
+        : 0;
+    snapshot.gpuPassTimings = state.gpuPassTimings;
+    snapshot.meshBufferBytes = state.sceneResources.meshBufferBytes();
+    snapshot.skyboxBufferBytes = state.sceneResources.skyboxBufferBytes();
+    snapshot.meshCount = state.sceneResources.meshCount();
+    snapshot.materialTextureCount =
+        state.sceneResources.materialTextureCount();
+    snapshot.renderGraphValid =
+        state.frameOrchestrator.renderGraph().isValid();
+    const auto& framePacket = state.frameOrchestrator.framePacket();
+    snapshot.framePassNames.reserve(framePacket.passes.size());
+    for (const auto& pass : framePacket.passes) {
+        snapshot.framePassNames.push_back(pass.name);
+        snapshot.frameDrawCount += pass.draws.size();
+    }
+    const auto& graph = state.frameOrchestrator.renderGraph();
+    snapshot.graphEdges.reserve(graph.getEdges().size());
+    for (const auto& edge : graph.getEdges()) {
+        if (edge.producer >= framePacket.passes.size() ||
+            edge.consumer >= framePacket.passes.size()) {
+            continue;
+        }
+        snapshot.graphEdges.push_back({
+            framePacket.passes[edge.producer].name,
+            framePacket.passes[edge.consumer].name,
+            edge.resource,
+            renderGraphHazardName(edge.hazard)});
+    }
+    snapshot.resourceLifetimes.reserve(
+        graph.getResourceLifetimes().size());
+    for (const auto& lifetime : graph.getResourceLifetimes()) {
+        snapshot.resourceLifetimes.push_back({
+            lifetime.resource,
+            lifetime.firstUse,
+            lifetime.lastUse,
+            lifetime.external});
+    }
+    snapshot.graphDiagnostics = graph.getDiagnostics();
+    const auto& executionPlan = state.frameOrchestrator.executionPlan();
+    snapshot.executionPlanPassCount = executionPlan.passes.size();
+    snapshot.executionPlanResourceCount = executionPlan.resources.size();
+    snapshot.executionPlanDiagnosticCount =
+        executionPlan.diagnostics.size();
+    snapshot.internalRenderWidth = state.internalRenderWidth;
+    snapshot.internalRenderHeight = state.internalRenderHeight;
+    snapshot.displayWidth = state.displayWidth;
+    snapshot.displayHeight = state.displayHeight;
+    snapshot.historyStatus = state.viewState.historyStatus;
+    snapshot.temporalFrameIndex = state.viewState.temporalFrameIndex;
+    snapshot.previousJitterUv = state.viewState.previousJitterUv;
+    snapshot.selectedSkyboxIndex =
+        state.sceneResources.selectedSkyboxIndex();
+    snapshot.activeSkyboxName = state.sceneResources.activeSkyboxName();
+    for (const auto& skybox : state.sceneResources.skyboxVariants()) {
+        snapshot.skyboxes.push_back({skybox.name, skybox.path});
+    }
+
+    std::scoped_lock lock(snapshotMutex_);
+    const uint32_t writeIndex = 1u - publishedSnapshotIndex_;
+    runtimeSnapshots_[writeIndex] = std::move(snapshot);
+    publishedSnapshotIndex_ = writeIndex;
+}
+
+RendererDebugUI::RuntimeSnapshot
+RendererDebugUI::readRuntimeSnapshot() const {
+    std::scoped_lock lock(snapshotMutex_);
+    return runtimeSnapshots_[publishedSnapshotIndex_];
+}
+
+void RendererDebugUI::submitUICommand(UICommand command) {
+    std::scoped_lock lock(commandMutex_);
+    if (pendingCommand_) {
+        command.resetTemporalHistory = command.resetTemporalHistory ||
+            pendingCommand_->resetTemporalHistory;
+        command.internalExtentDirty = command.internalExtentDirty ||
+            pendingCommand_->internalExtentDirty;
+        if (!command.selectedSkyboxIndex) {
+            command.selectedSkyboxIndex =
+                pendingCommand_->selectedSkyboxIndex;
+        }
+    }
+    pendingCommand_ = std::move(command);
+}
+
+void RendererDebugUI::consumeUICommands() {
+    std::optional<UICommand> command;
+    {
+        std::scoped_lock lock(commandMutex_);
+        command.swap(pendingCommand_);
+    }
+    if (!command) return;
+
+    auto& state = components_;
+    state.settings = std::move(command->settings);
+    if (command->resetTemporalHistory) {
+        state.viewState.temporalHistoryValid = false;
+        state.viewState.previousModelMatrices.clear();
+        state.frameOrchestrator.resetTemporalHistory();
+    }
+    if (command->internalExtentDirty) {
+        state.internalExtentDirty = true;
+    }
+    if (command->selectedSkyboxIndex &&
+        state.sceneResources.selectSkybox(*command->selectedSkyboxIndex)) {
+        state.loggedSkyboxDrawState = false;
+    }
 }
 
 void RendererDebugUI::draw() {
-    auto& state = components_;
+    const RuntimeSnapshot snapshot = readRuntimeSnapshot();
+    if (!uiSettingsInitialized_) {
+        uiSettings_ = snapshot.settings;
+        uiSettingsInitialized_ = true;
+    }
+    bool resetTemporalHistory = false;
+    bool internalExtentDirty = false;
+    std::optional<int> selectedSkyboxIndex;
+    const auto submitFrameCommands = [&]() {
+        UICommand command;
+        command.settings = uiSettings_;
+        command.resetTemporalHistory = resetTemporalHistory;
+        command.internalExtentDirty = internalExtentDirty;
+        command.selectedSkyboxIndex = selectedSkyboxIndex;
+        submitUICommand(std::move(command));
+    };
     auto lockedScene = renderScene_.lock();
     const auto scene = lockedScene.scene();
     SceneChange publishedChanges = SceneChange::None;
-    if (state.resourceMonitor) {
-        state.resourceMonitor->draw(
-            state.rhi.device
-                ? state.rhi.device->getDeferredDeletionCount()
-                : 0,
-            state.gpuPassTimings);
+    if (components_.resourceMonitor) {
+        components_.resourceMonitor->draw(
+            snapshot.deferredDeletionCount,
+            snapshot.gpuPassTimings);
     }
 
     ImGui::SetNextWindowSize(ImVec2(420.0f, 560.0f), ImGuiCond_FirstUseEver);
@@ -736,15 +864,13 @@ void RendererDebugUI::draw() {
     const float fps = ImGui::GetIO().Framerate;
     const float frameMs = fps > 0.0f ? 1000.0f / fps : 0.0f;
 
-    const uint64_t meshBufferBytes =
-        state.sceneResources.meshBufferBytes();
-    const uint64_t skyboxBufferBytes =
-        state.sceneResources.skyboxBufferBytes();
+    const uint64_t meshBufferBytes = snapshot.meshBufferBytes;
+    const uint64_t skyboxBufferBytes = snapshot.skyboxBufferBytes;
 
     const uint64_t uniformResidentBytes =
-        executionSnapshot_.uniformResidentBytes;
+        snapshot.execution.uniformResidentBytes;
     const uint64_t uniformPerFrameBytes =
-        executionSnapshot_.uniformPerFrameBytes;
+        snapshot.execution.uniformPerFrameBytes;
     const uint64_t uniformBytesPerSecond =
         static_cast<uint64_t>(static_cast<double>(uniformPerFrameBytes) * static_cast<double>(fps));
 
@@ -753,61 +879,53 @@ void RendererDebugUI::draw() {
     const char* pipelineNames[] = {"PBR", "Deferred", "Stylized PBR"};
     if (lockedScene.pipeline()) {
         if (lockedScene.pipeline()->getName() == "Deferred") {
-            state.settings.selectedPipelineIndex = 1;
+            uiSettings_.selectedPipelineIndex = 1;
         } else if (lockedScene.pipeline()->getName() == "PBR") {
-            state.settings.selectedPipelineIndex = 0;
+            uiSettings_.selectedPipelineIndex = 0;
         } else if (lockedScene.pipeline()->getName() == "StylizedPBR") {
-            state.settings.selectedPipelineIndex = 2;
+            uiSettings_.selectedPipelineIndex = 2;
         }
     }
-    if (ImGui::Combo("Pipeline", &state.settings.selectedPipelineIndex, pipelineNames, 3)) {
-        if (state.settings.selectedPipelineIndex == 2) {
+    if (ImGui::Combo("Pipeline", &uiSettings_.selectedPipelineIndex, pipelineNames, 3)) {
+        if (uiSettings_.selectedPipelineIndex == 2) {
             lockedScene.pipeline() = StylizedPBRPipeline::create();
-        } else if (state.settings.selectedPipelineIndex == 1) {
+        } else if (uiSettings_.selectedPipelineIndex == 1) {
             lockedScene.pipeline() = DeferredPipeline::create();
         } else {
             lockedScene.pipeline() = PBRPipeline::create();
         }
-        state.settings.debugOutputResource.clear();
-        state.settings.debugOutputSemantic = DebugTextureSemantic::FinalOutput;
+        uiSettings_.debugOutputResource.clear();
+        uiSettings_.debugOutputSemantic = DebugTextureSemantic::FinalOutput;
         publishedChanges |= SceneChange::Pipeline;
         LOG_INFO(
             "SceneRenderer: switched pipeline to '{}'",
             lockedScene.pipeline()->getName());
     }
-    ImGui::Text("Passes: %zu", executionSnapshot_.passCount);
+    ImGui::Text("Passes: %zu", snapshot.execution.passCount);
     ImGui::SameLine();
     ImGui::TextDisabled(
         "Render Graph: %s",
-        state.frameOrchestrator.renderGraph().isValid() ? "valid" : "invalid");
+        snapshot.renderGraphValid ? "valid" : "invalid");
     if (ImGui::CollapsingHeader("Render Graph")) {
-        const auto& framePasses =
-            state.frameOrchestrator.framePacket().passes;
-        for (size_t index = 0; index < framePasses.size(); ++index) {
+        for (size_t index = 0; index < snapshot.framePassNames.size(); ++index) {
             ImGui::Text(
                 "%zu. %s",
                 index,
-                framePasses[index].name.c_str());
+                snapshot.framePassNames[index].c_str());
         }
         if (ImGui::TreeNode("Dependencies")) {
-            for (const auto& edge :
-                 state.frameOrchestrator.renderGraph().getEdges()) {
-                if (edge.producer >= framePasses.size() ||
-                    edge.consumer >= framePasses.size()) {
-                    continue;
-                }
+            for (const auto& edge : snapshot.graphEdges) {
                 ImGui::BulletText(
                     "%s -> %s  [%s: %s]",
-                    framePasses[edge.producer].name.c_str(),
-                    framePasses[edge.consumer].name.c_str(),
-                    renderGraphHazardName(edge.hazard),
+                    edge.producer.c_str(),
+                    edge.consumer.c_str(),
+                    edge.hazard.c_str(),
                     edge.resource.c_str());
             }
             ImGui::TreePop();
         }
         if (ImGui::TreeNode("Resource Lifetimes")) {
-            for (const auto& lifetime :
-                 state.frameOrchestrator.renderGraph().getResourceLifetimes()) {
+            for (const auto& lifetime : snapshot.resourceLifetimes) {
                 ImGui::BulletText(
                     "%s  [%zu, %zu]%s",
                     lifetime.resource.c_str(),
@@ -817,21 +935,20 @@ void RendererDebugUI::draw() {
             }
             ImGui::TreePop();
         }
-        for (const auto& diagnostic :
-             state.frameOrchestrator.renderGraph().getDiagnostics()) {
+        for (const auto& diagnostic : snapshot.graphDiagnostics) {
             ImGui::TextColored(
                 ImVec4(1.0f, 0.35f, 0.3f, 1.0f),
                 "%s",
                 diagnostic.c_str());
         }
     }
-    ImGui::Text("Meshes: %zu", state.sceneResources.meshCount());
+    ImGui::Text("Meshes: %zu", snapshot.meshCount);
     ImGui::Text(
         "Render Textures: %zu",
-        executionSnapshot_.textureCount);
+        snapshot.execution.textureCount);
     ImGui::Text(
         "Material Textures: %zu",
-        state.sceneResources.materialTextureCount());
+        snapshot.materialTextureCount);
     if (ImGui::CollapsingHeader("Data Flow", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("Uniform/frame: %s", formatBytes(uniformPerFrameBytes).c_str());
         ImGui::Text("Uniform/sec: %s/s", formatBytes(uniformBytesPerSecond).c_str());
@@ -840,10 +957,10 @@ void RendererDebugUI::draw() {
         ImGui::Text("Skybox buffers: %s", formatBytes(skyboxBufferBytes).c_str());
         ImGui::Text(
             "Render textures: %s",
-            formatBytes(executionSnapshot_.allocatedBytes).c_str());
+            formatBytes(snapshot.execution.allocatedBytes).c_str());
         ImGui::Text(
             "Skybox variants: %zu",
-            state.sceneResources.skyboxVariants().size());
+            snapshot.skyboxes.size());
     }
 
     if (ImGui::CollapsingHeader("Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -854,20 +971,20 @@ void RendererDebugUI::draw() {
         };
         ImGui::Combo(
             "Technique",
-            &state.settings.shadowTechnique,
+            &uiSettings_.shadowTechnique,
             shadowTechniques,
             IM_ARRAYSIZE(shadowTechniques));
-        ImGui::SliderFloat("Slope Bias", &state.settings.shadowSlopeBias, 0.0f, 0.02f, "%.5f");
-        ImGui::SliderFloat("Minimum Bias", &state.settings.shadowMinimumBias, 0.0f, 0.01f, "%.5f");
-        ImGui::SliderFloat("Strength", &state.settings.shadowStrength, 0.0f, 1.0f);
+        ImGui::SliderFloat("Slope Bias", &uiSettings_.shadowSlopeBias, 0.0f, 0.02f, "%.5f");
+        ImGui::SliderFloat("Minimum Bias", &uiSettings_.shadowMinimumBias, 0.0f, 0.01f, "%.5f");
+        ImGui::SliderFloat("Strength", &uiSettings_.shadowStrength, 0.0f, 1.0f);
         ImGui::SliderFloat(
-            "CSM Distance", &state.settings.csmMaximumDistance, 5.0f, 150.0f, "%.1f");
-        if (state.settings.shadowTechnique != static_cast<int>(ShadowTechnique::ShadowMap)) {
+            "CSM Distance", &uiSettings_.csmMaximumDistance, 5.0f, 150.0f, "%.1f");
+        if (uiSettings_.shadowTechnique != static_cast<int>(ShadowTechnique::ShadowMap)) {
             ImGui::SliderFloat(
-                "CSM Split Lambda", &state.settings.csmSplitLambda, 0.0f, 1.0f, "%.2f");
+                "CSM Split Lambda", &uiSettings_.csmSplitLambda, 0.0f, 1.0f, "%.2f");
             ImGui::SliderFloat(
-                "CSM Blend", &state.settings.csmBlendFraction, 0.0f, 0.30f, "%.2f");
-            if (state.settings.shadowTechnique ==
+                "CSM Blend", &uiSettings_.csmBlendFraction, 0.0f, 0.30f, "%.2f");
+            if (uiSettings_.shadowTechnique ==
                 static_cast<int>(ShadowTechnique::VirtualShadowMap)) {
                 ImGui::TextDisabled(
                     "VSM: 4096 atlas, four fixed resident 2048 pages");
@@ -882,31 +999,31 @@ void RendererDebugUI::draw() {
     }
 
     if (ImGui::CollapsingHeader("Advanced Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Adaptive PCSS", &state.settings.pcssEnabled);
-        if (state.settings.pcssEnabled) {
-            ImGui::SliderFloat("PCSS Light Size", &state.settings.pcssLightSize, 0.001f, 0.08f, "%.4f");
+        ImGui::Checkbox("Adaptive PCSS", &uiSettings_.pcssEnabled);
+        if (uiSettings_.pcssEnabled) {
+            ImGui::SliderFloat("PCSS Light Size", &uiSettings_.pcssLightSize, 0.001f, 0.08f, "%.4f");
             ImGui::SliderFloat(
-                "PCSS Max Radius", &state.settings.pcssMaxFilterRadius, 0.002f, 0.12f, "%.4f");
+                "PCSS Max Radius", &uiSettings_.pcssMaxFilterRadius, 0.002f, 0.12f, "%.4f");
         }
 
-        ImGui::Checkbox("HBAO", &state.settings.ssaoEnabled);
-        if (state.settings.ssaoEnabled) {
-            ImGui::SliderFloat("HBAO Screen Radius", &state.settings.ssaoRadiusPixels, 2.0f, 64.0f);
-            ImGui::SliderFloat("HBAO World Radius", &state.settings.ssaoWorldRadius, 0.05f, 5.0f);
-            ImGui::SliderFloat("HBAO Intensity", &state.settings.ssaoIntensity, 0.0f, 4.0f);
-            ImGui::SliderFloat("HBAO Bias", &state.settings.ssaoBias, 0.0f, 0.2f, "%.4f");
+        ImGui::Checkbox("HBAO", &uiSettings_.ssaoEnabled);
+        if (uiSettings_.ssaoEnabled) {
+            ImGui::SliderFloat("HBAO Screen Radius", &uiSettings_.ssaoRadiusPixels, 2.0f, 64.0f);
+            ImGui::SliderFloat("HBAO World Radius", &uiSettings_.ssaoWorldRadius, 0.05f, 5.0f);
+            ImGui::SliderFloat("HBAO Intensity", &uiSettings_.ssaoIntensity, 0.0f, 4.0f);
+            ImGui::SliderFloat("HBAO Bias", &uiSettings_.ssaoBias, 0.0f, 0.2f, "%.4f");
         }
 
-        if (ImGui::Checkbox("SSR", &state.settings.ssrEnabled)) {
+        if (ImGui::Checkbox("SSR", &uiSettings_.ssrEnabled)) {
             // SSR is part of the temporal input, so toggling it changes the
             // history's meaning and requires a fresh accumulation.
-            state.viewState.temporalHistoryValid = false;
+            resetTemporalHistory = true;
         }
-        if (state.settings.ssrEnabled) {
-            ImGui::SliderFloat("SSR Max Distance", &state.settings.ssrMaxDistance, 0.5f, 30.0f);
-            ImGui::SliderFloat("SSR Step Size", &state.settings.ssrStepSize, 0.02f, 1.0f);
-            ImGui::SliderFloat("SSR Thickness", &state.settings.ssrThickness, 0.01f, 1.0f);
-            ImGui::SliderFloat("SSR Intensity", &state.settings.ssrIntensity, 0.0f, 1.0f);
+        if (uiSettings_.ssrEnabled) {
+            ImGui::SliderFloat("SSR Max Distance", &uiSettings_.ssrMaxDistance, 0.5f, 30.0f);
+            ImGui::SliderFloat("SSR Step Size", &uiSettings_.ssrStepSize, 0.02f, 1.0f);
+            ImGui::SliderFloat("SSR Thickness", &uiSettings_.ssrThickness, 0.01f, 1.0f);
+            ImGui::SliderFloat("SSR Intensity", &uiSettings_.ssrIntensity, 0.0f, 1.0f);
         }
     }
 
@@ -917,39 +1034,37 @@ void RendererDebugUI::draw() {
             "TAAU (Display Resolution)"
         };
         if (ImGui::Combo(
-                "Temporal AA", &state.settings.temporalAAMode,
+                "Temporal AA", &uiSettings_.temporalAAMode,
                 temporalModes, static_cast<int>(std::size(temporalModes)))) {
-            state.viewState.temporalHistoryValid = false;
-            state.viewState.previousModelMatrices.clear();
-            state.frameOrchestrator.resetTemporalHistory();
+            resetTemporalHistory = true;
             // Native TAA renders the entire deferred graph at the display
             // extent; Off and TAAU restore the configured fixed internal size.
-            state.internalExtentDirty = true;
+            internalExtentDirty = true;
         }
-        if (state.settings.temporalAAMode != 0) {
+        if (uiSettings_.temporalAAMode != 0) {
             ImGui::SliderFloat(
-                "History Weight", &state.settings.taaHistoryWeight, 0.0f, 0.98f);
+                "History Weight", &uiSettings_.taaHistoryWeight, 0.0f, 0.98f);
         }
-        if (state.settings.temporalAAMode == 2) {
+        if (uiSettings_.temporalAAMode == 2) {
             if (ImGui::SliderFloat(
                     "Mip Bias Adjustment",
-                    &state.settings.temporalMipBiasAdjustment,
+                    &uiSettings_.temporalMipBiasAdjustment,
                     -2.0f,
                     2.0f,
                     "%+.2f")) {
-                state.viewState.temporalHistoryValid = false;
+                resetTemporalHistory = true;
             }
             const float internalScale = std::min(
-                static_cast<float>(state.internalRenderWidth) /
-                    static_cast<float>(std::max(state.displayWidth, 1u)),
-                static_cast<float>(state.internalRenderHeight) /
-                    static_cast<float>(std::max(state.displayHeight, 1u)));
+                static_cast<float>(snapshot.internalRenderWidth) /
+                    static_cast<float>(std::max(snapshot.displayWidth, 1u)),
+                static_cast<float>(snapshot.internalRenderHeight) /
+                    static_cast<float>(std::max(snapshot.displayHeight, 1u)));
             const float automaticMipBias = std::clamp(
                 std::log2(std::max(internalScale, 0.25f)),
                 -2.0f,
                 0.0f);
             const float effectiveMipBias = std::clamp(
-                automaticMipBias + state.settings.temporalMipBiasAdjustment,
+                automaticMipBias + uiSettings_.temporalMipBiasAdjustment,
                 -2.0f,
                 0.0f);
             ImGui::TextDisabled(
@@ -958,197 +1073,197 @@ void RendererDebugUI::draw() {
                 effectiveMipBias);
             ImGui::SameLine();
             if (ImGui::SmallButton("Reset##MipBias")) {
-                state.settings.temporalMipBiasAdjustment = 0.0f;
-                state.viewState.temporalHistoryValid = false;
+                uiSettings_.temporalMipBiasAdjustment = 0.0f;
+                resetTemporalHistory = true;
             }
         }
         if (ImGui::SliderFloat(
                 "Internal Resolution",
-                &state.settings.internalResolutionPercent,
+                &uiSettings_.internalResolutionPercent,
                 25.0f,
                 200.0f,
                 "%.0f%%")) {
             // The setting is dormant in Native TAA and is applied when Off or
             // TAAU is selected again.
-            state.internalExtentDirty = state.settings.temporalAAMode != 1;
-            state.viewState.temporalHistoryValid = false;
+            internalExtentDirty = uiSettings_.temporalAAMode != 1;
+            resetTemporalHistory = true;
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("100%")) {
-            state.settings.internalResolutionPercent = 100.0f;
-            state.internalExtentDirty = state.settings.temporalAAMode != 1;
-            state.viewState.temporalHistoryValid = false;
+            uiSettings_.internalResolutionPercent = 100.0f;
+            internalExtentDirty = uiSettings_.temporalAAMode != 1;
+            resetTemporalHistory = true;
         }
         ImGui::Text(
             "Internal: %u x %u  Display: %u x %u",
-            state.internalRenderWidth,
-            state.internalRenderHeight,
-            state.displayWidth,
-            state.displayHeight);
-        ImGui::Text("Requested internal scale: %.0f%%", state.settings.internalResolutionPercent);
+            snapshot.internalRenderWidth,
+            snapshot.internalRenderHeight,
+            snapshot.displayWidth,
+            snapshot.displayHeight);
+        ImGui::Text("Requested internal scale: %.0f%%", uiSettings_.internalResolutionPercent);
         ImGui::Text(
             "History: %s  frame: %llu",
-            state.viewState.historyStatus.c_str(),
-            static_cast<unsigned long long>(state.viewState.temporalFrameIndex));
+            snapshot.historyStatus.c_str(),
+            static_cast<unsigned long long>(snapshot.temporalFrameIndex));
         ImGui::TextDisabled(
             "Previous jitter: %.6f, %.6f",
-            state.viewState.previousJitterUv.x,
-            state.viewState.previousJitterUv.y);
-        if (state.settings.temporalAAMode == 1) {
+            snapshot.previousJitterUv.x,
+            snapshot.previousJitterUv.y);
+        if (uiSettings_.temporalAAMode == 1) {
             ImGui::TextDisabled(
                 "Native TAA forces 100%%; the requested scale is retained for TAAU/Off.");
         }
         ImGui::Separator();
         bool dofChanged = ImGui::Checkbox(
-            "Depth of Field (Pre-TAA)", &state.settings.depthOfFieldEnabled);
-        if (state.settings.depthOfFieldEnabled) {
+            "Depth of Field (Pre-TAA)", &uiSettings_.depthOfFieldEnabled);
+        if (uiSettings_.depthOfFieldEnabled) {
             dofChanged |= ImGui::DragFloat(
-                "Focus Distance", &state.settings.dofFocusDistance,
+                "Focus Distance", &uiSettings_.dofFocusDistance,
                 0.05f, 0.05f, 100.0f, "%.2f");
             dofChanged |= ImGui::DragFloat(
-                "Focus Range", &state.settings.dofFocusRange,
+                "Focus Range", &uiSettings_.dofFocusRange,
                 0.05f, 0.05f, 25.0f, "%.2f");
             dofChanged |= ImGui::SliderFloat(
-                "DOF Max Radius", &state.settings.dofMaxBlurRadius,
+                "DOF Max Radius", &uiSettings_.dofMaxBlurRadius,
                 0.5f, 20.0f, "%.1f px");
             dofChanged |= ImGui::SliderFloat(
-                "DOF Strength", &state.settings.dofStrength, 0.0f, 2.0f);
+                "DOF Strength", &uiSettings_.dofStrength, 0.0f, 2.0f);
         }
         if (dofChanged) {
-            state.viewState.temporalHistoryValid = false;
+            resetTemporalHistory = true;
         }
-        ImGui::Checkbox("Motion Blur", &state.settings.motionBlurEnabled);
-        if (state.settings.motionBlurEnabled) {
+        ImGui::Checkbox("Motion Blur", &uiSettings_.motionBlurEnabled);
+        if (uiSettings_.motionBlurEnabled) {
             ImGui::SliderFloat(
-                "Motion Strength", &state.settings.motionBlurStrength, 0.0f, 2.0f);
+                "Motion Strength", &uiSettings_.motionBlurStrength, 0.0f, 2.0f);
             ImGui::SliderFloat(
-                "Motion Max Radius", &state.settings.motionBlurMaxRadius,
+                "Motion Max Radius", &uiSettings_.motionBlurMaxRadius,
                 1.0f, 64.0f, "%.1f px");
             ImGui::SliderInt(
-                "Motion Samples", &state.settings.motionBlurSamples, 4, 16);
+                "Motion Samples", &uiSettings_.motionBlurSamples, 4, 16);
         }
         ImGui::Separator();
-        ImGui::Checkbox("Bloom", &state.settings.bloomEnabled);
-        ImGui::SliderFloat("Bloom Threshold", &state.settings.bloomThreshold, 0.0f, 10.0f);
-        ImGui::SliderFloat("Bloom Intensity", &state.settings.bloomIntensity, 0.0f, 3.0f);
-        ImGui::SliderFloat("Bloom Radius", &state.settings.bloomRadius, 0.25f, 4.0f);
-        ImGui::SliderFloat("Exposure", &state.settings.exposure, 0.05f, 5.0f);
+        ImGui::Checkbox("Bloom", &uiSettings_.bloomEnabled);
+        ImGui::SliderFloat("Bloom Threshold", &uiSettings_.bloomThreshold, 0.0f, 10.0f);
+        ImGui::SliderFloat("Bloom Intensity", &uiSettings_.bloomIntensity, 0.0f, 3.0f);
+        ImGui::SliderFloat("Bloom Radius", &uiSettings_.bloomRadius, 0.25f, 4.0f);
+        ImGui::SliderFloat("Exposure", &uiSettings_.exposure, 0.05f, 5.0f);
         ImGui::Checkbox(
-            "Color Grading LUT", &state.settings.colorGradingEnabled);
-        if (state.settings.colorGradingEnabled) {
+            "Color Grading LUT", &uiSettings_.colorGradingEnabled);
+        if (uiSettings_.colorGradingEnabled) {
             ImGui::SliderFloat(
                 "Color Grading Strength",
-                &state.settings.colorGradingStrength,
+                &uiSettings_.colorGradingStrength,
                 0.0f,
                 1.0f);
             ImGui::SliderFloat(
                 "LUT Exposure Compensation",
-                &state.settings.colorGradingExposureCompensationEv,
+                &uiSettings_.colorGradingExposureCompensationEv,
                 -4.0f,
                 4.0f,
                 "%+.2f EV");
         }
         ImGui::Checkbox(
             "Final CAS Sharpening",
-            &state.settings.finalSharpeningEnabled);
-        if (state.settings.finalSharpeningEnabled) {
+            &uiSettings_.finalSharpeningEnabled);
+        if (uiSettings_.finalSharpeningEnabled) {
             ImGui::SliderFloat(
                 "Final Sharpening Strength",
-                &state.settings.finalSharpeningStrength,
+                &uiSettings_.finalSharpeningStrength,
                 0.0f,
                 1.0f);
         }
         ImGui::SliderFloat(
             "Chromatic Aberration",
-            &state.settings.chromaticAberrationPixels,
+            &uiSettings_.chromaticAberrationPixels,
             0.0f,
             3.0f,
             "%.2f px");
         ImGui::SliderFloat(
             "Vignette Strength",
-            &state.settings.vignetteStrength,
+            &uiSettings_.vignetteStrength,
             0.0f,
             1.0f);
-        if (state.settings.vignetteStrength > 0.0f) {
+        if (uiSettings_.vignetteStrength > 0.0f) {
             ImGui::SliderFloat(
                 "Vignette Power",
-                &state.settings.vignettePower,
+                &uiSettings_.vignettePower,
                 0.25f,
                 8.0f);
             float vignetteColor[3] = {
-                state.settings.vignetteColor.x,
-                state.settings.vignetteColor.y,
-                state.settings.vignetteColor.z
+                uiSettings_.vignetteColor.x,
+                uiSettings_.vignetteColor.y,
+                uiSettings_.vignetteColor.z
             };
             if (ImGui::ColorEdit3("Vignette Color", vignetteColor)) {
-                state.settings.vignetteColor = TSVec3f(
+                uiSettings_.vignetteColor = TSVec3f(
                     vignetteColor[0], vignetteColor[1], vignetteColor[2]);
             }
         }
         ImGui::SliderFloat(
             "Display Dither Strength",
-            &state.settings.displayDitherStrength,
+            &uiSettings_.displayDitherStrength,
             0.0f,
             1.0f);
         ImGui::Separator();
         bool dlssNrChanged = ImGui::Checkbox(
             "DLSS Neural Rendering (Experimental)",
-            &state.settings.dlssNeuralRenderingEnabled);
-        if (state.settings.dlssNeuralRenderingEnabled) {
+            &uiSettings_.dlssNeuralRenderingEnabled);
+        if (uiSettings_.dlssNeuralRenderingEnabled) {
             static const char* dlssNrStyles[] = {
                 "Default", "Natural", "Cinematic"
             };
             dlssNrChanged |= ImGui::Combo(
                 "NR Style",
-                &state.settings.dlssNrStyle,
+                &uiSettings_.dlssNrStyle,
                 dlssNrStyles,
                 static_cast<int>(std::size(dlssNrStyles)));
             dlssNrChanged |= ImGui::SliderFloat(
-                "NR Intensity", &state.settings.dlssNrIntensity,
+                "NR Intensity", &uiSettings_.dlssNrIntensity,
                 0.0f, 1.0f);
             dlssNrChanged |= ImGui::SliderFloat(
-                "NR Local Tone", &state.settings.dlssNrLocalToneStrength,
+                "NR Local Tone", &uiSettings_.dlssNrLocalToneStrength,
                 0.0f, 1.0f);
             dlssNrChanged |= ImGui::SliderFloat(
                 "NR Local Structure",
-                &state.settings.dlssNrLocalStructureStrength,
+                &uiSettings_.dlssNrLocalStructureStrength,
                 0.0f, 1.0f);
             dlssNrChanged |= ImGui::SliderFloat(
                 "NR Skin Structure",
-                &state.settings.dlssNrSkinStructureStrength,
+                &uiSettings_.dlssNrSkinStructureStrength,
                 -1.0f, 2.0f);
             dlssNrChanged |= ImGui::Checkbox(
-                "NR Automatic Mask", &state.settings.dlssNrUseAutoMask);
+                "NR Automatic Mask", &uiSettings_.dlssNrUseAutoMask);
             dlssNrChanged |= ImGui::Checkbox(
-                "NR UI Correction", &state.settings.dlssNrUiCorrection);
+                "NR UI Correction", &uiSettings_.dlssNrUiCorrection);
             ImGui::TextDisabled(
                 "Feature 18 backend pending; current pass preserves SDR color.");
         }
         if (dlssNrChanged) {
-            state.viewState.temporalHistoryValid = false;
+            resetTemporalHistory = true;
         }
         ImGui::Separator();
-        ImGui::Checkbox("Normal Outline", &state.settings.outlineEnabled);
-        if (state.settings.outlineEnabled) {
-            ImGui::SliderFloat("Outline Threshold", &state.settings.outlineThreshold, 0.001f, 1.0f);
-            ImGui::SliderFloat("Outline Thickness", &state.settings.outlineThickness, 0.5f, 5.0f);
-            ImGui::SliderFloat("Outline Strength", &state.settings.outlineStrength, 0.0f, 1.0f);
-            ImGui::SliderFloat("Outline Softness", &state.settings.outlineSoftness, 0.001f, 0.5f);
+        ImGui::Checkbox("Normal Outline", &uiSettings_.outlineEnabled);
+        if (uiSettings_.outlineEnabled) {
+            ImGui::SliderFloat("Outline Threshold", &uiSettings_.outlineThreshold, 0.001f, 1.0f);
+            ImGui::SliderFloat("Outline Thickness", &uiSettings_.outlineThickness, 0.5f, 5.0f);
+            ImGui::SliderFloat("Outline Strength", &uiSettings_.outlineStrength, 0.0f, 1.0f);
+            ImGui::SliderFloat("Outline Softness", &uiSettings_.outlineSoftness, 0.001f, 0.5f);
             float outlineColor[3] = {
-                state.settings.outlineColor.x, state.settings.outlineColor.y, state.settings.outlineColor.z
+                uiSettings_.outlineColor.x, uiSettings_.outlineColor.y, uiSettings_.outlineColor.z
             };
             if (ImGui::ColorEdit3("Outline Color", outlineColor)) {
-                state.settings.outlineColor = TSVec3f(
+                uiSettings_.outlineColor = TSVec3f(
                     outlineColor[0], outlineColor[1], outlineColor[2]);
             }
         }
         ImGui::Checkbox(
             "Temporal Outline Denoise",
-            &state.settings.outlineTemporalDenoise);
-        if (state.settings.outlineTemporalDenoise) {
+            &uiSettings_.outlineTemporalDenoise);
+        if (uiSettings_.outlineTemporalDenoise) {
             ImGui::SliderFloat(
                 "Outline History Weight",
-                &state.settings.outlineHistoryWeight,
+                &uiSettings_.outlineHistoryWeight,
                 0.0f,
                 0.98f,
                 "%.2f");
@@ -1158,20 +1273,13 @@ void RendererDebugUI::draw() {
     if (ImGui::CollapsingHeader("Debug Output", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::TextDisabled(
             "Frame packet: %zu passes, %zu draws",
-            state.frameOrchestrator.framePacket().passes.size(),
-            [&]() {
-                size_t drawCount = 0;
-                for (const auto& pass :
-                     state.frameOrchestrator.framePacket().passes) {
-                    drawCount += pass.draws.size();
-                }
-                return drawCount;
-            }());
+            snapshot.framePassNames.size(),
+            snapshot.frameDrawCount);
         ImGui::TextDisabled(
             "RHI plan: %zu passes, %zu resources, %zu diagnostics",
-            state.frameOrchestrator.executionPlan().passes.size(),
-            state.frameOrchestrator.executionPlan().resources.size(),
-            state.frameOrchestrator.executionPlan().diagnostics.size());
+            snapshot.executionPlanPassCount,
+            snapshot.executionPlanResourceCount,
+            snapshot.executionPlanDiagnosticCount);
 
         struct DebugOutputOption {
             std::string label;
@@ -1217,7 +1325,7 @@ void RendererDebugUI::draw() {
             OutlineOnlyDebugOutput,
             DebugTextureSemantic::OutlineBlackLines});
 
-        for (const auto& pass : executionSnapshot_.passes) {
+        for (const auto& pass : snapshot.execution.passes) {
             uint32_t colorIndex = 0;
             for (const auto& attachment : pass.attachments) {
                 if (!attachment.depth) {
@@ -1253,9 +1361,9 @@ void RendererDebugUI::draw() {
         int currentOption = 0;
         for (int i = 0; i < static_cast<int>(options.size()); ++i) {
             if (options[static_cast<size_t>(i)].resource ==
-                    state.settings.debugOutputResource &&
+                    uiSettings_.debugOutputResource &&
                 options[static_cast<size_t>(i)].semantic ==
-                    state.settings.debugOutputSemantic) {
+                    uiSettings_.debugOutputSemantic) {
                 currentOption = i;
                 break;
             }
@@ -1265,14 +1373,14 @@ void RendererDebugUI::draw() {
             for (int i = 0; i < static_cast<int>(options.size()); ++i) {
                 const bool selected = i == currentOption;
                 if (ImGui::Selectable(options[static_cast<size_t>(i)].label.c_str(), selected)) {
-                    state.settings.debugOutputResource = options[static_cast<size_t>(i)].resource;
-                    state.settings.debugOutputSemantic =
+                    uiSettings_.debugOutputResource = options[static_cast<size_t>(i)].resource;
+                    uiSettings_.debugOutputSemantic =
                         options[static_cast<size_t>(i)].semantic;
                     LOG_INFO(
                         "SceneRenderer: debug output '{}'",
-                        state.settings.debugOutputResource.empty()
+                        uiSettings_.debugOutputResource.empty()
                             ? std::string("Final Output")
-                            : state.settings.debugOutputResource);
+                            : uiSettings_.debugOutputResource);
                 }
                 if (selected) {
                     ImGui::SetItemDefaultFocus();
@@ -1280,22 +1388,22 @@ void RendererDebugUI::draw() {
             }
             ImGui::EndCombo();
         }
-        if (state.settings.debugOutputSemantic ==
+        if (uiSettings_.debugOutputSemantic ==
             DebugTextureSemantic::Velocity) {
             ImGui::SliderFloat(
                 "Velocity Preview Scale",
-                &state.settings.debugVelocityScale,
+                &uiSettings_.debugVelocityScale,
                 1.0f,
                 256.0f,
                 "%.1f");
         }
-        if (state.settings.debugOutputSemantic ==
+        if (uiSettings_.debugOutputSemantic ==
                 DebugTextureSemantic::SceneLinearDepth ||
-            state.settings.debugOutputSemantic ==
+            uiSettings_.debugOutputSemantic ==
                 DebugTextureSemantic::HiZLinearDepth) {
             ImGui::SliderFloat(
                 "Depth Preview Range",
-                &state.settings.debugDepthRange,
+                &uiSettings_.debugDepthRange,
                 1.0f,
                 500.0f,
                 "%.1f");
@@ -1306,6 +1414,7 @@ void RendererDebugUI::draw() {
     if (!scene) {
         ImGui::TextUnformatted("No scene");
         ImGui::End();
+        submitFrameCommands();
         return;
     }
 
@@ -1317,25 +1426,26 @@ void RendererDebugUI::draw() {
         scene->getLightCount());
 
     if (ImGui::CollapsingHeader("Skybox", ImGuiTreeNodeFlags_DefaultOpen)) {
-        const auto& skyboxVariants = state.sceneResources.skyboxVariants();
+        const auto& skyboxVariants = snapshot.skyboxes;
         if (skyboxVariants.empty()) {
             ImGui::TextUnformatted("No skybox variants");
         } else {
-            const int selectedSkyboxIndex =
-                state.sceneResources.selectedSkyboxIndex();
+            const int currentSkyboxIndex = std::clamp(
+                snapshot.selectedSkyboxIndex,
+                0,
+                static_cast<int>(skyboxVariants.size()) - 1);
             const auto& current =
-                skyboxVariants[static_cast<size_t>(selectedSkyboxIndex)];
+                skyboxVariants[static_cast<size_t>(currentSkyboxIndex)];
             if (ImGui::BeginCombo("Environment", current.name.c_str())) {
                 for (int i = 0; i < static_cast<int>(skyboxVariants.size()); ++i) {
-                    const bool selected = i == selectedSkyboxIndex;
+                    const bool selected = i == currentSkyboxIndex;
                     if (ImGui::Selectable(
                             skyboxVariants[static_cast<size_t>(i)].name.c_str(),
                             selected)) {
-                        state.sceneResources.selectSkybox(i);
-                        state.loggedSkyboxDrawState = false;
+                        selectedSkyboxIndex = i;
                         LOG_INFO(
                             "SceneRenderer: switched skybox to '{}'",
-                            state.sceneResources.activeSkyboxName());
+                            skyboxVariants[static_cast<size_t>(i)].name);
                     }
                     if (selected) {
                         ImGui::SetItemDefaultFocus();
@@ -1474,7 +1584,7 @@ void RendererDebugUI::draw() {
     }
 
     if (ImGui::CollapsingHeader("Render Passes")) {
-        for (const auto& pass : executionSnapshot_.passes) {
+        for (const auto& pass : snapshot.execution.passes) {
             ImGui::Text(
                 "%s  objects %zu  swapchain %d",
                 pass.name.c_str(),
@@ -1485,6 +1595,7 @@ void RendererDebugUI::draw() {
 
     ImGui::End();
     lockedScene.markChanged(publishedChanges);
+    submitFrameCommands();
 }
 
 

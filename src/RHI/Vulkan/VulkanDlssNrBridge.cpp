@@ -231,7 +231,14 @@ __declspec(dllexport) NVSDK_NGX_Result tasrovyDlssNrVulkanEvaluate(
     float motionScaleX,
     float motionScaleY,
     uint32_t depthInverted,
-    uint32_t reset) {
+    uint32_t reset,
+    uint32_t style,
+    float intensity,
+    float localTone,
+    float localStructure,
+    float skinStructure,
+    uint32_t autoMask,
+    uint32_t uiCorrection) {
     if (!api.evaluate || !feature || !parameters)
         return NVSDK_NGX_Result_FAIL_NotInitialized;
     setResource(parameters, "DLSSNR.Color", color);
@@ -242,6 +249,16 @@ __declspec(dllexport) NVSDK_NGX_Result tasrovyDlssNrVulkanEvaluate(
     setUnsigned(parameters, "DLSSNR.Reset", reset);
     setFloat(parameters, "DLSSNR.MVecScaleX", motionScaleX);
     setFloat(parameters, "DLSSNR.MVecScaleY", motionScaleY);
+    // These are runtime controls, not Feature identity. Update them before
+    // every evaluation so changing a UI slider does not recreate the model.
+    setUnsigned(parameters, "DLSSNR.Style", style);
+    setFloat(parameters, "DLSSNR.Intensity", intensity);
+    setFloat(parameters, "DLSSNR.LocalToneStrength", localTone);
+    setFloat(parameters, "DLSSNR.LocalStructureStrength", localStructure);
+    if (skinStructure >= 0.0f)
+        setFloat(parameters, "DLSSNR.SkinStructureStrength", skinStructure);
+    setUnsigned(parameters, "DLSSNR.UseAutoMask", autoMask);
+    setUnsigned(parameters, "DLSSNR.UICorrection", uiCorrection);
     for (const char* prefix : {"Color", "Depth", "MVec", "Output"}) {
         const auto base = std::string("DLSSNR.") + prefix;
         setUnsigned(parameters, (base + "SubrectBaseX").c_str(), 0u);

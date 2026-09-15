@@ -84,17 +84,26 @@ void Device::destroyResourceScope(ResourceScope scope) {
 std::shared_ptr<Buffer> Device::createBuffer(const BufferDesc& desc) {
     return Buffer::CreateFromBackend(impl_->backend->createBuffer(desc));
 }
-std::shared_ptr<Buffer> Device::createVertexBuffer(uint64_t size) {
-    return createBuffer({size, BufferUsage::Vertex, false});
+std::shared_ptr<Buffer> Device::createVertexBuffer(
+    uint64_t size, std::string debugName) {
+    if (debugName.empty()) debugName = "VertexBuffer";
+    return createBuffer({size, BufferUsage::Vertex, false, std::move(debugName)});
 }
-std::shared_ptr<Buffer> Device::createIndexBuffer(uint64_t size) {
-    return createBuffer({size, BufferUsage::Index, false});
+std::shared_ptr<Buffer> Device::createIndexBuffer(
+    uint64_t size, std::string debugName) {
+    if (debugName.empty()) debugName = "IndexBuffer";
+    return createBuffer({size, BufferUsage::Index, false, std::move(debugName)});
 }
-std::shared_ptr<Buffer> Device::createUniformBuffer(uint64_t size) {
-    return createBuffer({size, BufferUsage::Uniform, true});
+std::shared_ptr<Buffer> Device::createUniformBuffer(
+    uint64_t size, std::string debugName) {
+    if (debugName.empty()) debugName = "UniformBuffer";
+    return createBuffer({size, BufferUsage::Uniform, true, std::move(debugName)});
 }
-std::shared_ptr<Buffer> Device::createStagingBuffer(uint64_t size) {
-    return createBuffer({size, BufferUsage::TransferSource, true});
+std::shared_ptr<Buffer> Device::createStagingBuffer(
+    uint64_t size, std::string debugName) {
+    if (debugName.empty()) debugName = "StagingBuffer";
+    return createBuffer({
+        size, BufferUsage::TransferSource, true, std::move(debugName)});
 }
 std::shared_ptr<CommandList> Device::createCommandList() {
     return CommandList::CreateFromBackend(
@@ -212,6 +221,9 @@ FrameScheduler& Device::getFrameScheduler() {
 }
 const FrameScheduler& Device::getFrameScheduler() const {
     return *impl_->frameScheduler;
+}
+void Device::waitIdleForShutdown() {
+    impl_->backend->waitIdleForShutdown();
 }
 Format Device::getDepthFormat() const { return impl_->backend->depthFormat(); }
 size_t Device::getDeferredDeletionCount() const {

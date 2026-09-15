@@ -27,6 +27,7 @@
 #include "../RHI/Pipeline.h"
 #include "ResourceMonitor.h"
 #include "../RHI/RenderFramePlan.h"
+#include "../RHI/ResourceTracker.h"
 #include "SkyboxGeometry.h"
 #include "../render/FrameCompiler.h"
 #include "../render/FramePacket.h"
@@ -44,13 +45,13 @@
 #include "../render/RenderGraph.h"
 #include "../render/Scene.h"
 #include "../render/Shader.h"
-#include "../render/Skybox.h"
 #include "../render/Texture.hpp"
 #include "../ui/UI.h"
 #include "../window/Window.h"
 #include "Logger.hpp"
 #include <imgui.h>
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cctype>
@@ -78,6 +79,25 @@ namespace {
 
 using PassResources = FramePassPacket;
 inline constexpr const char* OutlineOnlyDebugOutput = "__OutlineOnly";
+
+enum class RHIFrameStage : uint8_t {
+    Queued,
+    FenceAndAcquire,
+    Recording,
+    SubmitAndPresent,
+    Complete
+};
+
+const char* rhiFrameStageName(RHIFrameStage stage) {
+    switch (stage) {
+    case RHIFrameStage::Queued: return "Queued";
+    case RHIFrameStage::FenceAndAcquire: return "FenceAcquire";
+    case RHIFrameStage::Recording: return "Recording";
+    case RHIFrameStage::SubmitAndPresent: return "SubmitPresent";
+    case RHIFrameStage::Complete: return "Complete";
+    }
+    return "Unknown";
+}
 
 uint32_t makeEvenExtent(float value) {
     const uint32_t rounded = std::max(2u, static_cast<uint32_t>(std::lround(value)));
@@ -117,10 +137,13 @@ struct SceneRendererExecution::PendingRHIFrame {
         bool submitted = false;
         bool swapchainRebuildRequired = false;
         std::vector<std::pair<std::string, double>> completedTimings;
+        std::atomic<RHIFrameStage> stage{RHIFrameStage::Queued};
     };
 
     std::future<void> completion;
     std::shared_ptr<Result> result;
+    uint64_t frameNumber = 0;
+    uint32_t frameIndex = 0;
 };
 
 SceneRendererExecution::SceneRendererExecution(
@@ -142,6 +165,8 @@ SceneRendererExecution::SceneRendererExecution(
             debugUI_->draw();
         });
     }
+    debugUI_->refreshExecutionSnapshot();
+    debugUI_->publishRuntimeSnapshot();
     LOG_INFO("SceneRenderer: RHI initialized");
 }
 
@@ -151,6 +176,20 @@ SceneRendererExecution::~SceneRendererExecution() {
     } catch (const std::exception& error) {
         LOG_ERROR("SceneRenderer: RHI worker shutdown failed: {}", error.what());
     }
+}
+
+void SceneRendererExecution::buildUIFrame() {
+    const auto framebuffer = window_.getFramebufferState();
+    if (framebuffer.width <= 0 || framebuffer.height <= 0 ||
+        !renderState_->ui) {
+        return;
+    }
+    // GLFW event callbacks and ImGui frame construction both run on the main
+    // thread. The render/RHI threads only consume the captured immutable draw
+    // data identified by the published token.
+    renderState_->ui->beginFrame(
+        static_cast<uint32_t>(framebuffer.width),
+        static_cast<uint32_t>(framebuffer.height));
 }
 
 bool SceneRendererExecution::consumeOldestRHIFrame(bool wait) {
@@ -179,8 +218,24 @@ bool SceneRendererExecution::consumeOldestRHIFrame(bool wait) {
 
 bool SceneRendererExecution::waitForPendingRHIFrame() {
     bool submitted = true;
+    if (!renderThread_.running() && !pendingRHIFrames_.empty()) {
+        LOG_INFO(
+            "Shutdown: RenderThread draining {} accepted RHI frame(s)",
+            pendingRHIFrames_.size());
+    }
     while (!pendingRHIFrames_.empty()) {
+        if (!renderThread_.running()) {
+            const auto& pending = pendingRHIFrames_.front();
+            LOG_INFO(
+                "Shutdown: waiting for RHI frame {}, slot {}, stage={}",
+                pending->frameNumber, pending->frameIndex,
+                rhiFrameStageName(pending->result->stage.load(
+                    std::memory_order_acquire)));
+        }
         submitted = consumeOldestRHIFrame(true) && submitted;
+    }
+    if (!renderThread_.running()) {
+        LOG_INFO("Shutdown: all accepted RHI frames completed");
     }
     return submitted;
 }
@@ -203,6 +258,7 @@ bool SceneRendererExecution::pollPendingRHIFrame() {
 void SceneRendererExecution::run() {
     try {
         renderLoop();
+        LOG_INFO("Shutdown: RenderThread production loop stopped");
         waitForPendingRHIFrame();
     } catch (const std::exception& error) {
         LOG_ERROR("SceneRenderer: render/RHI pipeline stopped: {}", error.what());
@@ -212,6 +268,10 @@ void SceneRendererExecution::run() {
 void SceneRendererExecution::renderLoop() {
     uint64_t appliedResizeGeneration = 0;
     while (renderThread_.running()) {
+        // UI writes are coalesced on the main thread and applied only here,
+        // at a render-frame boundary. No UI lock is held while recording,
+        // waiting for the RHI worker, or presenting.
+        debugUI_->consumeUICommands();
         // Consume a completed RHI result without stalling. If frame N is still
         // recording/submitting, CPU preparation of N+1 continues below.
         if (!pollPendingRHIFrame()) continue;
@@ -306,6 +366,7 @@ void SceneRendererExecution::renderLoop() {
         }
 
         renderFrame(*scene);
+        debugUI_->publishRuntimeSnapshot();
     }
 }
 
@@ -349,28 +410,17 @@ void SceneRendererExecution::applySceneUpdates(
         }
     }
 
-    std::string preferredSkyboxPath;
-    for (const auto& object : objects) {
-        const auto skybox = std::dynamic_pointer_cast<Skybox>(object);
-        if (skybox && skybox->getCubemap()) {
-            preferredSkyboxPath = skybox->getCubemap()->getFilePath();
-            break;
-        }
-    }
     state.environmentLightingEnabled = false;
     state.sceneResources.prepareGlobalTextures(
         device, state.rhi.persistentResourceScope);
-    state.sceneResources.prepareSkyboxVariants(
-        device, state.rhi.persistentResourceScope, preferredSkyboxPath);
-    if (state.sceneResources.skyCubemap()) {
-        state.sceneResources.rebuildSkyboxGeometry(
-            device, frameScheduler, *state.rhi.commandList,
-            state.rhi.sceneResourceScope, true);
-        LOG_INFO(
-            "SceneRenderer: active skybox '{}' loaded, indices {}",
-            state.sceneResources.activeSkyboxName(),
-            state.sceneResources.skyboxIndexCount());
-    }
+    // Skybox rendering is currently disabled. Keep only the tiny neutral IBL
+    // resources required by the fixed descriptor layout; do not discover,
+    // upload, or retain cubemap variants and do not create skybox geometry.
+    state.sceneResources.prepareEnvironmentFallbacks(
+        device, state.rhi.persistentResourceScope);
+    state.sceneResources.rebuildSkyboxGeometry(
+        device, frameScheduler, *state.rhi.commandList,
+        state.rhi.sceneResourceScope, false);
 }
 
 void SceneRendererExecution::rebuildRenderGraph(
@@ -386,6 +436,14 @@ void SceneRendererExecution::rebuildRenderGraph(
     auto& device = *state.rhi.device;
     auto& frameScheduler = device.getFrameScheduler();
     auto pipeline = sceneUpdates_.currentPipeline();
+
+    const auto beforeRebuild = RHI::ResourceTracker::snapshot();
+    LOG_GPU_MEMORY(
+        "[REBUILD_BEGIN] scope=RenderGraph totalLiveResources={} "
+        "totalLiveBytes={} deferredDeletes={}",
+        beforeRebuild.totalLiveCount,
+        beforeRebuild.totalLiveBytes,
+        device.getDeferredDeletionCount());
 
     if (!pipeline) {
         pipeline = DeferredPipeline::create();
@@ -428,7 +486,14 @@ void SceneRendererExecution::rebuildRenderGraph(
     // complete all in-flight work before destroying those resources.
     frameScheduler.waitForInFlightFrames();
     if (state.rhi.externalFeatureExecutor) {
-        state.rhi.externalFeatureExecutor->invalidateResources();
+        if (state.settings.dlssNeuralRenderingEnabled) {
+            state.rhi.externalFeatureExecutor->prepareForExtent(
+                frameScheduler.getWidth(), frameScheduler.getHeight());
+        } else {
+            // Disabling the pass means there will be no later evaluation at
+            // which the SDK-owned feature could release itself.
+            state.rhi.externalFeatureExecutor->invalidateResources();
+        }
     }
 
     state.rhi.frameExecutor.reset();
@@ -445,6 +510,26 @@ void SceneRendererExecution::rebuildRenderGraph(
     state.gpuPassTimings.clear();
     device.resetResourceScope(state.rhi.displayResourceScope);
     device.resetResourceScope(state.rhi.sceneResourceScope);
+
+    // All in-flight frames were completed above. Clearing the owners only
+    // queued backend destruction, so collect it now before the replacement
+    // graph starts allocating images and buffers. This avoids holding the old
+    // and new graph resource sets at the same time during a rebuild.
+    const size_t retiredResourceCount = device.getDeferredDeletionCount();
+    if (retiredResourceCount != 0) {
+        frameScheduler.waitForInFlightFrames();
+        LOG_INFO(
+            "SceneRenderer: released {} retired GPU resources before "
+            "allocating the rebuilt render graph",
+            retiredResourceCount);
+    }
+    const auto afterRelease = RHI::ResourceTracker::snapshot();
+    LOG_GPU_MEMORY(
+        "[REBUILD_RELEASED] scope=RenderGraph totalLiveResources={} "
+        "totalLiveBytes={} deferredDeletes={}",
+        afterRelease.totalLiveCount,
+        afterRelease.totalLiveBytes,
+        device.getDeferredDeletionCount());
 
     auto& framePacket = state.frameOrchestrator.framePacket();
     const auto& executionPlan = state.frameOrchestrator.executionPlan();
@@ -495,6 +580,15 @@ void SceneRendererExecution::rebuildRenderGraph(
     // passes; the legacy side-channel compiler is intentionally not rebuilt.
     state.gpuDrivenGBuffer.reset();
 
+    const auto afterRebuild = RHI::ResourceTracker::snapshot();
+    LOG_GPU_MEMORY(
+        "[REBUILD_END] scope=RenderGraph totalLiveResources={} "
+        "totalLiveBytes={} deltaBytes={}",
+        afterRebuild.totalLiveCount,
+        afterRebuild.totalLiveBytes,
+        static_cast<int64_t>(afterRebuild.totalLiveBytes) -
+            static_cast<int64_t>(afterRelease.totalLiveBytes));
+
     LOG_INFO(
         "SceneRenderer: parsed '{}' into {} render textures, {} meshes, {} passes",
         pipeline->getName(),
@@ -514,13 +608,25 @@ void SceneRendererExecution::rebuildDisplayResources(PipelineBase& pipeline) {
     auto& state = *renderState_;
     auto& device = *state.rhi.device;
     auto& frameScheduler = device.getFrameScheduler();
+    const auto beforeRebuild = RHI::ResourceTracker::snapshot();
+    LOG_GPU_MEMORY(
+        "[REBUILD_BEGIN] scope=Display totalLiveResources={} "
+        "totalLiveBytes={} deferredDeletes={}",
+        beforeRebuild.totalLiveCount,
+        beforeRebuild.totalLiveBytes,
+        device.getDeferredDeletionCount());
 
     // Display history and swapchain-facing pass descriptions depend on the
     // window extent. Internal GBuffer resources remain alive when the aspect
     // ratio (and therefore the fixed-height internal extent) is unchanged.
     frameScheduler.waitForInFlightFrames();
     if (state.rhi.externalFeatureExecutor) {
-        state.rhi.externalFeatureExecutor->invalidateResources();
+        if (state.settings.dlssNeuralRenderingEnabled) {
+            state.rhi.externalFeatureExecutor->prepareForExtent(
+                frameScheduler.getWidth(), frameScheduler.getHeight());
+        } else {
+            state.rhi.externalFeatureExecutor->invalidateResources();
+        }
     }
     (void)pipeline;
     device.resetResourceScope(state.rhi.displayResourceScope);
@@ -543,6 +649,15 @@ void SceneRendererExecution::rebuildDisplayResources(PipelineBase& pipeline) {
     state.viewState.temporalHistoryValid = false;
     state.viewState.temporalFrameIndex = 0;
     state.frameOrchestrator.resetTemporalHistory();
+    const auto afterRebuild = RHI::ResourceTracker::snapshot();
+    LOG_GPU_MEMORY(
+        "[REBUILD_END] scope=Display totalLiveResources={} totalLiveBytes={} "
+        "deltaBytes={} deferredDeletes={}",
+        afterRebuild.totalLiveCount,
+        afterRebuild.totalLiveBytes,
+        static_cast<int64_t>(afterRebuild.totalLiveBytes) -
+            static_cast<int64_t>(beforeRebuild.totalLiveBytes),
+        device.getDeferredDeletionCount());
     LOG_INFO(
         "SceneRenderer: rebuilt display resources {}x{}; internal GBuffer remains {}x{}",
         frameScheduler.getWidth(),
@@ -556,7 +671,8 @@ void SceneRendererExecution::renderFrame(Scene& scene) {
     auto& device = *state.rhi.device;
     auto& frameScheduler = device.getFrameScheduler();
 
-    if (!scene.getPrimaryCamera() || !state.compiledPipeline) {
+    if (!renderThread_.running() || !scene.getPrimaryCamera() ||
+        !state.compiledPipeline) {
         return;
     }
 
@@ -584,7 +700,9 @@ void SceneRendererExecution::renderFrame(Scene& scene) {
         state.viewState,
         state.settings.temporalAAMode != 0,
         state.internalRenderWidth,
-        state.internalRenderHeight);
+        state.internalRenderHeight,
+        displayWidth,
+        displayHeight);
     if (viewFrame.cameraCut) {
         state.frameOrchestrator.resetTemporalHistory();
     }
@@ -657,8 +775,14 @@ void SceneRendererExecution::renderFrame(Scene& scene) {
         frameIdx);
 
     const uint64_t overlayFrameToken = state.ui
-        ? state.ui->beginFrame(displayWidth, displayHeight)
+        ? state.ui->acquireFrame()
         : 0;
+    if (!renderThread_.running()) {
+        if (state.ui && overlayFrameToken != 0) {
+            state.ui->releaseFrame(overlayFrameToken);
+        }
+        return;
+    }
 
     RenderFrameSubmission submission{};
     submission.frameNumber = state.viewState.temporalFrameIndex;
@@ -668,6 +792,7 @@ void SceneRendererExecution::renderFrame(Scene& scene) {
     submission.bindings = std::move(executionBindings);
     submission.bufferUploads = std::move(pendingBufferUploads);
     submission.overlayFrameToken = overlayFrameToken;
+    const uint64_t submittedFrameNumber = submission.frameNumber;
     auto result = std::make_shared<PendingRHIFrame::Result>();
     std::future<void> completion;
     try {
@@ -679,29 +804,48 @@ void SceneRendererExecution::renderFrame(Scene& scene) {
             auto& scheduler = rhiDevice.getFrameScheduler();
             auto& commandList = *rhiState.rhi.commandList;
             bool frameOpen = false;
-            const auto discardOverlay = [&] {
-                if (rhiState.ui && submission.overlayFrameToken != 0) {
-                    rhiState.ui->discardFrame(submission.overlayFrameToken);
+            bool overlayFrameReleased = false;
+            const auto releaseOverlay = [&] {
+                if (!overlayFrameReleased && rhiState.ui &&
+                    submission.overlayFrameToken != 0) {
+                    rhiState.ui->releaseFrame(submission.overlayFrameToken);
+                    overlayFrameReleased = true;
                 }
             };
             try {
-                if (!rhiFrameSequenceValid_) {
-                    result->swapchainRebuildRequired = true;
-                    discardOverlay();
+                if (!renderThread_.running()) {
+                    LOG_INFO(
+                        "Shutdown: cancelling queued RHI frame {}, slot {} before acquire",
+                        submission.frameNumber, submission.expectedFrameIndex);
+                    result->stage.store(
+                        RHIFrameStage::Complete,
+                        std::memory_order_release);
+                    releaseOverlay();
                     return;
                 }
+                if (!rhiFrameSequenceValid_) {
+                    result->swapchainRebuildRequired = true;
+                    releaseOverlay();
+                    return;
+                }
+                result->stage.store(
+                    RHIFrameStage::FenceAndAcquire,
+                    std::memory_order_release);
                 if (!scheduler.beginFrame(commandList)) {
                     rhiFrameSequenceValid_ = false;
                     result->swapchainRebuildRequired = true;
-                    discardOverlay();
+                    releaseOverlay();
                     return;
                 }
                 frameOpen = true;
+                result->stage.store(
+                    RHIFrameStage::Recording,
+                    std::memory_order_release);
                 const uint32_t frameIndex = scheduler.getCurrentFrameIndex();
                 if (frameIndex != submission.expectedFrameIndex) {
                     rhiFrameSequenceValid_ = false;
                     result->swapchainRebuildRequired = true;
-                    discardOverlay();
+                    releaseOverlay();
                     scheduler.abortFrame();
                     frameOpen = false;
                     return;
@@ -774,24 +918,44 @@ void SceneRendererExecution::renderFrame(Scene& scene) {
                     commandList.renderOverlay(
                         *rhiState.ui, swapchainTarget,
                         submission.overlayFrameToken);
+                    releaseOverlay();
                 } else {
-                    discardOverlay();
+                    releaseOverlay();
+                }
+                result->stage.store(
+                    RHIFrameStage::SubmitAndPresent,
+                    std::memory_order_release);
+                if (!renderThread_.running()) {
+                    LOG_INFO(
+                        "Shutdown: aborting recorded RHI frame {}, slot {} before submit/present",
+                        submission.frameNumber, frameIndex);
+                    releaseOverlay();
+                    scheduler.abortFrame();
+                    frameOpen = false;
+                    rhiFrameSequenceValid_ = false;
+                    result->stage.store(
+                        RHIFrameStage::Complete,
+                        std::memory_order_release);
+                    return;
                 }
                 scheduler.submitFrame();
+                result->stage.store(
+                    RHIFrameStage::Complete,
+                    std::memory_order_release);
                 frameOpen = false;
                 result->submitted = true;
                 result->swapchainRebuildRequired =
                     scheduler.isSwapchainRebuildRequired();
             } catch (...) {
                 rhiFrameSequenceValid_ = false;
-                discardOverlay();
+                releaseOverlay();
                 if (frameOpen) scheduler.abortFrame();
                 throw;
             }
         });
     } catch (...) {
         if (state.ui && overlayFrameToken != 0) {
-            state.ui->discardFrame(overlayFrameToken);
+            state.ui->releaseFrame(overlayFrameToken);
         }
         throw;
     }
@@ -799,6 +963,8 @@ void SceneRendererExecution::renderFrame(Scene& scene) {
     auto pending = std::make_unique<PendingRHIFrame>();
     pending->completion = std::move(completion);
     pending->result = std::move(result);
+    pending->frameNumber = submittedFrameNumber;
+    pending->frameIndex = frameIdx;
     pendingRHIFrames_.push_back(std::move(pending));
     nextRHIFrameIndex_ = (frameIdx + 1u) %
         std::max(maxFramesInFlight_, 1u);

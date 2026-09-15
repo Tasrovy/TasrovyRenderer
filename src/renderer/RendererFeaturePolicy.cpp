@@ -29,9 +29,7 @@ Render::PipelineConfiguration RendererFeaturePolicy::configuration(
         settings.motionBlurEnabled);
     config.values.emplace(
         PipelineConfigKeys::Outline,
-        settings.outlineEnabled ||
-            settings.debugOutputSemantic ==
-                DebugTextureSemantic::OutlineBlackLines);
+        settings.outlineEnabled);
     config.values.emplace(PipelineConfigKeys::Bloom, settings.bloomEnabled);
     config.values.emplace(
         PipelineConfigKeys::DlssNeuralRendering,

@@ -37,10 +37,14 @@ struct ExternalFeatureExecuteContext {
 class IExternalFeatureExecutor {
 public:
     virtual ~IExternalFeatureExecutor() = default;
-    // Called only after all in-flight frames are complete and before graph or
-    // display resources are destroyed. Implementations release extent-bound
-    // SDK features here and recreate them lazily in tryExecute().
+    // Explicitly releases SDK-owned feature state when the feature is disabled
+    // or the backend is shutting down. Callers must first drain in-flight work.
     virtual void invalidateResources() noexcept {}
+    // Gives an extent-bound SDK feature a chance to release before resources
+    // for a different output size are allocated. A matching extent must keep
+    // the existing feature alive across ordinary RenderGraph rebuilds.
+    virtual void prepareForExtent(
+        uint32_t width, uint32_t height) noexcept {}
     virtual bool tryExecute(
         const ExternalFeatureExecuteContext& context) noexcept = 0;
 };

@@ -1,6 +1,7 @@
 #include "SceneRendererRuntime.h"
 
 #include "SceneRendererExecution.h"
+#include "Logger.hpp"
 
 #include <utility>
 
@@ -48,13 +49,24 @@ void SceneRendererRuntime::removePrimitive(const std::string& name) {
 }
 
 void SceneRendererRuntime::start() {
+    stopRequested_.store(false, std::memory_order_release);
     rhiThread_.start();
     renderThread_.start([this]() { execution_->run(); });
 }
 
+void SceneRendererRuntime::buildUIFrame() {
+    execution_->buildUIFrame();
+}
+
 void SceneRendererRuntime::stop() {
+    if (stopRequested_.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    LOG_INFO("Shutdown: stopping frame production and joining RenderThread");
     renderThread_.stop();
+    LOG_INFO("Shutdown: RenderThread drained; stopping RHIThread");
     rhiThread_.stop();
+    LOG_INFO("Shutdown: RHIThread drained");
 }
 
 bool SceneRendererRuntime::isRunning() const {

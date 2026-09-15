@@ -23,6 +23,7 @@
 #include "../RHIBackendAccess.h"
 
 #include <GLFW/glfw3.h>
+#include <Logger.hpp>
 
 #include <algorithm>
 #include <stdexcept>
@@ -134,7 +135,37 @@ VulkanDeviceBackend::VulkanDeviceBackend(
 }
 
 VulkanDeviceBackend::~VulkanDeviceBackend() {
-    if (renderer_) renderer_->waitIdle();
+    // Frame fences cover graphics submissions, but not the presentation
+    // operation queued after each submission. Waiting for the complete device
+    // here guarantees that the presentation engine has released the swapchain
+    // images and render-finished semaphores before their owners are destroyed.
+    if (renderer_) {
+        try {
+            renderer_->waitIdle();
+        } catch (const std::exception& error) {
+            LOG_ERROR(
+                "Shutdown: renderer fence drain failed before Vulkan teardown: {}",
+                error.what());
+        }
+    }
+    if (context_) {
+        context_->waitIdleForShutdown();
+    }
+
+    // Do not rely on reverse member-declaration order for Vulkan dependencies.
+    // All GPU work is idle now, so destroy API objects explicitly while their
+    // context and queues are still alive.
+    ibl_.reset();
+    swapchain_.reset();
+    submitter_.reset();
+    renderer_.reset();
+    presentQueue_.reset();
+    graphicsQueue_.reset();
+    context_.reset();
+}
+
+void VulkanDeviceBackend::waitIdleForShutdown() {
+    if (context_) context_->waitIdleForShutdown();
 }
 
 std::unique_ptr<IFrameSchedulerBackend>
@@ -160,7 +191,8 @@ std::unique_ptr<IBufferBackend> VulkanDeviceBackend::createBuffer(
         : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     return std::make_unique<VulkanBufferBackend>(
         std::make_unique<VulkanBuffer>(
-            *context_, desc.size, toVkBufferUsage(desc.usage), properties));
+            *context_, desc.size, toVkBufferUsage(desc.usage), properties,
+            desc.debugName));
 }
 
 std::unique_ptr<IImageBackend> VulkanDeviceBackend::createTexture(
@@ -188,6 +220,18 @@ std::unique_ptr<IImageBackend> VulkanDeviceBackend::createTexture(
             *context_, *submitter_, upload.pixels.data(),
             upload.pixels.size(), upload.width, upload.height,
             upload.generateMipmaps, format);
+    if (image) {
+        LOG_GPU_MEMORY(
+            "[LABEL] type=Image image=0x{:x} name='{}' source=TextureUpload "
+            "extent={}x{} format={} mipLevels={} layers={}",
+            reinterpret_cast<uintptr_t>(image->getImage()),
+            upload.debugName.empty() ? "UnnamedTexture" : upload.debugName,
+            upload.width,
+            upload.height,
+            static_cast<int32_t>(format),
+            image->getMipLevels(),
+            upload.cubemap ? 6u : 1u);
+    }
     return std::make_unique<VulkanImageBackend>(std::move(image));
 }
 

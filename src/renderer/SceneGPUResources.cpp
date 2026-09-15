@@ -38,6 +38,7 @@ ImageUploadDesc loadTextureUpload(
     bool generateMipmaps) {
     const auto source = Tasrovy::Assets::RenderAssetFactory::decodeTexture(path);
     ImageUploadDesc upload{};
+    upload.debugName = path;
     upload.width = source.width;
     upload.height = source.height;
     upload.channels = 4;
@@ -126,6 +127,7 @@ ImageUploadDesc loadRgba16FloatDds(const std::string& path) {
     }
 
     ImageUploadDesc upload{};
+    upload.debugName = path;
     upload.width = width;
     upload.height = height;
     upload.channels = 4u;
@@ -141,6 +143,7 @@ ImageUploadDesc loadCubemapUpload(
     const auto source =
         Tasrovy::Assets::RenderAssetFactory::decodeCubemap(directory);
     ImageUploadDesc upload{};
+    upload.debugName = directory;
     upload.width = source.width;
     upload.height = source.height;
     upload.channels = source.channels;
@@ -242,10 +245,15 @@ void SceneGPUResources::rebuildMeshes(
             mesh->getVertices().size() * sizeof(MeshVertex);
         const auto indexSize =
             mesh->getIndices().size() * sizeof(uint32_t);
+        const std::string meshName = object->getName().empty()
+            ? "UnnamedMesh"
+            : object->getName();
         resources.vertexBuffer = device.retainResource(
-            sceneScope, device.createVertexBuffer(vertexSize));
+            sceneScope, device.createVertexBuffer(
+                vertexSize, "Mesh." + meshName + ".Vertex"));
         resources.indexBuffer = device.retainResource(
-            sceneScope, device.createIndexBuffer(indexSize));
+            sceneScope, device.createIndexBuffer(
+                indexSize, "Mesh." + meshName + ".Index"));
         resources.indexCount =
             static_cast<uint32_t>(mesh->getIndices().size());
 
@@ -382,9 +390,11 @@ void SceneGPUResources::rebuildSkyboxGeometry(
     const auto vertexSize = vertices.size() * sizeof(SkyboxVertexData);
     const auto indexSize = indices.size() * sizeof(uint32_t);
     skyboxVertexBuffer_ = device.retainResource(
-        sceneScope, device.createVertexBuffer(vertexSize));
+        sceneScope, device.createVertexBuffer(
+            vertexSize, "Skybox.Vertex"));
     skyboxIndexBuffer_ = device.retainResource(
-        sceneScope, device.createIndexBuffer(indexSize));
+        sceneScope, device.createIndexBuffer(
+            indexSize, "Skybox.Index"));
     skyboxIndexCount_ = static_cast<uint32_t>(indices.size());
     if (skyboxVertexBuffer_ && vertexSize > 0) {
         uploadBuffer(
@@ -424,12 +434,12 @@ void SceneGPUResources::prepareGlobalTextures(
         ColorGradingLutPath);
 }
 
-void SceneGPUResources::prepareSkyboxVariants(
+void SceneGPUResources::prepareEnvironmentFallbacks(
     Device& device,
-    Device::ResourceScope persistentScope,
-    const std::string& preferredPath) {
+    Device::ResourceScope persistentScope) {
     if (!iblFallbackCubemap_) {
         ImageUploadDesc neutralCube;
+        neutralCube.debugName = "IBL.FallbackCubemap";
         neutralCube.width = 1;
         neutralCube.height = 1;
         neutralCube.channels = 4;
@@ -452,6 +462,13 @@ void SceneGPUResources::prepareSkyboxVariants(
                 {1.0f, 1.0f, 1.0f, 1.0f},
                 Format::RGBA8Unorm));
     }
+}
+
+void SceneGPUResources::prepareSkyboxVariants(
+    Device& device,
+    Device::ResourceScope persistentScope,
+    const std::string& preferredPath) {
+    prepareEnvironmentFallbacks(device, persistentScope);
 
     if (skyboxVariants_.empty()) {
         const auto candidates = discoverSkyboxCandidates(preferredPath);
@@ -631,7 +648,7 @@ void SceneGPUResources::uploadBuffer(
     Buffer& destination,
     const void* data,
     uint64_t size) {
-    auto staging = device.createStagingBuffer(size);
+    auto staging = device.createStagingBuffer(size, "SceneUpload.Staging");
     if (!staging) {
         return;
     }

@@ -43,6 +43,7 @@ public:
     SceneRendererExecution& operator=(const SceneRendererExecution&) = delete;
 
     void run();
+    void buildUIFrame();
 
 private:
     void renderLoop();

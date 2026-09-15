@@ -29,7 +29,16 @@ VulkanFrameSchedulerBackend::VulkanFrameSchedulerBackend(
 }
 
 bool VulkanFrameSchedulerBackend::beginFrame(CommandList& commandList) {
-    const auto commandBuffer = renderer_.beginFrame(swapchain_);
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    try {
+        commandBuffer = renderer_.beginFrame(swapchain_);
+    } catch (...) {
+        // beginFrame may already have acquired an image before command-buffer
+        // setup fails. Consume that acquire semaphore without touching the
+        // still-signaled frame fence.
+        renderer_.abortFrame(graphicsQueue_);
+        throw;
+    }
     if (!commandBuffer) return false;
     BackendAccess::attachCommandBuffer(commandList,
         reinterpret_cast<uint64_t>(commandBuffer));

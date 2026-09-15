@@ -3,8 +3,10 @@
 
 #include "../Image.h"
 #include "../Buffer.h"
+#include "../FrameScheduler.h"
 #include "../../render/FramePacket.h"
 #include "../RHIBackendAccess.h"
+#include <Logger.hpp>
 
 #include <algorithm>
 #include <array>
@@ -209,6 +211,15 @@ BufferUsage toRHIBufferUsage(uint32_t usage) {
     return result;
 }
 
+const char* residencyName(RenderResourceResidency residency) {
+    switch (residency) {
+    case RenderResourceResidency::External: return "External";
+    case RenderResourceResidency::Shared: return "Shared";
+    case RenderResourceResidency::FrameBuffered: return "FrameBuffered";
+    }
+    return "Unknown";
+}
+
 } // namespace
 
 void VulkanFrameExecutor::reset() {
@@ -243,13 +254,26 @@ void VulkanFrameExecutor::compileExecution(
     }
     resolveResources(device, plan, config);
     for (const auto& buffer : plan.buffers) {
-        buffers_[buffer.resourceId] = device.retainResource(
+        auto physicalBuffer = device.retainResource(
             config.sceneScope,
             device.createBuffer({
                 buffer.description.byteSize,
                 toRHIBufferUsage(buffer.description.usageFlags),
-                buffer.description.hostVisible
+                buffer.description.hostVisible,
+                buffer.resourceName
             }));
+        buffers_[buffer.resourceId] = physicalBuffer;
+        if (physicalBuffer) {
+            LOG_GPU_MEMORY(
+                "[LABEL] type=Buffer buffer=0x{:x} name='{}' resourceId={} "
+                "requestedBytes={} external={} hostVisible={}",
+                BackendAccess::buffer(*physicalBuffer),
+                buffer.resourceName,
+                buffer.resourceId,
+                buffer.description.byteSize,
+                buffer.description.external,
+                buffer.description.hostVisible);
+        }
     }
     compiledPipeline_.reset();
 
@@ -319,12 +343,16 @@ void VulkanFrameExecutor::compileExecution(
             const uint32_t uniformByteSize =
                 passPlan.pipeline.descriptorSets.uniformByteSize;
             if (uniformByteSize > 0) {
-                compiled.uniformBuffers.resize(
-                    std::max(config.framesInFlight, 1u));
-                for (auto& uniformBuffer : compiled.uniformBuffers) {
-                    uniformBuffer = device.retainResource(
+                const uint32_t uniformFrameCount =
+                    std::max(config.framesInFlight, 1u);
+                compiled.uniformBuffers.resize(uniformFrameCount);
+                for (uint32_t frame = 0; frame < uniformFrameCount; ++frame) {
+                    compiled.uniformBuffers[frame] = device.retainResource(
                         config.sceneScope,
-                        device.createUniformBuffer(uniformByteSize));
+                        device.createUniformBuffer(
+                            uniformByteSize,
+                            "Pass." + passPlan.name + ".Uniform[" +
+                                std::to_string(frame) + "]"));
                 }
             }
             for (uint32_t set = 0; set < setCount; ++set) {
@@ -1054,6 +1082,20 @@ void VulkanFrameExecutor::rebuildDisplayResources(
         textures_.erase(found);
         textureInfos_.erase(resource.resourceName);
     }
+
+    // The caller has already waited for all in-flight frames. Erasing the
+    // texture owners above only queues Vulkan destruction, so collect those
+    // resources before allocating their replacements. Without this second
+    // collection point a resize temporarily keeps both complete display
+    // resource sets resident.
+    const size_t retiredResourceCount = device.getDeferredDeletionCount();
+    if (retiredResourceCount != 0) {
+        device.getFrameScheduler().waitForInFlightFrames();
+        LOG_INFO(
+            "VulkanFrameExecutor: released {} retired resources before "
+            "rebuilding display resources",
+            retiredResourceCount);
+    }
     allocateResources(device, plan, config, true);
 
     std::unordered_set<std::string> displayResourceNames;
@@ -1129,6 +1171,12 @@ void VulkanFrameExecutor::allocateResources(
     bool displayOnly) {
     framesInFlight_ = std::max(config.framesInFlight, 1u);
     std::unordered_map<int32_t, TextureFrames> transientPool;
+    const uint64_t bytesBeforeAllocation = allocatedBytes_;
+    uint32_t externalResourceCount = 0;
+    uint32_t sharedResourceCount = 0;
+    uint32_t frameBufferedResourceCount = 0;
+    uint32_t aliasedResourceCount = 0;
+    uint32_t createdPhysicalImageCount = 0;
     for (const auto& resource : plan.resources) {
         const auto& description = resource.description;
         const bool displayResource = isDisplayResource(description);
@@ -1137,7 +1185,6 @@ void VulkanFrameExecutor::allocateResources(
         }
 
         auto& frames = textures_[resource.resourceName];
-        frames.resize(framesInFlight_);
 
         const RenderTextureDesc textureDesc{
             description.name,
@@ -1164,7 +1211,25 @@ void VulkanFrameExecutor::allocateResources(
             textureDesc.external
         };
         if (resource.external) {
+            frames.clear();
+            ++externalResourceCount;
+            LOG_GPU_MEMORY(
+                "[EXTERNAL] type=Image name='{}' resourceId={} residency={}",
+                resource.resourceName,
+                resource.resourceId,
+                residencyName(resource.residency));
             continue;
+        }
+
+        const uint32_t resourceImageCount =
+            resource.residency == RenderResourceResidency::FrameBuffered
+                ? framesInFlight_
+                : 1u;
+        frames.resize(resourceImageCount);
+        if (resource.residency == RenderResourceResidency::FrameBuffered) {
+            ++frameBufferedResourceCount;
+        } else {
+            ++sharedResourceCount;
         }
 
         const auto pooled =
@@ -1172,21 +1237,43 @@ void VulkanFrameExecutor::allocateResources(
         if (resource.allocationSlot >= 0 &&
             pooled != transientPool.end()) {
             frames = pooled->second;
+            ++aliasedResourceCount;
+            if (!frames.empty() && frames.front()) {
+                LOG_GPU_MEMORY(
+                    "[ALIAS] type=Image image=0x{:x} name='{}' resourceId={} "
+                    "allocationSlot={} residency={}",
+                    BackendAccess::image(*frames.front()),
+                    resource.resourceName,
+                    resource.resourceId,
+                    resource.allocationSlot,
+                    residencyName(resource.residency));
+            }
             continue;
         }
 
-        for (uint32_t frame = 0; frame < framesInFlight_; ++frame) {
+        for (uint32_t frame = 0; frame < resourceImageCount; ++frame) {
             std::shared_ptr<Image> image;
-            if (description.name == "VirtualShadowAtlas") {
-                image = device.createVirtualShadowMap({
-                    description.name,
-                    textureDesc.width,
-                    config.virtualShadowPageSize,
-                    config.virtualShadowPageCount,
-                    device.resolveRenderTextureFormat(textureDesc.format)
-                });
-            } else {
-                image = device.createRenderTexture(textureDesc);
+            try {
+                if (description.name == "VirtualShadowAtlas") {
+                    image = device.createVirtualShadowMap({
+                        description.name,
+                        textureDesc.width,
+                        config.virtualShadowPageSize,
+                        config.virtualShadowPageCount,
+                        device.resolveRenderTextureFormat(textureDesc.format)
+                    });
+                } else {
+                    image = device.createRenderTexture(textureDesc);
+                }
+            } catch (const std::exception& error) {
+                throw std::runtime_error(
+                    "VulkanFrameExecutor: failed to create render texture '" +
+                    resource.resourceName + "' for frame " +
+                    std::to_string(frame) + " (" +
+                    std::to_string(textureDesc.width) + "x" +
+                    std::to_string(textureDesc.height) + ", format=" +
+                    std::to_string(static_cast<uint32_t>(textureDesc.format)) +
+                    "): " + error.what());
             }
 
             const auto scope = displayResource
@@ -1195,6 +1282,7 @@ void VulkanFrameExecutor::allocateResources(
             frames[frame] =
                 device.retainResource(scope, std::move(image));
             if (frames[frame]) {
+                ++createdPhysicalImageCount;
                 const uint64_t imageBytes =
                     static_cast<uint64_t>(textureDesc.width) *
                     static_cast<uint64_t>(textureDesc.height) *
@@ -1204,12 +1292,49 @@ void VulkanFrameExecutor::allocateResources(
                 if (inserted) {
                     allocatedBytes_ += imageBytes;
                 }
+                LOG_GPU_MEMORY(
+                    "[LABEL] type=Image image=0x{:x} name='{}' resourceId={} "
+                    "frameSlot={} residency={} allocationSlot={} extent={}x{} "
+                    "format={} estimatedBytes={}",
+                    BackendAccess::image(*frames[frame]),
+                    resource.resourceName,
+                    resource.resourceId,
+                    frame,
+                    residencyName(resource.residency),
+                    resource.allocationSlot,
+                    textureDesc.width,
+                    textureDesc.height,
+                    static_cast<uint32_t>(textureDesc.format),
+                    imageBytes);
             }
         }
         if (resource.allocationSlot >= 0) {
             transientPool.emplace(resource.allocationSlot, frames);
         }
     }
+    LOG_INFO(
+        "VulkanFrameExecutor: {} resources use {} shared, {} frame-buffered, "
+        "{} external and {} aliased declarations; created {} physical images "
+        "({:.2f} MiB estimated)",
+        displayOnly ? "display" : "scene",
+        sharedResourceCount,
+        frameBufferedResourceCount,
+        externalResourceCount,
+        aliasedResourceCount,
+        createdPhysicalImageCount,
+        static_cast<double>(allocatedBytes_ - bytesBeforeAllocation) /
+            (1024.0 * 1024.0));
+    LOG_GPU_MEMORY(
+        "[SUMMARY] scope={} shared={} frameBuffered={} external={} aliases={} "
+        "physicalImagesCreated={} allocationBytes={} totalExecutorBytes={}",
+        displayOnly ? "display" : "scene",
+        sharedResourceCount,
+        frameBufferedResourceCount,
+        externalResourceCount,
+        aliasedResourceCount,
+        createdPhysicalImageCount,
+        allocatedBytes_ - bytesBeforeAllocation,
+        allocatedBytes_);
 }
 
 void VulkanFrameExecutor::executePreBarriers(

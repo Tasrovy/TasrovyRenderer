@@ -2,6 +2,7 @@
 #include <volk.h>
 #include "VulkanContext.h"
 #include <cstddef>
+#include <string>
 class VulkanBuffer{
 private:
     VkBuffer _buffer;
@@ -10,10 +11,17 @@ private:
     VkBufferUsageFlags _usage;
     VkMemoryPropertyFlags _properties;
     VkDeviceSize _allocationSize = 0;
+    uint32_t _memoryTypeIndex = 0;
+    std::string _debugName;
     void* _mappedMemory;
     VulkanContext* _context;
 public:
-    VulkanBuffer(VulkanContext& context, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties);
+    VulkanBuffer(
+        VulkanContext& context,
+        VkDeviceSize size,
+        VkBufferUsageFlags usage,
+        VkMemoryPropertyFlags properties,
+        std::string debugName = {});
     ~VulkanBuffer();
     VulkanBuffer(const VulkanBuffer&) = delete;
     VulkanBuffer& operator=(const VulkanBuffer&) = delete;

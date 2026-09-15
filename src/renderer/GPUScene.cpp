@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string>
 #include <stdexcept>
 #include <utility>
 
@@ -79,14 +80,19 @@ void GPUScene::prepare(
     materialBuffers_.resize(frameCount);
     lightBuffers_.resize(frameCount);
     for (uint32_t frame = 0; frame < frameCount; ++frame) {
+        const std::string frameSuffix = "[" + std::to_string(frame) + "]";
         viewBuffers_[frame] = device.retainResource(
-            scope, device.createUniformBuffer(sizeof(ViewUniform)));
+            scope, device.createUniformBuffer(
+                sizeof(ViewUniform), "GPUScene.ViewUniform" + frameSuffix));
         objectBuffers_[frame] = device.retainResource(scope, device.createBuffer({
-            sizeof(ObjectData) * objectCapacity_, RHI::BufferUsage::Storage, true}));
+            sizeof(ObjectData) * objectCapacity_, RHI::BufferUsage::Storage, true,
+            "GPUScene.ObjectData" + frameSuffix}));
         materialBuffers_[frame] = device.retainResource(scope, device.createBuffer({
-            sizeof(MaterialData) * materialCapacity_, RHI::BufferUsage::Storage, true}));
+            sizeof(MaterialData) * materialCapacity_, RHI::BufferUsage::Storage, true,
+            "GPUScene.MaterialData" + frameSuffix}));
         lightBuffers_[frame] = device.retainResource(scope, device.createBuffer({
-            sizeof(SceneLightData), RHI::BufferUsage::Storage, true}));
+            sizeof(SceneLightData), RHI::BufferUsage::Storage, true,
+            "GPUScene.LightData" + frameSuffix}));
     }
 }
 

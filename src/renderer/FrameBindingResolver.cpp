@@ -186,11 +186,9 @@ Tasrovy::RHI::FrameExecutionBindings FrameBindingResolver::resolve(
         if (!packet.permutations.empty() &&
             packet.parameterProvider ==
                 ParameterProviders::FinalComposite) {
-            const bool outlineOnly = settings.debugOutputSemantic ==
-                DebugTextureSemantic::OutlineBlackLines;
             packet.selectedPermutationKey =
                 (settings.bloomEnabled ? 2u : 0u) |
-                (settings.outlineEnabled || outlineOnly ? 4u : 0u);
+                (settings.outlineEnabled ? 4u : 0u);
         }
 
         for (const auto& write : packet.descriptorWrites) {

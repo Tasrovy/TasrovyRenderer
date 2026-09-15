@@ -39,7 +39,7 @@ struct RendererSettings {
     float shadowSlopeBias = 0.003f;
     float shadowMinimumBias = 0.0005f;
     float shadowStrength = 1.0f;
-    int shadowTechnique = static_cast<int>(ShadowTechnique::VirtualShadowMap);
+    int shadowTechnique = static_cast<int>(ShadowTechnique::CascadedShadowMap);
     float csmMaximumDistance = 50.0f;
     float csmSplitLambda = 0.65f;
     float csmBlendFraction = 0.10f;

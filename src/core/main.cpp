@@ -206,6 +206,9 @@ int main(int argc, char* argv[])
         sceneArchive.scene->getName(), scenePath->string());
     while (!window.shouldClose()) {
         window.pollEvents();
+        if (!window.shouldClose()) {
+            renderer.buildUIFrame();
+        }
     }
 
     renderer.stop();

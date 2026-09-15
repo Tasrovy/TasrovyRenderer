@@ -113,6 +113,11 @@ Renderer::Renderer(VulkanContext& context, uint32_t maxFramesInFlight)
 }
 
 Renderer::~Renderer() {
+    if (_fenceDrainFailed) {
+        LOG_ERROR(
+            "Renderer: skipping frame synchronization object destruction after a fence drain failure; device teardown will reclaim them");
+        return;
+    }
     for (auto queryPool : _timestampQueryPools) {
         if (queryPool != VK_NULL_HANDLE) {
             vkDestroyQueryPool(_context.getDevice(), queryPool, nullptr);
@@ -131,11 +136,8 @@ Renderer::~Renderer() {
 }
 
 VkCommandBuffer Renderer::beginFrame(VulkanSwapchain& swapchain) {
-    VkResult result = vkWaitForFences(
-        _context.getDevice(), 1, &_inFlightFences[_currentFrame], VK_TRUE, UINT64_MAX);
-    if (result != VK_SUCCESS) {
-        LOG_ERROR("Renderer: vkWaitForFences failed: {} ({})", vkResultName(result), static_cast<int>(result));
-        throw std::runtime_error("failed to wait for frame fence!");
+    if (!waitForFrameFence(_currentFrame, "begin frame")) {
+        throw std::runtime_error("timed out waiting for frame fence");
     }
 
     const uint64_t completedSubmission = _frameSubmissionSerials[_currentFrame];
@@ -144,7 +146,8 @@ VkCommandBuffer Renderer::beginFrame(VulkanSwapchain& swapchain) {
         _frameSubmissionSerials[_currentFrame] = 0;
     }
 
-    result = swapchain.acquireNextImage(_imageAvailableSemaphores[_currentFrame], &_imageIndex);
+    VkResult result = swapchain.acquireNextImage(
+        _imageAvailableSemaphores[_currentFrame], &_imageIndex);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR ||
         result == VK_TIMEOUT || result == VK_NOT_READY) {
@@ -164,12 +167,10 @@ VkCommandBuffer Renderer::beginFrame(VulkanSwapchain& swapchain) {
         _swapchainRebuildRequired = true;
     }
 
-    result = vkResetFences(_context.getDevice(), 1, &_inFlightFences[_currentFrame]);
-    if (result != VK_SUCCESS) {
-        LOG_ERROR("Renderer: vkResetFences failed: {} ({})", vkResultName(result), static_cast<int>(result));
-        throw std::runtime_error("failed to reset frame fence!");
-    }
-
+    // The acquired semaphore must be consumed even if command-buffer setup
+    // fails. The scheduler catches the exception and calls abortFrame().
+    _frameOpen = true;
+    _overlayCommandsOpen = false;
     VkCommandBuffer commandBuffer = _sceneCommandBuffers[_currentFrame];
     result = vkResetCommandBuffer(commandBuffer, 0);
     if (result != VK_SUCCESS) {
@@ -184,9 +185,6 @@ VkCommandBuffer Renderer::beginFrame(VulkanSwapchain& swapchain) {
         LOG_ERROR("Renderer: vkBeginCommandBuffer failed: {} ({})", vkResultName(result), static_cast<int>(result));
         throw std::runtime_error("failed to begin draw command buffer!");
     }
-
-    _frameOpen = true;
-    _overlayCommandsOpen = false;
 
     return commandBuffer;
 }
@@ -253,10 +251,24 @@ void Renderer::endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, 
         // VkQueue host access is externally synchronized. Asset uploads may
         // submit from the RHI worker while the render producer reaches here.
         std::scoped_lock queueLock(_context.getQueueMutex());
+        // Keep the fence signaled during command recording. Reset it only at
+        // the point where a successful submit can take responsibility for
+        // signaling it again.
+        result = vkResetFences(
+            _context.getDevice(), 1, &_inFlightFences[_currentFrame]);
+        if (result != VK_SUCCESS) {
+            LOG_ERROR(
+                "Renderer: frame slot {} fence reset failed before submit: {} ({})",
+                _currentFrame, vkResultName(result), static_cast<int>(result));
+            throw std::runtime_error("failed to reset frame fence before submit");
+        }
         result = vkQueueSubmit(graphicsQueue.getQueue(), 1, &submitInfo, _inFlightFences[_currentFrame]);
     }
     if (result != VK_SUCCESS) {
-        LOG_ERROR("Renderer: vkQueueSubmit failed: {} ({})", vkResultName(result), static_cast<int>(result));
+        LOG_ERROR(
+            "Renderer: frame slot {} vkQueueSubmit failed: {} ({}); restoring a signaled fence",
+            _currentFrame, vkResultName(result), static_cast<int>(result));
+        restoreSignaledFrameFence(_currentFrame);
         throw std::runtime_error("failed to submit draw command buffer!");
     }
     _frameSubmissionSerials[_currentFrame] = _context.advanceDeletionFrame();
@@ -283,9 +295,9 @@ void Renderer::endFrame(VulkanSwapchain& swapchain, VulkanQueue& graphicsQueue, 
 void Renderer::abortFrame(VulkanQueue& graphicsQueue) {
     if (!_frameOpen) return;
 
-    // beginFrame reset the fence and consumed the acquire semaphore. Submit
-    // an empty batch so the fence cannot remain permanently unsignaled after
-    // a recording exception, then force swapchain recreation before reuse.
+    // The frame fence is still signaled because reset is deferred until the
+    // real submit. Submit an empty batch only to consume the acquire semaphore,
+    // then force swapchain recreation before this frame slot is reused.
     VkPipelineStageFlags waitStage =
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submitInfo{};
@@ -298,8 +310,7 @@ void Renderer::abortFrame(VulkanQueue& graphicsQueue) {
     {
         std::scoped_lock queueLock(_context.getQueueMutex());
         result = vkQueueSubmit(
-            graphicsQueue.getQueue(), 1, &submitInfo,
-            _inFlightFences[_currentFrame]);
+            graphicsQueue.getQueue(), 1, &submitInfo, VK_NULL_HANDLE);
     }
     if (result != VK_SUCCESS) {
         LOG_ERROR(
@@ -396,17 +407,71 @@ void Renderer::setCurrentTimestampQueryCount(uint32_t queryCount) {
 }
 
 void Renderer::waitIdle() {
-    if (!_inFlightFences.empty()) {
-        vkWaitForFences(
-            _context.getDevice(),
-            static_cast<uint32_t>(_inFlightFences.size()),
-            _inFlightFences.data(),
-            VK_TRUE,
-            UINT64_MAX);
+    _fenceDrainFailed = false;
+    for (uint32_t frameIndex = 0;
+         frameIndex < _inFlightFences.size(); ++frameIndex) {
+        if (!waitForFrameFence(frameIndex, "renderer idle")) {
+            throw std::runtime_error(
+                "timed out waiting for renderer frame fence");
+        }
     }
     // All graphics submissions associated with the frame fences are complete.
     // This is sufficient for render resources and avoids a device-wide stall.
     _context.flushDeferredDeletions();
+}
+
+bool Renderer::waitForFrameFence(uint32_t frameIndex, const char* stage) {
+    constexpr uint64_t WaitSliceNanoseconds = 250'000'000ull;
+    constexpr uint32_t MaximumWaitSlices = 20;
+    if (frameIndex >= _inFlightFences.size()) {
+        throw std::out_of_range("frame fence index exceeds frame count");
+    }
+
+    for (uint32_t attempt = 0; attempt < MaximumWaitSlices; ++attempt) {
+        const VkResult result = vkWaitForFences(
+            _context.getDevice(), 1, &_inFlightFences[frameIndex],
+            VK_TRUE, WaitSliceNanoseconds);
+        if (result == VK_SUCCESS) return true;
+        if (result != VK_TIMEOUT) {
+            _fenceDrainFailed = true;
+            LOG_ERROR(
+                "Renderer: {} fence wait failed for slot {}, submission {}: {} ({})",
+                stage, frameIndex, _frameSubmissionSerials[frameIndex],
+                vkResultName(result), static_cast<int>(result));
+            throw std::runtime_error("frame fence wait failed");
+        }
+        if (attempt == 3 || attempt + 1 == MaximumWaitSlices) {
+            const VkResult fenceStatus = vkGetFenceStatus(
+                _context.getDevice(), _inFlightFences[frameIndex]);
+            LOG_WARN(
+                "Renderer: still waiting at '{}' for frame slot {}, submission {}; elapsed={} ms, fenceStatus={} ({})",
+                stage, frameIndex, _frameSubmissionSerials[frameIndex],
+                (attempt + 1) * 250,
+                vkResultName(fenceStatus), static_cast<int>(fenceStatus));
+        }
+    }
+    _fenceDrainFailed = true;
+    return false;
+}
+
+void Renderer::restoreSignaledFrameFence(uint32_t frameIndex) {
+    VkFenceCreateInfo fenceInfo{
+        VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr,
+        VK_FENCE_CREATE_SIGNALED_BIT};
+    VkFence replacement = VK_NULL_HANDLE;
+    const VkResult createResult = vkCreateFence(
+        _context.getDevice(), &fenceInfo, nullptr, &replacement);
+    if (createResult != VK_SUCCESS) {
+        LOG_ERROR(
+            "Renderer: could not restore frame slot {} fence: {} ({})",
+            frameIndex, vkResultName(createResult),
+            static_cast<int>(createResult));
+        return;
+    }
+    vkDestroyFence(
+        _context.getDevice(), _inFlightFences[frameIndex], nullptr);
+    _inFlightFences[frameIndex] = replacement;
+    _frameSubmissionSerials[frameIndex] = 0;
 }
 
 #if 0 // Legacy command recording; all GPU commands now belong to RHI::CommandList.

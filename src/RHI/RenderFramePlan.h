@@ -74,6 +74,16 @@ enum class RenderResourceKind : uint8_t {
     Buffer
 };
 
+// Physical residency is compiled from resource usage rather than selected by
+// the Vulkan executor. A single graphics queue executes frame submissions in
+// order, so frame-local resources can share one physical image across frames.
+// Resources read through previousFrame form a frame-buffered history ring.
+enum class RenderResourceResidency : uint8_t {
+    External,
+    Shared,
+    FrameBuffered
+};
+
 struct RenderResourceTransition {
     uint64_t resourceId = 0;
     std::string resourceName;
@@ -92,6 +102,7 @@ struct RenderResourceLifetimePlan {
     bool external = false;
     bool persistent = false;
     bool storage = false;
+    RenderResourceResidency residency = RenderResourceResidency::Shared;
     int32_t allocationSlot = -1;
     FrameTextureDescription description;
 };

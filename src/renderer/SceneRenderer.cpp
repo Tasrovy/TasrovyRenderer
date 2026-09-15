@@ -40,6 +40,10 @@ void SceneRenderer::start() {
     runtime_->start();
 }
 
+void SceneRenderer::buildUIFrame() {
+    runtime_->buildUIFrame();
+}
+
 void SceneRenderer::stop() {
     runtime_->stop();
 }

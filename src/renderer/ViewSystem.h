@@ -39,7 +39,9 @@ public:
         ViewState& state,
         bool temporalAAEnabled,
         uint32_t internalWidth,
-        uint32_t internalHeight) const;
+        uint32_t internalHeight,
+        uint32_t displayWidth,
+        uint32_t displayHeight) const;
 
     void commitFrame(
         ViewState& state,

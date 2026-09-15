@@ -27,6 +27,7 @@ struct BufferDesc {
     uint64_t size = 0;
     BufferUsage usage = BufferUsage::None;
     bool hostVisible = false;
+    std::string debugName;
 };
 
 struct ImageDesc {
@@ -181,10 +182,14 @@ public:
 
     // --- Buffers ---
     std::shared_ptr<Buffer> createBuffer(const BufferDesc& desc);
-    std::shared_ptr<Buffer> createVertexBuffer(uint64_t size);
-    std::shared_ptr<Buffer> createIndexBuffer(uint64_t size);
-    std::shared_ptr<Buffer> createUniformBuffer(uint64_t size);
-    std::shared_ptr<Buffer> createStagingBuffer(uint64_t size);
+    std::shared_ptr<Buffer> createVertexBuffer(
+        uint64_t size, std::string debugName = {});
+    std::shared_ptr<Buffer> createIndexBuffer(
+        uint64_t size, std::string debugName = {});
+    std::shared_ptr<Buffer> createUniformBuffer(
+        uint64_t size, std::string debugName = {});
+    std::shared_ptr<Buffer> createStagingBuffer(
+        uint64_t size, std::string debugName = {});
     std::shared_ptr<CommandList> createCommandList();
 
     // --- Images ---
@@ -223,6 +228,10 @@ public:
     // that performs frame acquire, synchronization, submission and present.
     FrameScheduler& getFrameScheduler();
     const FrameScheduler& getFrameScheduler() const;
+    // Final device-wide synchronization. Call only after frame production and
+    // backend worker threads have stopped, before releasing external SDK or
+    // presentation resources.
+    void waitIdleForShutdown();
 
     // --- Resource information ---
     Format getDepthFormat() const;

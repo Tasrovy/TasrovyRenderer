@@ -55,7 +55,9 @@ ViewFrameData ViewSystem::beginFrame(
     ViewState& state,
     bool temporalAAEnabled,
     uint32_t internalWidth,
-    uint32_t internalHeight) const {
+    uint32_t internalHeight,
+    uint32_t displayWidth,
+    uint32_t displayHeight) const {
     ViewFrameData frame;
     frame.cameraPosition = camera.getPosition();
     frame.cameraRotation = camera.getRotationQuat();
@@ -70,12 +72,26 @@ ViewFrameData ViewSystem::beginFrame(
     frame.view = camera.getViewMatrix();
     frame.unflippedProjection = camera.getProjectionMatrix();
     if (temporalAAEnabled) {
-        const uint64_t jitterIndex = state.temporalFrameIndex % 8u + 1u;
+        const uint32_t safeInternalWidth = std::max(internalWidth, 1u);
+        const uint32_t safeInternalHeight = std::max(internalHeight, 1u);
+        const uint32_t phasesX = std::max(
+            1u, (std::max(displayWidth, 1u) + safeInternalWidth - 1u) /
+                safeInternalWidth);
+        const uint32_t phasesY = std::max(
+            1u, (std::max(displayHeight, 1u) + safeInternalHeight - 1u) /
+                safeInternalHeight);
+        // Native TAA keeps the established eight-sample sequence. TAAU needs
+        // enough phases to cover the display pixels represented by one
+        // internal pixel (for example 4x4 phases at 25% resolution).
+        const uint64_t jitterPhaseCount = std::clamp<uint64_t>(
+            static_cast<uint64_t>(phasesX) * phasesY, 8u, 64u);
+        const uint64_t jitterIndex =
+            state.temporalFrameIndex % jitterPhaseCount + 1u;
         const float jitterX = halton(jitterIndex, 2u) - 0.5f;
         const float jitterY = halton(jitterIndex, 3u) - 0.5f;
         frame.jitterUv = TSVec2f(
-            jitterX / static_cast<float>(std::max(internalWidth, 1u)),
-            jitterY / static_cast<float>(std::max(internalHeight, 1u)));
+            jitterX / static_cast<float>(safeInternalWidth),
+            jitterY / static_cast<float>(safeInternalHeight));
         // Projection[2][0/1] contributes with the opposite sign after the
         // perspective divide. Subtract here so jitterUv consistently means
         // the actual screen-UV displacement used by velocity consumers.

@@ -16,7 +16,7 @@ enum class DeferredShadowTechnique : uint8_t {
 // GenPass(), so disabled passes never enter RenderGraph or the RHI plan.
 struct DeferredPipelineConfig {
     DeferredShadowTechnique shadowTechnique =
-        DeferredShadowTechnique::VirtualShadowMap;
+        DeferredShadowTechnique::CascadedShadowMap;
     bool hbao = true;
     bool hiZ = false;
     bool ssr = false;

@@ -14,6 +14,7 @@ class BackendAccess;
 class IImageBackend;
 
 struct ImageUploadDesc {
+    std::string debugName;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t channels = 4;

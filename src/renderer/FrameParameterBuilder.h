@@ -98,7 +98,7 @@ struct ShadowPassConstants {
 struct TemporalPassConstants {
     // x history valid, y history weight, zw internal/display scale.
     TSVec4f parameters = TSVec4f(0.0f);
-    // xy current-minus-previous projection jitter in screen UV units.
+    // xy current-minus-previous jitter, zw current jitter in screen UV units.
     TSVec4f jitter = TSVec4f(0.0f);
 };
 static_assert(sizeof(TemporalPassConstants) == 32);

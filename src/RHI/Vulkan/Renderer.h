@@ -34,6 +34,9 @@ public:
     void setCurrentTimestampQueryCount(uint32_t queryCount);
     std::vector<double> consumeGpuTimestampDurations();
 private:
+    bool waitForFrameFence(uint32_t frameIndex, const char* stage);
+    void restoreSignaledFrameFence(uint32_t frameIndex);
+
     VulkanContext& _context;
     uint32_t _maxFramesInFlight;
     uint32_t _currentFrame = 0;
@@ -54,4 +57,5 @@ private:
     bool _swapchainRebuildRequired = false;
     bool _frameOpen = false;
     bool _overlayCommandsOpen = false;
+    bool _fenceDrainFailed = false;
 };

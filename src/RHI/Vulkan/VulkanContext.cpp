@@ -49,6 +49,22 @@ bool hasStencilComponent(VkFormat format) {
     return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
 }
 
+const char* vkResultName(VkResult result) {
+    switch (result) {
+    case VK_SUCCESS: return "VK_SUCCESS";
+    case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+    case VK_ERROR_INITIALIZATION_FAILED: return "VK_ERROR_INITIALIZATION_FAILED";
+    case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+    case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+    case VK_ERROR_TOO_MANY_OBJECTS: return "VK_ERROR_TOO_MANY_OBJECTS";
+    case VK_ERROR_FORMAT_NOT_SUPPORTED: return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+    case VK_ERROR_FRAGMENTED_POOL: return "VK_ERROR_FRAGMENTED_POOL";
+    case VK_ERROR_UNKNOWN: return "VK_ERROR_UNKNOWN";
+    default: return "VK_ERROR_UNRECOGNIZED";
+    }
+}
+
 
 // ======================================================================
 // ---                      VulkanContext 实现                      ---
@@ -76,7 +92,10 @@ VulkanContext::VulkanContext(const char* appName,
 
 VulkanContext::~VulkanContext() {
     if (_device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(_device);
+        // Normally this was already performed by VulkanDeviceBackend before
+        // any queue, swapchain, semaphore, or command-pool owner was released.
+        // Keep the call here for partially-constructed contexts.
+        waitIdleForShutdown();
         flushDeferredDeletions();
 
         const auto resourceSnapshot = Tasrovy::RHI::ResourceTracker::snapshot();
@@ -112,10 +131,15 @@ void VulkanContext::deferDelete(std::function<void(VkDevice)> deleter) {
     std::scoped_lock lock(_deferredDeletionMutex);
     // A resource may be released while commands for the next frame are still
     // being recorded. Retire it after that next submission has completed.
+    const uint64_t releaseSubmission = _deletionFrameSerial + 1;
     _deferredDeletions.push_back(DeferredDeletion{
-        _deletionFrameSerial + 1,
+        releaseSubmission,
         std::move(deleter)
     });
+    LOG_GPU_MEMORY(
+        "[DEFER_QUEUE] releaseSubmission={} pendingDeletes={}",
+        releaseSubmission,
+        _deferredDeletions.size());
 }
 
 uint64_t VulkanContext::advanceDeletionFrame() {
@@ -128,6 +152,7 @@ void VulkanContext::collectDeferredDeletions(uint64_t completedSubmissionSerial)
     if (_device == VK_NULL_HANDLE || _deferredDeletions.empty()) {
         return;
     }
+    const size_t pendingBefore = _deferredDeletions.size();
     std::vector<DeferredDeletion> pending;
     pending.reserve(_deferredDeletions.size());
     for (auto& deletion : _deferredDeletions) {
@@ -138,6 +163,29 @@ void VulkanContext::collectDeferredDeletions(uint64_t completedSubmissionSerial)
         }
     }
     _deferredDeletions = std::move(pending);
+    LOG_GPU_MEMORY(
+        "[DEFER_COLLECT] completedSubmission={} released={} remaining={}",
+        completedSubmissionSerial,
+        pendingBefore - _deferredDeletions.size(),
+        _deferredDeletions.size());
+}
+
+VkResult VulkanContext::waitIdleForShutdown() {
+    if (_device == VK_NULL_HANDLE) return VK_SUCCESS;
+    if (_shutdownIdleAttempted) return _shutdownIdleResult;
+
+    _shutdownIdleAttempted = true;
+    LOG_INFO("Shutdown: entering vkDeviceWaitIdle before Vulkan object teardown");
+    _shutdownIdleResult = vkDeviceWaitIdle(_device);
+    if (_shutdownIdleResult == VK_SUCCESS) {
+        LOG_INFO("Shutdown: vkDeviceWaitIdle completed");
+    } else {
+        LOG_ERROR(
+            "Shutdown: vkDeviceWaitIdle failed: {} ({})",
+            vkResultName(_shutdownIdleResult),
+            static_cast<int>(_shutdownIdleResult));
+    }
+    return _shutdownIdleResult;
 }
 
 void VulkanContext::flushDeferredDeletions() {
@@ -147,10 +195,14 @@ void VulkanContext::flushDeferredDeletions() {
         return;
     }
 
+    const size_t releasedCount = _deferredDeletions.size();
     for (auto& deletion : _deferredDeletions) {
         deletion.deleter(_device);
     }
     _deferredDeletions.clear();
+    LOG_GPU_MEMORY(
+        "[DEFER_FLUSH] released={} remaining=0",
+        releasedCount);
 }
 
 size_t VulkanContext::getDeferredDeletionCount() const {
@@ -512,8 +564,36 @@ void VulkanContext::createImage(
     imageInfo.samples = numSamples;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    if (vkCreateImage(_device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create image!");
+    const VkResult creationResult =
+        vkCreateImage(_device, &imageInfo, nullptr, &image);
+    if (creationResult != VK_SUCCESS) {
+        LOG_ERROR(
+            "VulkanContext: vkCreateImage failed: {} ({}), extent={}x{}, "
+            "format={}, mipLevels={}, layers={}, samples={}, usage=0x{:x}",
+            vkResultName(creationResult),
+            static_cast<int32_t>(creationResult),
+            width,
+            height,
+            static_cast<int32_t>(format),
+            mipLevels,
+            arrayLayers,
+            static_cast<uint32_t>(numSamples),
+            static_cast<uint32_t>(usage));
+        LOG_GPU_MEMORY(
+            "[ALLOC_FAILED] type=Image stage=vkCreateImage result={} "
+            "extent={}x{} format={} mipLevels={} layers={} samples={} "
+            "usage=0x{:x}",
+            static_cast<int32_t>(creationResult),
+            width,
+            height,
+            static_cast<int32_t>(format),
+            mipLevels,
+            arrayLayers,
+            static_cast<uint32_t>(numSamples),
+            static_cast<uint32_t>(usage));
+        throw std::runtime_error(
+            std::string("failed to create image: ") +
+            vkResultName(creationResult));
     }
 
     VkMemoryRequirements memRequirements;
@@ -524,18 +604,96 @@ void VulkanContext::createImage(
     allocInfo.allocationSize = memRequirements.size;
     allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
 
-    if (vkAllocateMemory(_device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
+    const VkResult allocationResult =
+        vkAllocateMemory(_device, &allocInfo, nullptr, &imageMemory);
+    if (allocationResult != VK_SUCCESS) {
+        VkPhysicalDeviceMemoryProperties memoryProperties{};
+        vkGetPhysicalDeviceMemoryProperties(
+            _physicalDevice, &memoryProperties);
+        const uint32_t heapIndex =
+            allocInfo.memoryTypeIndex < memoryProperties.memoryTypeCount
+                ? memoryProperties.memoryTypes[
+                      allocInfo.memoryTypeIndex].heapIndex
+                : 0u;
+        const uint64_t heapBytes =
+            heapIndex < memoryProperties.memoryHeapCount
+                ? static_cast<uint64_t>(
+                      memoryProperties.memoryHeaps[heapIndex].size)
+                : 0u;
+        const auto tracker = Tasrovy::RHI::ResourceTracker::snapshot();
+        LOG_ERROR(
+            "VulkanContext: image memory allocation failed: {} ({}), "
+            "extent={}x{}, format={}, mipLevels={}, layers={}, samples={}, "
+            "usage=0x{:x}, allocation={} bytes ({:.2f} MiB), memoryType={}",
+            vkResultName(allocationResult),
+            static_cast<int32_t>(allocationResult),
+            width,
+            height,
+            static_cast<int32_t>(format),
+            mipLevels,
+            arrayLayers,
+            static_cast<uint32_t>(numSamples),
+            static_cast<uint32_t>(usage),
+            static_cast<uint64_t>(memRequirements.size),
+            static_cast<double>(memRequirements.size) / (1024.0 * 1024.0),
+            allocInfo.memoryTypeIndex);
+        LOG_GPU_MEMORY(
+            "[ALLOC_FAILED] type=Image stage=vkAllocateMemory result={} "
+            "extent={}x{} format={} mipLevels={} layers={} samples={} "
+            "usage=0x{:x} allocationBytes={} memoryType={} heapIndex={} "
+            "heapBytes={} trackedLiveBytes={}",
+            static_cast<int32_t>(allocationResult),
+            width,
+            height,
+            static_cast<int32_t>(format),
+            mipLevels,
+            arrayLayers,
+            static_cast<uint32_t>(numSamples),
+            static_cast<uint32_t>(usage),
+            static_cast<uint64_t>(memRequirements.size),
+            allocInfo.memoryTypeIndex,
+            heapIndex,
+            heapBytes,
+            tracker.totalLiveBytes);
         vkDestroyImage(_device, image, nullptr);
         image = VK_NULL_HANDLE;
-        throw std::runtime_error("failed to allocate image memory!");
+        throw std::runtime_error(
+            std::string("failed to allocate image memory: ") +
+            vkResultName(allocationResult));
     }
 
-    if (vkBindImageMemory(_device, image, imageMemory, 0) != VK_SUCCESS) {
+    const VkResult bindResult =
+        vkBindImageMemory(_device, image, imageMemory, 0);
+    if (bindResult != VK_SUCCESS) {
+        LOG_ERROR(
+            "VulkanContext: vkBindImageMemory failed: {} ({}), "
+            "extent={}x{}, format={}, allocation={} bytes, memoryType={}",
+            vkResultName(bindResult),
+            static_cast<int32_t>(bindResult),
+            width,
+            height,
+            static_cast<int32_t>(format),
+            static_cast<uint64_t>(memRequirements.size),
+            allocInfo.memoryTypeIndex);
+        LOG_GPU_MEMORY(
+            "[ALLOC_FAILED] type=Image stage=vkBindImageMemory result={} "
+            "image=0x{:x} memory=0x{:x} extent={}x{} format={} "
+            "allocationBytes={} memoryType={}",
+            static_cast<int32_t>(bindResult),
+            reinterpret_cast<uintptr_t>(image),
+            reinterpret_cast<uintptr_t>(imageMemory),
+            width,
+            height,
+            static_cast<int32_t>(format),
+            static_cast<uint64_t>(memRequirements.size),
+            allocInfo.memoryTypeIndex);
         vkFreeMemory(_device, imageMemory, nullptr);
         vkDestroyImage(_device, image, nullptr);
         imageMemory = VK_NULL_HANDLE;
         image = VK_NULL_HANDLE;
-        throw std::runtime_error("failed to bind image memory!");
+        throw std::runtime_error(
+            std::string("failed to bind image memory: ") +
+            vkResultName(bindResult));
     }
 }
 

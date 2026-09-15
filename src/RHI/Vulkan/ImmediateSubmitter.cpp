@@ -1,4 +1,5 @@
 #include "ImmediateSubmitter.h"
+#include "Logger.hpp"
 #include <stdexcept>
 
 // 杈呭姪鍑芥暟锛岀‘瀹氬竷灞€杞崲鐨勯樁娈靛拰璁块棶鎺╃爜
@@ -61,7 +62,20 @@ ImmediateSubmitter::ImmediateSubmitter(VulkanContext& context, VulkanQueue& queu
 }
 
 ImmediateSubmitter::~ImmediateSubmitter() {
-    vkWaitForFences(_context.getDevice(), 1, &_fence, VK_TRUE, UINT64_MAX);
+    bool fenceReady = false;
+    try {
+        fenceReady = waitForFence("destruction");
+    } catch (const std::exception& error) {
+        LOG_ERROR(
+            "ImmediateSubmitter: fence drain failed during destruction: {}",
+            error.what());
+        return;
+    }
+    if (!fenceReady) {
+        LOG_ERROR(
+            "ImmediateSubmitter: timed out draining its fence during destruction; leaving Vulkan objects for device teardown");
+        return;
+    }
     vkDestroyFence(_context.getDevice(), _fence, nullptr);
     vkDestroyCommandPool(_context.getDevice(), _commandPool, nullptr);
 }
@@ -71,11 +85,8 @@ void ImmediateSubmitter::submit(std::function<void(VkCommandBuffer cmd)>&& funct
     VkDevice device = _context.getDevice();
     VkQueue queue = _queue.getQueue();
 
-    if (vkWaitForFences(device, 1, &_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+    if (!waitForFence("before recording")) {
         throw std::runtime_error("Failed to wait for immediate submit fence!");
-    }
-    if (vkResetFences(device, 1, &_fence) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to reset immediate submit fence!");
     }
 
     // 1. 鍒嗛厤鍛戒护缂撳啿鍖?
@@ -120,19 +131,71 @@ void ImmediateSubmitter::submit(std::function<void(VkCommandBuffer cmd)>&& funct
         // Renderer and upload work can reach the same VkQueue from different
         // threads. Vulkan requires all host access to a queue to be serialized.
         std::scoped_lock queueLock(_context.getQueueMutex());
-        if (vkQueueSubmit(queue, 1, &submitInfo, _fence) != VK_SUCCESS) {
+        const VkResult resetResult =
+            vkResetFences(device, 1, &_fence);
+        if (resetResult != VK_SUCCESS) {
+            vkFreeCommandBuffers(device, _commandPool, 1, &cmd);
+            throw std::runtime_error(
+                "Failed to reset immediate submit fence before queue submit!");
+        }
+        const VkResult submitResult =
+            vkQueueSubmit(queue, 1, &submitInfo, _fence);
+        if (submitResult != VK_SUCCESS) {
+            restoreSignaledFence();
             vkFreeCommandBuffers(device, _commandPool, 1, &cmd);
             throw std::runtime_error("Failed to submit immediate command buffer!");
         }
     }
 
     // 6. 闃诲CPU锛岀洿鍒癎PU瀹屾垚鍛戒护
-    if (vkWaitForFences(device, 1, &_fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+    if (!waitForFence("after queue submit")) {
         throw std::runtime_error("Failed to wait for immediate command buffer!");
     }
 
     // 7. 閲婃斁涓存椂鐨勫懡浠ょ紦鍐插尯
     vkFreeCommandBuffers(device, _commandPool, 1, &cmd);
+}
+
+bool ImmediateSubmitter::waitForFence(const char* stage) const {
+    constexpr uint64_t WaitSliceNanoseconds = 250'000'000ull;
+    constexpr uint32_t MaximumWaitSlices = 20;
+    for (uint32_t attempt = 0; attempt < MaximumWaitSlices; ++attempt) {
+        const VkResult result = vkWaitForFences(
+            _context.getDevice(), 1, &_fence,
+            VK_TRUE, WaitSliceNanoseconds);
+        if (result == VK_SUCCESS) return true;
+        if (result != VK_TIMEOUT) {
+            LOG_ERROR(
+                "ImmediateSubmitter: fence wait failed at '{}': result={}",
+                stage, static_cast<int>(result));
+            throw std::runtime_error("Immediate submit fence wait failed");
+        }
+        if (attempt == 3 || attempt + 1 == MaximumWaitSlices) {
+            const VkResult status =
+                vkGetFenceStatus(_context.getDevice(), _fence);
+            LOG_WARN(
+                "ImmediateSubmitter: waiting at '{}'; elapsed={} ms, fenceStatus={}",
+                stage, (attempt + 1) * 250, static_cast<int>(status));
+        }
+    }
+    return false;
+}
+
+void ImmediateSubmitter::restoreSignaledFence() {
+    VkFenceCreateInfo fenceInfo{
+        VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr,
+        VK_FENCE_CREATE_SIGNALED_BIT};
+    VkFence replacement = VK_NULL_HANDLE;
+    const VkResult result = vkCreateFence(
+        _context.getDevice(), &fenceInfo, nullptr, &replacement);
+    if (result != VK_SUCCESS) {
+        LOG_ERROR(
+            "ImmediateSubmitter: failed to restore signaled fence: result={}",
+            static_cast<int>(result));
+        return;
+    }
+    vkDestroyFence(_context.getDevice(), _fence, nullptr);
+    _fence = replacement;
 }
 
 // --- 楂樼骇渚垮埄鍑芥暟鐨勫疄鐜?---

@@ -3,8 +3,10 @@
 #include "../RHI/CommandList.h"
 #include "../RHI/FrameScheduler.h"
 #include "../window/Window.h"
+#include "Logger.hpp"
 
 #include <algorithm>
+#include <exception>
 
 namespace Tasrovy::Renderer {
 
@@ -31,7 +33,19 @@ RendererRHIContext::~RendererRHIContext() {
     if (!device) {
         return;
     }
-    device->getFrameScheduler().waitForInFlightFrames();
+    LOG_INFO("Shutdown: waiting for renderer frame fences");
+    try {
+        device->getFrameScheduler().waitForInFlightFrames();
+        LOG_INFO("Shutdown: renderer frame fences completed");
+    } catch (const std::exception& error) {
+        LOG_ERROR(
+            "Shutdown: renderer fence drain failed: {}",
+            error.what());
+    }
+    // Frame fences do not cover the presentation operation queued after the
+    // graphics submit. Idle the complete device before NGX, render resources,
+    // swapchain images, or presentation semaphores can be released.
+    device->waitIdleForShutdown();
     if (externalFeatureExecutor) {
         externalFeatureExecutor->invalidateResources();
         externalFeatureExecutor.reset();

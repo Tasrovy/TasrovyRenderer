@@ -49,6 +49,7 @@ public:
         IBLMapType mapType, const std::string& name) const override;
     void createIBLMaps(
         IImageBackend& skybox, const std::string& name) override;
+    void waitIdleForShutdown() override;
     Format depthFormat() const override;
     size_t deferredDeletionCount() const override;
     BackendInteropContext interopContext() const override;

@@ -11,22 +11,30 @@ The deferred renderer is the default pipeline, with a smaller forward PBR path r
 - RenderGraph dependency analysis and automatic synchronization
 - API-independent FramePacket and RHI execution plans
 - Vulkan dynamic rendering and automatic pipeline barriers
+- Shared, frame-buffered, external, and aliased resource residency policies
 - Deferred PBR, IBL, and transparent rendering
 - Shadow maps, CSM, PCF / PCSS, and an experimental Virtual Shadow Map
 - HBAO, Hi-Z, SSR, TAA / TAAU, Bloom, Motion Blur, and DOF
+- Unified graphics/compute scheduling with tiled light culling for up to 256 lights
 - GPUScene-based scene data organization
 - Automatic import-time LOD generation and screen-coverage selection with meshoptimizer
 - Independent UV sampling transforms per texture
-- Separate main, render, and RHI thread responsibilities
-- ImGui debugging, resource monitoring, and GPU timestamps
+- JSON scene loading and runtime pipeline selection
+- Optional DLSS-NR external pass with deterministic native fallback
+- Bounded multi-frame pipelining across main, render, and RHI threads
+- A separate UI command buffer, UI command queue, and double-buffered debug snapshots
+- GPU lifetime tracing, resource monitoring, and timestamps
 
 ## Architecture
 
 ```text
-Scene / Pipeline
-       |
-       v
-RenderGraph -> FramePacket -> RHI Execution Plan -> RHI Backend
+Main Thread                 Render Thread                  RHI Thread
+Scene / UI Commands  ->  Snapshot / RenderGraph  ->  Record / Submit / Present
+                               |                            |
+                               v                            v
+                         FramePacket               RHI Execution Plan
+
+UI Draw Data ------------------------------------------------> UI CommandBuffer
 ```
 
 Main modules:
@@ -83,6 +91,8 @@ The project is under active development:
 - IBL precomputation is disabled by default, while its backend remains available
 - Experimental GPU-driven GBuffer code is not connected to the active runtime path
 - Render and RHI use a bounded `maxFramesInFlight` window of immutable submissions
+- Shutdown stops frame production, cancels unsubmitted work, and performs device-wide synchronization before Vulkan object teardown
+- DLSS-NR requires a user-provided NVIDIA NGX runtime; binaries are not distributed with the repository
 
 ## Documentation
 

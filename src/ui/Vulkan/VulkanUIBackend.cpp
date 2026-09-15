@@ -193,9 +193,11 @@ void VulkanUIBackend::recordDrawData(
     if (found == frames_.end()) {
         return;
     }
-    auto frame = std::move(found->second);
-    frames_.erase(found);
-    ImGui_ImplVulkan_RenderDrawData(&frame->drawData, commandBuffer);
+    // UIOverlay retains this immutable snapshot while any accepted render
+    // frame references it. Recording does not consume the snapshot, allowing
+    // the latest UI to remain visible when the main thread skips an update.
+    ImGui_ImplVulkan_RenderDrawData(
+        &found->second->drawData, commandBuffer);
 }
 
 std::unique_ptr<IUIBackend> createUIBackend(

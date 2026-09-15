@@ -137,6 +137,8 @@ private:
     uint32_t _mipLevels;
     VkSampleCountFlagBits _msaaCount;
     VkImageCreateFlags _imageCreateFlags;
+    VkImageUsageFlags _usage = 0;
+    uint32_t _arrayLayers = 1;
 };
 
 #endif // VULKAN_IMAGE_H

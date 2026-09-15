@@ -109,6 +109,10 @@ public:
     void collectDeferredDeletions(uint64_t completedSubmissionSerial);
     void flushDeferredDeletions();
     size_t getDeferredDeletionCount() const;
+    // Idles the complete logical device exactly once. The backend calls this
+    // before destroying swapchain/presentation objects; the context destructor
+    // reuses the cached result as a final safety net.
+    VkResult waitIdleForShutdown();
 
     int getFramebufferWidth() const { return _fbWidth; }
     int getFramebufferHeight() const { return _fbHeight; }
@@ -157,4 +161,6 @@ private:
     mutable std::mutex _deferredDeletionMutex;
     mutable std::mutex _queueMutex;
     std::vector<DeferredDeletion> _deferredDeletions;
+    bool _shutdownIdleAttempted = false;
+    VkResult _shutdownIdleResult = VK_SUCCESS;
 };

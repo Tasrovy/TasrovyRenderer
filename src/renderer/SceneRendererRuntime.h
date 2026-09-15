@@ -6,6 +6,7 @@
 #include "SceneRendererComponents.h"
 
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <string>
 
@@ -43,6 +44,7 @@ public:
     void removePrimitive(const std::string& name);
 
     void start();
+    void buildUIFrame();
     void stop();
     bool isRunning() const;
 
@@ -52,6 +54,7 @@ private:
     RHIThread rhiThread_;
     SceneRendererComponents components_;
     std::unique_ptr<SceneRendererExecution> execution_;
+    std::atomic<bool> stopRequested_{false};
 };
 
 } // namespace Tasrovy::Renderer

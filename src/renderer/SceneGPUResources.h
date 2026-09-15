@@ -85,6 +85,9 @@ public:
         Tasrovy::RHI::Device& device,
         Tasrovy::RHI::Device::ResourceScope persistentScope,
         const std::string& preferredPath);
+    void prepareEnvironmentFallbacks(
+        Tasrovy::RHI::Device& device,
+        Tasrovy::RHI::Device::ResourceScope persistentScope);
     void prepareGlobalTextures(
         Tasrovy::RHI::Device& device,
         Tasrovy::RHI::Device::ResourceScope persistentScope);

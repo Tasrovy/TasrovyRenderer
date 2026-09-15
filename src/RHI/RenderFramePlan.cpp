@@ -60,6 +60,18 @@ struct LifetimeRange {
     bool buffer = false;
 };
 
+RenderResourceResidency chooseResidency(
+    bool external,
+    const LifetimeRange& lifetime) {
+    if (external) {
+        return RenderResourceResidency::External;
+    }
+    if (lifetime.persistent) {
+        return RenderResourceResidency::FrameBuffered;
+    }
+    return RenderResourceResidency::Shared;
+}
+
 FrameTextureFormat toFrameTextureFormat(
     const Tasrovy::Render::PipelineTextureFormat format) {
     using Format = Tasrovy::Render::PipelineTextureFormat;
@@ -551,15 +563,17 @@ RenderFrameExecutionPlan RHIFrameCompiler::compile(
         if (texture == textures.end()) {
             continue;
         }
+        const bool external = texture->second->description.external;
         plan.resources.push_back({
             id,
             texture->second->description.name,
             lifetime.first,
             lifetime.last,
-            texture->second->description.external,
+            external,
             lifetime.persistent,
             lifetime.storage ||
                 texture->second->description.storageCapable,
+            chooseResidency(external, lifetime),
             -1,
             makeFrameTextureDescription(texture->second->description)
         });

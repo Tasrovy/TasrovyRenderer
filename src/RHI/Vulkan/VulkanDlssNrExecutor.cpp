@@ -5,6 +5,7 @@
 #include "../CommandList.h"
 #include "../Image.h"
 #include "../RHIBackendAccess.h"
+#include "../ResourceTracker.h"
 
 #include <volk.h>
 #include <nvsdk_ngx_helpers_vk.h>
@@ -107,7 +108,8 @@ struct DlssNrBridgeApi {
         VkCommandBuffer, NVSDK_NGX_Handle*, NVSDK_NGX_Parameter*,
         NVSDK_NGX_Resource_VK*, NVSDK_NGX_Resource_VK*,
         NVSDK_NGX_Resource_VK*, NVSDK_NGX_Resource_VK*,
-        uint32_t, uint32_t, float, float, uint32_t, uint32_t);
+        uint32_t, uint32_t, float, float, uint32_t, uint32_t,
+        uint32_t, float, float, float, float, uint32_t, uint32_t);
     using Release = void (NVSDK_CONV *)(NVSDK_NGX_Handle*);
     using Shutdown = void (NVSDK_CONV *)();
     using LastResult = uint32_t (NVSDK_CONV *)();
@@ -179,7 +181,9 @@ struct ModelConfiguration {
     uint32_t autoMask = 0;
     uint32_t uiCorrection = 0;
 
-    bool operator==(const ModelConfiguration&) const = default;
+    bool usesSameFeature(const ModelConfiguration& other) const {
+        return width == other.width && height == other.height;
+    }
 };
 
 NVSDK_NGX_Resource_VK imageResource(
@@ -260,6 +264,12 @@ struct VulkanDlssNrExecutor::Impl {
     }
 
     ~Impl() {
+        LOG_GPU_MEMORY(
+            "[EXTERNAL_SHUTDOWN_BEGIN] feature=DLSS-NR initialized={} "
+            "featureAlive={} trackedLiveBytes={}",
+            initialized,
+            feature != nullptr,
+            ResourceTracker::snapshot().totalLiveBytes);
         releaseFeature();
         if (bridge.complete())
             bridge.shutdown();
@@ -276,6 +286,9 @@ struct VulkanDlssNrExecutor::Impl {
             FreeLibrary(module);
             module = nullptr;
         }
+        LOG_GPU_MEMORY(
+            "[EXTERNAL_SHUTDOWN_END] feature=DLSS-NR trackedLiveBytes={}",
+            ResourceTracker::snapshot().totalLiveBytes);
     }
 
     bool initialize() {
@@ -345,9 +358,19 @@ struct VulkanDlssNrExecutor::Impl {
 
     void releaseFeature() noexcept {
         if (feature) {
+            const auto tracker = ResourceTracker::snapshot();
+            LOG_GPU_MEMORY(
+                "[EXTERNAL_RELEASE_BEGIN] feature=DLSS-NR width={} height={} "
+                "trackedLiveBytes={}",
+                configuration ? configuration->width : 0u,
+                configuration ? configuration->height : 0u,
+                tracker.totalLiveBytes);
             if (bridge.complete())
                 bridge.release(feature);
             feature = nullptr;
+            LOG_GPU_MEMORY(
+                "[EXTERNAL_RELEASE_END] feature=DLSS-NR trackedLiveBytes={}",
+                ResourceTracker::snapshot().totalLiveBytes);
         }
         configuration.reset();
         resetHistory = true;
@@ -356,8 +379,13 @@ struct VulkanDlssNrExecutor::Impl {
     bool ensureFeature(
         VkCommandBuffer commandBuffer,
         const ModelConfiguration& desired) {
-        if (feature && configuration && *configuration == desired)
+        if (feature && configuration &&
+            configuration->usesSameFeature(desired)) {
+            // Preserve the latest runtime controls for diagnostics. They are
+            // applied by evaluate and do not affect Feature residency.
+            configuration = desired;
             return true;
+        }
         if (featureCreationDisabled)
             return false;
         releaseFeature();
@@ -369,6 +397,9 @@ struct VulkanDlssNrExecutor::Impl {
         }
         if (!corePrimed) {
             NVSDK_NGX_Handle* primeFeature = nullptr;
+            LOG_GPU_MEMORY(
+                "[EXTERNAL_PRIME_BEGIN] feature=DLSS-NR trackedLiveBytes={}",
+                ResourceTracker::snapshot().totalLiveBytes);
             const auto primeResult = api.createFeature(
                 commandBuffer,
                 NeuralRenderingFeature,
@@ -376,12 +407,24 @@ struct VulkanDlssNrExecutor::Impl {
                 &primeFeature);
             if (primeFeature)
                 api.releaseFeature(primeFeature);
+            LOG_GPU_MEMORY(
+                "[EXTERNAL_PRIME_END] feature=DLSS-NR result=0x{:08x} "
+                "handleReturned={} trackedLiveBytes={}",
+                static_cast<uint32_t>(primeResult),
+                primeFeature != nullptr,
+                ResourceTracker::snapshot().totalLiveBytes);
             LOG_INFO(
                 "DLSS-NR: primed NGX Core for Feature 18 (0x{:08x})",
                 static_cast<uint32_t>(primeResult));
             corePrimed = true;
         }
         const auto runtimePath = runtimeLibraryPath().wstring();
+        LOG_GPU_MEMORY(
+            "[EXTERNAL_ALLOC_BEGIN] feature=DLSS-NR width={} height={} "
+            "trackedLiveBytes={}",
+            desired.width,
+            desired.height,
+            ResourceTracker::snapshot().totalLiveBytes);
         const auto result = bridge.create(
             runtimePath.c_str(),
             applicationDataPath.c_str(),
@@ -410,12 +453,28 @@ struct VulkanDlssNrExecutor::Impl {
             LOG_ERROR(
                 "DLSS-NR: bridge feature creation failed (result=0x{:08x}, init=0x{:08x}, create=0x{:08x}); using fallback",
                 static_cast<uint32_t>(result), initResult, createResult);
+            LOG_GPU_MEMORY(
+                "[EXTERNAL_ALLOC_FAILED] feature=DLSS-NR result=0x{:08x} "
+                "init=0x{:08x} create=0x{:08x} width={} height={} "
+                "trackedLiveBytes={}",
+                static_cast<uint32_t>(result),
+                initResult,
+                createResult,
+                desired.width,
+                desired.height,
+                ResourceTracker::snapshot().totalLiveBytes);
             feature = nullptr;
             featureCreationDisabled = true;
             return false;
         }
         configuration = desired;
         resetHistory = true;
+        LOG_GPU_MEMORY(
+            "[EXTERNAL_ALLOC_END] feature=DLSS-NR width={} height={} "
+            "trackedLiveBytes={}",
+            desired.width,
+            desired.height,
+            ResourceTracker::snapshot().totalLiveBytes);
         LOG_INFO("DLSS-NR: created same-resolution {}x{} feature",
             desired.width, desired.height);
         return true;
@@ -451,6 +510,30 @@ void VulkanDlssNrExecutor::invalidateResources() noexcept {
         impl_->releaseFeature();
         impl_->featureCreationDisabled = false;
     }
+}
+
+void VulkanDlssNrExecutor::prepareForExtent(
+    uint32_t width, uint32_t height) noexcept {
+    if (!impl_ || !impl_->feature || !impl_->configuration)
+        return;
+    if (impl_->configuration->width == width &&
+        impl_->configuration->height == height) {
+        LOG_GPU_MEMORY(
+            "[EXTERNAL_PRESERVE] feature=DLSS-NR width={} height={} "
+            "reason=sameExtent",
+            width,
+            height);
+        return;
+    }
+    LOG_GPU_MEMORY(
+        "[EXTERNAL_INVALIDATE] feature=DLSS-NR oldWidth={} oldHeight={} "
+        "newWidth={} newHeight={} reason=extentChanged",
+        impl_->configuration->width,
+        impl_->configuration->height,
+        width,
+        height);
+    impl_->releaseFeature();
+    impl_->featureCreationDisabled = false;
 }
 
 bool VulkanDlssNrExecutor::tryExecute(
@@ -529,7 +612,14 @@ bool VulkanDlssNrExecutor::tryExecute(
             context.motionVectorScaleX,
             context.motionVectorScaleY,
             context.depthInverted ? 1u : 0u,
-            (impl_->resetHistory || values[7] != 0.0f) ? 1u : 0u);
+            (impl_->resetHistory || values[7] != 0.0f) ? 1u : 0u,
+            desired.style,
+            desired.intensity,
+            desired.localTone,
+            desired.localStructure,
+            desired.skinStructure,
+            desired.autoMask,
+            desired.uiCorrection);
         context.commandList->transitionImage(
             *context.inputColor,
             ImageLayout::General,

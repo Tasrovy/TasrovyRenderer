@@ -1,4 +1,5 @@
 #include "RHIThread.h"
+#include "Logger.hpp"
 
 #include <algorithm>
 #include <exception>
@@ -24,6 +25,8 @@ void RHIThread::start() {
 }
 
 void RHIThread::stop() {
+    size_t queuedTasks = 0;
+    size_t outstandingTasks = 0;
     {
         std::scoped_lock lock(mutex_);
         if (!thread_.joinable()) {
@@ -33,10 +36,16 @@ void RHIThread::stop() {
         }
         accepting_ = false;
         stopping_ = true;
+        queuedTasks = queue_.size();
+        outstandingTasks = outstandingTasks_;
     }
+    LOG_INFO(
+        "Shutdown: RHIThread stop requested; queued={}, outstanding={}",
+        queuedTasks, outstandingTasks);
     workAvailable_.notify_all();
     capacityAvailable_.notify_all();
     thread_.join();
+    LOG_INFO("Shutdown: RHIThread worker joined");
 }
 
 bool RHIThread::running() const {
